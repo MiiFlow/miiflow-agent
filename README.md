@@ -171,6 +171,10 @@ pip install -e ../miiflow-llm  # Local development
 # OR
 pip install git+https://github.com/MiiFlow/miiflow-llm.git  # Latest from GitHub
 ```
+### Example Run:
+```bash
+python miiflow-llm/examples/test_unified_streaming.py
+```
 
 ### Backend Integration
 

@@ -7,7 +7,7 @@ readme = "README.md"
 license = "MIT"
 homepage = "https://github.com/MiiFlow/miiflow-llm"
 repository = "https://github.com/MiiFlow/miiflow-llm"
-documentation = ""
+documentation = "https://github.com/MiiFlow/miiflow-llm#readme"
 keywords = ["llm", "openai", "anthropic", "agents", "streaming", "tools"]
 classifiers = [
     "Development Status :: 4 - Beta",

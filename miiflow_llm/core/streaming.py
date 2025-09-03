@@ -1,4 +1,4 @@
-"""Streaming normalization and structured output parsing."""
+"""Unified streaming with structured output parsing (clean architecture)."""
 
 import json
 import re
@@ -10,24 +10,7 @@ from datetime import datetime
 from .message import Message
 from .metrics import TokenCount
 from .exceptions import ParsingError
-
-
-@dataclass
-class StreamContent:
-    """Normalized streaming content from any provider."""
-    
-    content: str
-    is_delta: bool = True
-    is_complete: bool = False
-    function_call: Optional[Dict[str, Any]] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
-    finish_reason: Optional[str] = None
-    usage: Optional[TokenCount] = None
-    metadata: Dict[str, Any] = None
-
-    def __post_init__(self):
-        if self.metadata is None:
-            self.metadata = {}
+from .client import StreamChunk
 
 
 @dataclass
@@ -49,311 +32,6 @@ class EnhancedStreamChunk:
             self.metadata = {}
         if not self.delta and self.content:
             self.delta = self.content
-
-
-class ProviderStreamNormalizer:
-    """Normalizes streaming chunks from different providers to unified format."""
-    
-    def normalize_chunk(self, chunk: Any, provider: str) -> StreamContent:
-        """Convert provider-specific chunk to unified StreamContent."""
-        
-        normalization_map = {
-            "openai": self._normalize_openai,
-            "anthropic": self._normalize_anthropic,
-            "groq": self._normalize_groq,
-            "together": self._normalize_together,
-            "xai": self._normalize_xai,
-            "gemini": self._normalize_gemini,
-            "openrouter": self._normalize_openrouter,
-            "mistral": self._normalize_mistral,
-            "ollama": self._normalize_ollama,
-        }
-        
-        normalizer = normalization_map.get(provider.lower(), self._normalize_generic)
-        
-        try:
-            return normalizer(chunk)
-        except Exception as e:
-            # Fallback to generic normalization
-            return self._normalize_generic(chunk)
-    
-    def _normalize_openai(self, chunk) -> StreamContent:
-        """Handle OpenAI's streaming format (GPT-4, GPT-5, GPT-4o)."""
-        content = ""
-        finish_reason = None
-        function_call = None
-        tool_calls = None
-        usage = None
-        
-        try:
-            # Handle both GPT-4 and GPT-5 formats
-            if hasattr(chunk, 'choices') and chunk.choices:
-                choice = chunk.choices[0]
-                
-                # GPT-5 style: chunk.choices[0].delta.content
-                if hasattr(choice, 'delta') and choice.delta:
-                    if hasattr(choice.delta, 'content') and choice.delta.content:
-                        content = choice.delta.content
-                    if hasattr(choice.delta, 'function_call'):
-                        function_call = choice.delta.function_call
-                    if hasattr(choice.delta, 'tool_calls'):
-                        tool_calls = choice.delta.tool_calls
-                
-                # Finish reason
-                if hasattr(choice, 'finish_reason'):
-                    finish_reason = choice.finish_reason
-            
-            # Usage information (usually in last chunk)
-            if hasattr(chunk, 'usage') and chunk.usage:
-                usage = TokenCount(
-                    prompt_tokens=chunk.usage.prompt_tokens,
-                    completion_tokens=chunk.usage.completion_tokens,
-                    total_tokens=chunk.usage.total_tokens
-                )
-                
-        except AttributeError:
-            # Fallback for unexpected format changes
-            content = str(chunk) if chunk else ""
-        
-        return StreamContent(
-            content=content,
-            is_delta=True,
-            is_complete=finish_reason is not None,
-            function_call=function_call,
-            tool_calls=tool_calls,
-            finish_reason=finish_reason,
-            usage=usage,
-            metadata={"provider": "openai", "raw_chunk_type": type(chunk).__name__}
-        )
-    
-    def _normalize_anthropic(self, chunk) -> StreamContent:
-        """Handle Anthropic's streaming format."""
-        content = ""
-        finish_reason = None
-        usage = None
-        
-        try:
-            # Anthropic format variations
-            if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'text'):
-                content = chunk.delta.text
-            elif hasattr(chunk, 'content_block_delta') and hasattr(chunk.content_block_delta, 'delta'):
-                if hasattr(chunk.content_block_delta.delta, 'text'):
-                    content = chunk.content_block_delta.delta.text
-            elif hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
-                content = chunk.message.content[0].text if chunk.message.content else ""
-            
-            # Check for completion
-            if hasattr(chunk, 'type'):
-                if chunk.type == 'message_stop':
-                    finish_reason = 'stop'
-                elif chunk.type == 'content_block_stop':
-                    finish_reason = 'stop'
-            
-            # Usage (typically in final message)
-            if hasattr(chunk, 'usage'):
-                usage = TokenCount(
-                    prompt_tokens=getattr(chunk.usage, 'input_tokens', 0),
-                    completion_tokens=getattr(chunk.usage, 'output_tokens', 0),
-                    total_tokens=getattr(chunk.usage, 'input_tokens', 0) + getattr(chunk.usage, 'output_tokens', 0)
-                )
-                
-        except AttributeError:
-            content = str(chunk) if chunk else ""
-        
-        return StreamContent(
-            content=content,
-            is_delta=True,
-            is_complete=finish_reason is not None,
-            finish_reason=finish_reason,
-            usage=usage,
-            metadata={"provider": "anthropic", "raw_chunk_type": type(chunk).__name__}
-        )
-    
-    def _normalize_groq(self, chunk) -> StreamContent:
-        """Handle Groq's streaming format."""
-        content = ""
-        finish_reason = None
-        usage = None
-        
-        try:
-            # Groq follows OpenAI-compatible format
-            if hasattr(chunk, 'choices') and chunk.choices:
-                choice = chunk.choices[0]
-                if hasattr(choice, 'delta') and hasattr(choice.delta, 'content'):
-                    content = choice.delta.content or ""
-                if hasattr(choice, 'finish_reason'):
-                    finish_reason = choice.finish_reason
-            
-            if hasattr(chunk, 'usage') and chunk.usage:
-                usage = TokenCount(
-                    prompt_tokens=chunk.usage.prompt_tokens,
-                    completion_tokens=chunk.usage.completion_tokens,
-                    total_tokens=chunk.usage.total_tokens
-                )
-                
-        except AttributeError:
-            # Fallback - Groq sometimes returns plain strings
-            content = str(chunk) if chunk else ""
-        
-        return StreamContent(
-            content=content,
-            is_delta=True,
-            is_complete=finish_reason is not None,
-            finish_reason=finish_reason,
-            usage=usage,
-            metadata={"provider": "groq", "raw_chunk_type": type(chunk).__name__}
-        )
-    
-    def _normalize_together(self, chunk) -> StreamContent:
-        """Handle TogetherAI's streaming format."""
-        return self._normalize_openai(chunk)  # TogetherAI uses OpenAI-compatible format
-    
-    def _normalize_openrouter(self, chunk) -> StreamContent:
-        """Handle OpenRouter's streaming format."""
-        return self._normalize_openai(chunk)  # OpenRouter uses OpenAI-compatible format
-    
-    def _normalize_mistral(self, chunk) -> StreamContent:
-        """Handle Mistral's streaming format."""
-        content = ""
-        finish_reason = None
-        usage = None
-        
-        try:
-            # Mistral streaming format (similar to OpenAI)
-            if hasattr(chunk, 'choices') and chunk.choices:
-                choice = chunk.choices[0]
-                
-                if hasattr(choice, 'delta') and choice.delta:
-                    if hasattr(choice.delta, 'content'):
-                        content = choice.delta.content or ""
-                
-                if hasattr(choice, 'finish_reason'):
-                    finish_reason = choice.finish_reason
-            
-            # Usage information
-            if hasattr(chunk, 'usage') and chunk.usage:
-                usage = TokenCount(
-                    prompt_tokens=chunk.usage.prompt_tokens,
-                    completion_tokens=chunk.usage.completion_tokens,
-                    total_tokens=chunk.usage.total_tokens
-                )
-                
-        except AttributeError:
-            content = str(chunk) if chunk else ""
-        
-        return StreamContent(
-            content=content,
-            is_delta=True,
-            is_complete=finish_reason is not None,
-            finish_reason=finish_reason,
-            usage=usage,
-            metadata={"provider": "mistral", "raw_chunk_type": type(chunk).__name__}
-        )
-    
-    def _normalize_ollama(self, chunk) -> StreamContent:
-        """Handle Ollama's streaming format."""
-        content = ""
-        finish_reason = None
-        
-        try:
-            # Ollama streaming format (JSON with message field)
-            if isinstance(chunk, dict):
-                if "message" in chunk:
-                    content = chunk["message"].get("content", "")
-                if chunk.get("done", False):
-                    finish_reason = "stop"
-            elif hasattr(chunk, 'message'):
-                content = chunk.message.get("content", "")
-                if hasattr(chunk, 'done') and chunk.done:
-                    finish_reason = "stop"
-            else:
-                content = str(chunk) if chunk else ""
-                
-        except (AttributeError, TypeError):
-            content = str(chunk) if chunk else ""
-        
-        return StreamContent(
-            content=content,
-            is_delta=True,
-            is_complete=finish_reason is not None,
-            finish_reason=finish_reason,
-            usage=None,  # Ollama doesn't provide detailed usage in streams
-            metadata={"provider": "ollama", "raw_chunk_type": type(chunk).__name__}
-        )
-    
-    def _normalize_xai(self, chunk) -> StreamContent:
-        """Handle XAI's streaming format."""
-        return self._normalize_openai(chunk)  # XAI uses OpenAI-compatible format
-    
-    def _normalize_gemini(self, chunk) -> StreamContent:
-        """Handle Google Gemini's streaming format."""
-        content = ""
-        finish_reason = None
-        usage = None
-        
-        try:
-            # Gemini streaming format
-            if hasattr(chunk, 'candidates') and chunk.candidates:
-                candidate = chunk.candidates[0]
-                
-                # Extract content from parts
-                if hasattr(candidate, 'content') and candidate.content.parts:
-                    content = candidate.content.parts[0].text
-                
-                # Check finish reason
-                if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
-                    finish_reason = candidate.finish_reason.name
-            
-            # Usage metadata (Gemini provides detailed token counts)
-            if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
-                usage = TokenCount(
-                    prompt_tokens=getattr(chunk.usage_metadata, 'prompt_token_count', 0) or 0,
-                    completion_tokens=getattr(chunk.usage_metadata, 'candidates_token_count', 0) or 0,
-                    total_tokens=getattr(chunk.usage_metadata, 'total_token_count', 0) or 0
-                )
-                
-        except AttributeError:
-            # Fallback for unexpected format
-            if hasattr(chunk, 'text'):
-                content = chunk.text
-            else:
-                content = str(chunk) if chunk else ""
-        
-        return StreamContent(
-            content=content,
-            is_delta=True,
-            is_complete=finish_reason is not None,
-            finish_reason=finish_reason,
-            usage=usage,
-            metadata={"provider": "gemini", "raw_chunk_type": type(chunk).__name__}
-        )
-    
-    def _normalize_generic(self, chunk) -> StreamContent:
-        """Generic fallback normalization."""
-        # Try to extract content using common patterns
-        content = ""
-        finish_reason = None
-        
-        if hasattr(chunk, 'content'):
-            content = str(chunk.content)
-        elif hasattr(chunk, 'text'):
-            content = str(chunk.text)
-        elif hasattr(chunk, 'delta') and hasattr(chunk.delta, 'content'):
-            content = str(chunk.delta.content or "")
-        else:
-            content = str(chunk) if chunk else ""
-        
-        # Check for completion
-        if hasattr(chunk, 'finish_reason') and chunk.finish_reason:
-            finish_reason = chunk.finish_reason
-        
-        return StreamContent(
-            content=content,
-            is_delta=True,
-            is_complete=finish_reason is not None,
-            finish_reason=finish_reason,
-            metadata={"provider": "generic", "raw_chunk_type": type(chunk).__name__}
-        )
 
 
 class IncrementalParser:
@@ -495,9 +173,8 @@ class IncrementalParser:
 class UnifiedStreamingClient:
     """Unified streaming client with structured output support."""
     
-    def __init__(self, client, normalizer: Optional[ProviderStreamNormalizer] = None):
+    def __init__(self, client):
         self.client = client
-        self.normalizer = normalizer or ProviderStreamNormalizer()
     
     async def stream_with_schema(
         self,
@@ -505,42 +182,42 @@ class UnifiedStreamingClient:
         schema: Optional[Type] = None,
         **kwargs
     ) -> AsyncGenerator[EnhancedStreamChunk, None]:
-        """Stream with incremental structured output parsing."""
+        """Stream with incremental structured output parsing.
+        
+        Note: Client is expected to already normalize chunks to StreamChunk format.
+        """
         
         parser = IncrementalParser(schema) if schema else None
         buffer = ""
         
         try:
-            async for raw_chunk in self.client.stream_chat(messages, **kwargs):
-                normalized = self.normalizer.normalize_chunk(
-                    raw_chunk, 
-                    self.client.provider_name
-                )
-                
-                buffer += normalized.content
+            async for stream_chunk in self.client.stream_chat(messages, **kwargs):
+                # Client already provides normalized StreamChunk
+                buffer += stream_chunk.delta if stream_chunk.delta else ""
                 
                 partial_parse = None
-                if parser and normalized.content:
-                    partial_parse = parser.try_parse_partial(normalized.content)
+                if parser and stream_chunk.delta:
+                    partial_parse = parser.try_parse_partial(stream_chunk.delta)
                 
                 yield EnhancedStreamChunk(
                     content=buffer,
-                    delta=normalized.content,
-                    is_complete=normalized.is_complete,
+                    delta=stream_chunk.delta,
+                    is_complete=stream_chunk.finish_reason is not None,
                     partial_parse=partial_parse,
-                    finish_reason=normalized.finish_reason,
-                    usage=normalized.usage,
-                    tool_calls=normalized.tool_calls,
+                    finish_reason=stream_chunk.finish_reason,
+                    usage=stream_chunk.usage,
+                    tool_calls=stream_chunk.tool_calls,
                     metadata={
-                        **normalized.metadata,
+                        "provider": self.client.provider_name,
                         "buffer_length": len(buffer),
                         "has_partial_parse": partial_parse is not None
                     }
                 )
                 
-                if normalized.is_complete:
+                if stream_chunk.finish_reason:
                     break
             
+            # Final structured parsing attempt
             if parser and buffer:
                 final_result = parser.finalize_parse(buffer)
                 yield EnhancedStreamChunk(

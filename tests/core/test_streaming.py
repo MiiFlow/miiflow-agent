@@ -202,7 +202,7 @@ class TestUnifiedStreamingClient:
             )
             yield chunk
         
-        mock_client.stream_chat = mock_stream
+        mock_client.astream_chat = mock_stream
         
         chunks = []
         async for chunk in unified_client.stream_with_schema(sample_messages):
@@ -221,7 +221,7 @@ class TestUnifiedStreamingClient:
                 yield
             raise RuntimeError("Stream failed")
         
-        mock_client.stream_chat = mock_failing_stream
+        mock_client.astream_chat = mock_failing_stream
         
         with pytest.raises(RuntimeError):
             chunks = []

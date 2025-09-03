@@ -42,7 +42,7 @@ class TestTogetherClient:
         with patch.object(client.client.chat.completions, 'create', new_callable=AsyncMock) as mock_create:
             mock_create.return_value = mock_response
             
-            response = await client.chat(sample_messages)
+            response = await client.achat(sample_messages)
             
             # Verify response format
             assert isinstance(response, ChatResponse)
@@ -96,7 +96,7 @@ class TestTogetherClient:
             mock_create.return_value = mock_stream_generator()
             
             chunks = []
-            async for chunk in client.stream_chat(sample_messages):
+            async for chunk in client.astream_chat(sample_messages):
                 chunks.append(chunk)
             
             # Verify we got chunks
@@ -141,7 +141,7 @@ class TestTogetherClient:
             mock_create.side_effect = Exception("TogetherAI API Error")
             
             with pytest.raises(ProviderError):
-                await client.chat(sample_messages)
+                await client.achat(sample_messages)
     
     @pytest.mark.asyncio
     async def test_message_conversion(self, client):
@@ -177,7 +177,7 @@ class TestTogetherClient:
         with patch.object(client.client.chat.completions, 'create', new_callable=AsyncMock) as mock_create:
             mock_create.return_value = mock_response
             
-            await client.chat(
+            await client.achat(
                 sample_messages, 
                 temperature=0.8, 
                 max_tokens=200,

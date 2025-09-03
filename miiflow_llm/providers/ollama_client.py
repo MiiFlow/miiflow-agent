@@ -51,11 +51,9 @@ class OllamaClient(ModelClient):
                 "content": ""
             }
             
-            # Handle content
             if isinstance(message.content, str):
                 ollama_message["content"] = message.content
             elif isinstance(message.content, list):
-                # For multi-modal content
                 content_parts = []
                 images = []
                 
@@ -63,9 +61,7 @@ class OllamaClient(ModelClient):
                     if isinstance(block, TextBlock):
                         content_parts.append(block.text)
                     elif isinstance(block, ImageBlock):
-                        # Ollama supports images
                         if block.image_url.startswith("data:"):
-                            # Base64 image
                             images.append(block.image_url.split(",")[1])
                         else:
                             content_parts.append(f"[Image: {block.image_url}]")
@@ -83,7 +79,7 @@ class OllamaClient(ModelClient):
         
         return ollama_messages
     
-    async def chat(
+    async def achat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -95,7 +91,6 @@ class OllamaClient(ModelClient):
         try:
             ollama_messages = self._convert_messages_to_ollama_format(messages)
             
-            # Prepare request payload
             payload = {
                 "model": self.model,
                 "messages": ollama_messages,
@@ -108,15 +103,12 @@ class OllamaClient(ModelClient):
             if max_tokens:
                 payload["options"]["num_predict"] = max_tokens
             
-            # Add any additional options
             payload["options"].update(kwargs)
             
-            # Prepare headers
             headers = {"Content-Type": "application/json"}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
             
-            # Make API call
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
                 async with session.post(
                     f"{self.base_url}/api/chat",
@@ -129,7 +121,6 @@ class OllamaClient(ModelClient):
                     
                     result = await response.json()
             
-            # Extract response content
             content = result.get("message", {}).get("content", "")
             
             usage = TokenCount(
@@ -138,7 +129,6 @@ class OllamaClient(ModelClient):
                 total_tokens=sum(len(msg.get("content", "").split()) for msg in ollama_messages) + len(content.split())
             )
             
-            # Create response message
             response_message = Message(
                 role=MessageRole.ASSISTANT,
                 content=content
@@ -158,7 +148,7 @@ class OllamaClient(ModelClient):
                 raise
             raise ProviderError(f"Ollama API error: {e}", provider="ollama")
     
-    async def stream_chat(
+    async def astream_chat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -170,7 +160,6 @@ class OllamaClient(ModelClient):
         try:
             ollama_messages = self._convert_messages_to_ollama_format(messages)
             
-            # Prepare request payload
             payload = {
                 "model": self.model,
                 "messages": ollama_messages,
@@ -183,15 +172,12 @@ class OllamaClient(ModelClient):
             if max_tokens:
                 payload["options"]["num_predict"] = max_tokens
             
-            # Add any additional options
             payload["options"].update(kwargs)
             
-            # Prepare headers
             headers = {"Content-Type": "application/json"}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
             
-            # Stream response
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
                 async with session.post(
                     f"{self.base_url}/api/chat",
@@ -209,14 +195,11 @@ class OllamaClient(ModelClient):
                             try:
                                 chunk_data = json.loads(line.decode('utf-8'))
                                 
-                                # Use stream normalizer to convert Ollama format to unified format
                                 normalized_chunk = self.stream_normalizer.normalize(chunk_data)
                                 
-                                # Accumulate content
                                 if normalized_chunk.delta:
                                     accumulated_content += normalized_chunk.delta
                                 
-                                # Update accumulated content in the chunk
                                 normalized_chunk.content = accumulated_content
                                 
                                 yield normalized_chunk
@@ -225,7 +208,7 @@ class OllamaClient(ModelClient):
                                     break
                                         
                             except json.JSONDecodeError:
-                                continue  # Skip malformed lines
+                                continue
             
         except Exception as e:
             if isinstance(e, ProviderError):

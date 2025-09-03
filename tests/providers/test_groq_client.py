@@ -43,7 +43,7 @@ class TestGroqClient:
         with patch.object(client.client.chat.completions, 'create', new_callable=AsyncMock) as mock_create:
             mock_create.return_value = mock_response
             
-            response = await client.chat(sample_messages)
+            response = await client.achat(sample_messages)
             
             # Verify response format
             assert isinstance(response, ChatResponse)
@@ -99,7 +99,7 @@ class TestGroqClient:
             mock_create.return_value = mock_stream_generator()
             
             chunks = []
-            async for chunk in client.stream_chat(sample_messages):
+            async for chunk in client.astream_chat(sample_messages):
                 chunks.append(chunk)
             
             # Verify we got chunks
@@ -143,7 +143,7 @@ class TestGroqClient:
             mock_create.return_value = mock_stream_generator()
             
             chunks = []
-            async for chunk in client.stream_chat(sample_messages):
+            async for chunk in client.astream_chat(sample_messages):
                 chunks.append(chunk)
             
             # Should handle chunks gracefully
@@ -167,7 +167,7 @@ class TestGroqClient:
         with patch.object(client.client.chat.completions, 'create', new_callable=AsyncMock) as mock_create:
             mock_create.return_value = mock_response
             
-            await client.chat(sample_messages, temperature=0.9, max_tokens=100)
+            await client.achat(sample_messages, temperature=0.9, max_tokens=100)
             
             call_args = mock_create.call_args
             assert call_args.kwargs['temperature'] == 0.9
@@ -202,7 +202,7 @@ class TestGroqClient:
             mock_create.side_effect = Exception("Groq API Error")
             
             with pytest.raises(ProviderError):
-                await client.chat(sample_messages)
+                await client.achat(sample_messages)
     
     @pytest.mark.asyncio
     async def test_stream_error_handling(self, client, sample_messages):
@@ -218,7 +218,7 @@ class TestGroqClient:
             
             with pytest.raises(ProviderError):
                 chunks = []
-                async for chunk in client.stream_chat(sample_messages):
+                async for chunk in client.astream_chat(sample_messages):
                     chunks.append(chunk)
     
     @pytest.mark.asyncio

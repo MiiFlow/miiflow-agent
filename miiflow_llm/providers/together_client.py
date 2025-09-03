@@ -57,7 +57,7 @@ class TogetherClient(ModelClient):
         
         return openai_messages
     
-    async def chat(
+    async def achat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -114,7 +114,7 @@ class TogetherClient(ModelClient):
         except Exception as e:
             raise ProviderError(f"TogetherAI API error: {e}", provider="together")
     
-    async def stream_chat(
+    async def astream_chat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -146,14 +146,11 @@ class TogetherClient(ModelClient):
             accumulated_content = ""
             
             async for chunk in response_stream:
-                # Use stream normalizer to convert Together format to unified format
                 normalized_chunk = self.stream_normalizer.normalize(chunk)
                 
-                # Accumulate content
                 if normalized_chunk.delta:
                     accumulated_content += normalized_chunk.delta
                 
-                # Update accumulated content in the chunk
                 normalized_chunk.content = accumulated_content
                 
                 yield normalized_chunk

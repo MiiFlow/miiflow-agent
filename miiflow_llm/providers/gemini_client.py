@@ -95,7 +95,7 @@ class GeminiClient(ModelClient):
         
         return gemini_messages
     
-    async def chat(
+    async def achat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -105,15 +105,11 @@ class GeminiClient(ModelClient):
     ):
         """Send chat completion request to Gemini."""
         try:
-            # Convert messages
             gemini_messages = self._convert_messages_to_gemini_format(messages)
             
-            # Build the conversation context
             if len(gemini_messages) == 1:
-                # Single message
                 prompt = gemini_messages[0]["parts"][0]["text"]
             else:
-                # Multi-message conversation - combine into prompt
                 prompt_parts = []
                 for msg in gemini_messages:
                     role = "Human" if msg["role"] == "user" else "Assistant"
@@ -121,13 +117,11 @@ class GeminiClient(ModelClient):
                     prompt_parts.append(f"{role}: {text}")
                 prompt = "\n\n".join(prompt_parts)
             
-            # Generation config
             generation_config = genai.types.GenerationConfig(
                 temperature=temperature,
                 max_output_tokens=max_tokens or 8192,
             )
             
-            # Generate response
             response = await asyncio.to_thread(
                 self.client.generate_content,
                 prompt,
@@ -135,7 +129,6 @@ class GeminiClient(ModelClient):
                 safety_settings=self.safety_settings
             )
             
-            # Extract response text
             if response.candidates and response.candidates[0].content.parts:
                 content = response.candidates[0].content.parts[0].text
             else:
@@ -166,7 +159,7 @@ class GeminiClient(ModelClient):
         except Exception as e:
             raise ProviderError(f"Gemini API error: {e}", provider="gemini")
     
-    async def stream_chat(
+    async def astream_chat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -176,10 +169,8 @@ class GeminiClient(ModelClient):
     ) -> AsyncIterator:
         """Send streaming chat completion request to Gemini."""
         try:
-            # Convert messages
             gemini_messages = self._convert_messages_to_gemini_format(messages)
             
-            # Build prompt
             if len(gemini_messages) == 1:
                 prompt = gemini_messages[0]["parts"][0]["text"]
             else:
@@ -190,13 +181,11 @@ class GeminiClient(ModelClient):
                     prompt_parts.append(f"{role}: {text}")
                 prompt = "\n\n".join(prompt_parts)
             
-            # Generation config
             generation_config = genai.types.GenerationConfig(
                 temperature=temperature,
                 max_output_tokens=max_tokens or 8192,
             )
             
-            # Stream response
             response_stream = await asyncio.to_thread(
                 self.client.generate_content,
                 prompt,
@@ -208,14 +197,11 @@ class GeminiClient(ModelClient):
             accumulated_content = ""
             
             for chunk in response_stream:
-                # Use stream normalizer to convert Gemini format to unified format
                 normalized_chunk = self.stream_normalizer.normalize(chunk)
                 
-                # Accumulate content
                 if normalized_chunk.delta:
                     accumulated_content += normalized_chunk.delta
                 
-                # Update accumulated content in the chunk
                 normalized_chunk.content = accumulated_content
                 
                 yield normalized_chunk

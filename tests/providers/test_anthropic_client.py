@@ -34,7 +34,7 @@ class TestAnthropicClient:
         with patch.object(client.client.messages, 'create', new_callable=AsyncMock) as mock_create:
             mock_create.return_value = mock_anthropic_response
             
-            response = await client.chat(sample_messages)
+            response = await client.achat(sample_messages)
             
             # Verify response format
             assert isinstance(response, ChatResponse)
@@ -64,7 +64,7 @@ class TestAnthropicClient:
             mock_create.return_value = mock_stream_generator()
             
             chunks = []
-            async for chunk in client.stream_chat(sample_messages):
+            async for chunk in client.astream_chat(sample_messages):
                 chunks.append(chunk)
             
             # Verify we got chunks
@@ -127,7 +127,7 @@ class TestAnthropicClient:
         with patch.object(client.client.messages, 'create', new_callable=AsyncMock) as mock_create:
             mock_create.return_value = mock_response
             
-            await client.chat(sample_messages, temperature=0.9, max_tokens=100)
+            await client.achat(sample_messages, temperature=0.9, max_tokens=100)
             
             call_args = mock_create.call_args
             # Anthropic uses different parameter names
@@ -170,7 +170,7 @@ class TestAnthropicClient:
             mock_create.side_effect = Exception("API Error")
             
             with pytest.raises(ProviderError):
-                await client.chat(sample_messages)
+                await client.achat(sample_messages)
     
     @pytest.mark.asyncio
     async def test_stream_error_handling(self, client, sample_messages):
@@ -186,7 +186,7 @@ class TestAnthropicClient:
             
             with pytest.raises(ProviderError):
                 chunks = []
-                async for chunk in client.stream_chat(sample_messages):
+                async for chunk in client.astream_chat(sample_messages):
                     chunks.append(chunk)
     
     @pytest.mark.asyncio
@@ -208,5 +208,5 @@ class TestAnthropicClient:
             mock_create.return_value = mock_response
             
             # Should not crash, even if tools are passed
-            response = await client.chat(sample_messages, tools=tools)
+            response = await client.achat(sample_messages, tools=tools)
             assert response.message.content == "I can't use tools."

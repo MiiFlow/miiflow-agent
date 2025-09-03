@@ -191,8 +191,7 @@ class UnifiedStreamingClient:
         buffer = ""
         
         try:
-            async for stream_chunk in self.client.stream_chat(messages, **kwargs):
-                # Client already provides normalized StreamChunk
+            async for stream_chunk in self.client.astream_chat(messages, **kwargs):
                 buffer += stream_chunk.delta if stream_chunk.delta else ""
                 
                 partial_parse = None
@@ -217,7 +216,6 @@ class UnifiedStreamingClient:
                 if stream_chunk.finish_reason:
                     break
             
-            # Final structured parsing attempt
             if parser and buffer:
                 final_result = parser.finalize_parse(buffer)
                 yield EnhancedStreamChunk(

@@ -43,7 +43,7 @@ class TestGeminiClient:
         with patch.object(client.client, 'generate_content') as mock_generate:
             mock_generate.return_value = mock_response
             
-            response = await client.chat(sample_messages)
+            response = await client.achat(sample_messages)
             
             # Verify response format
             assert isinstance(response, ChatResponse)
@@ -91,7 +91,7 @@ class TestGeminiClient:
             mock_generate.return_value = stream_chunks
             
             chunks = []
-            async for chunk in client.stream_chat(sample_messages):
+            async for chunk in client.astream_chat(sample_messages):
                 chunks.append(chunk)
             
             # Verify we got chunks
@@ -158,7 +158,7 @@ class TestGeminiClient:
         with patch.object(client.client, 'generate_content') as mock_generate:
             mock_generate.return_value = mock_response
             
-            await client.chat(
+            await client.achat(
                 sample_messages,
                 temperature=0.8,
                 max_tokens=150,
@@ -177,7 +177,7 @@ class TestGeminiClient:
             mock_generate.side_effect = Exception("Gemini API Error")
             
             with pytest.raises(ProviderError):
-                await client.chat(sample_messages)
+                await client.achat(sample_messages)
     
     @pytest.mark.asyncio
     async def test_stream_error_handling(self, client, sample_messages):
@@ -193,7 +193,7 @@ class TestGeminiClient:
             
             with pytest.raises(ProviderError):
                 chunks = []
-                async for chunk in client.stream_chat(sample_messages):
+                async for chunk in client.astream_chat(sample_messages):
                     chunks.append(chunk)
     
     @pytest.mark.asyncio

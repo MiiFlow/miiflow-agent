@@ -68,7 +68,7 @@ class TestLLMClient:
             model="test-model",
             provider="test"
         )
-        mock_client.chat = AsyncMock(return_value=mock_response)
+        mock_client.achat = AsyncMock(return_value=mock_response)
         
         llm_client = LLMClient(mock_client)
         
@@ -78,10 +78,10 @@ class TestLLMClient:
             {"role": "user", "content": "Hello"}
         ]
         
-        response = await llm_client.chat(dict_messages)
+        response = await llm_client.achat(dict_messages)
         
         # Should convert to Message objects
-        call_args = mock_client.chat.call_args[0][0]
+        call_args = mock_client.achat.call_args[0][0]
         assert all(isinstance(msg, Message) for msg in call_args)
         assert call_args[0].role == MessageRole.SYSTEM
         assert call_args[1].role == MessageRole.USER
@@ -102,14 +102,14 @@ class TestLLMClient:
                 usage=TokenCount(prompt_tokens=5, completion_tokens=10, total_tokens=15)
             )
         
-        mock_client.stream_chat = mock_stream
+        mock_client.astream_chat = mock_stream
         mock_client.provider_name = "test"
         mock_client.model = "test-model"
         
         llm_client = LLMClient(mock_client)
         
         chunks = []
-        async for chunk in llm_client.stream_chat([Message.user("Hello")]):
+        async for chunk in llm_client.astream_chat([Message.user("Hello")]):
             chunks.append(chunk)
         
         assert len(chunks) == 2
@@ -129,7 +129,7 @@ class TestLLMClient:
         async def mock_stream(messages, **kwargs):
             yield StreamChunk(content='{"status": "complete"}', delta='{"status": "complete"}')
         
-        mock_client.stream_chat = mock_stream
+        mock_client.astream_chat = mock_stream
         
         llm_client = LLMClient(mock_client)
         
@@ -147,14 +147,14 @@ class TestLLMClient:
     async def test_error_handling_and_metrics(self):
         """Test error handling records failed metrics."""
         mock_client = MagicMock()
-        mock_client.chat = AsyncMock(side_effect=Exception("API Error"))
+        mock_client.achat = AsyncMock(side_effect=Exception("API Error"))
         mock_client.provider_name = "test"
         mock_client.model = "test-model"
         
         llm_client = LLMClient(mock_client)
         
         with pytest.raises(Exception):
-            await llm_client.chat([Message.user("Hello")])
+            await llm_client.achat([Message.user("Hello")])
         
         # Should still record metrics for failed request
         metrics = llm_client.get_metrics()

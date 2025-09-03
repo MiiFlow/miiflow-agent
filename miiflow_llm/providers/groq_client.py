@@ -34,7 +34,7 @@ class GroqClient(ModelClient):
         wait=wait_exponential(multiplier=1, min=4, max=10),
         reraise=True
     )
-    async def chat(
+    async def achat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -112,7 +112,7 @@ class GroqClient(ModelClient):
         wait=wait_exponential(multiplier=1, min=4, max=10),
         reraise=True
     )
-    async def stream_chat(
+    async def astream_chat(
         self,
         messages: List[Message],
         temperature: float = 0.7,

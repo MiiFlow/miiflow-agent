@@ -40,18 +40,8 @@ class MistralClient(ModelClient):
         mistral_messages = []
         
         for message in messages:
-            # Mistral uses different role names
             role = message.role.value
-            if role == "assistant":
-                role = "assistant"
-            elif role == "user":
-                role = "user"
-            elif role == "system":
-                role = "system"
-            elif role == "tool":
-                role = "tool"
             
-            # Handle content
             if isinstance(message.content, str):
                 content = message.content
             elif isinstance(message.content, list):
@@ -81,7 +71,7 @@ class MistralClient(ModelClient):
         
         return mistral_messages
     
-    async def chat(
+    async def achat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -142,7 +132,7 @@ class MistralClient(ModelClient):
         except Exception as e:
             raise ProviderError(f"Mistral API error: {e}", provider="mistral")
     
-    async def stream_chat(
+    async def astream_chat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -192,32 +182,20 @@ class MistralClient(ModelClient):
             raise ProviderError(f"Mistral streaming error: {e}", provider="mistral")
 
 
-# Available Mistral models
 MISTRAL_MODELS = {
-    # Latest Mistral models
     "mistral-large-latest": "mistral-large-latest",
     "mistral-medium-latest": "mistral-medium-latest", 
     "mistral-small-latest": "mistral-small-latest",
-    
-    # Specific versions
     "mistral-large-2402": "mistral-large-2402",
     "mistral-medium-2312": "mistral-medium-2312",
     "mistral-small-2312": "mistral-small-2312",
     "mistral-tiny-2312": "mistral-tiny-2312",
-    
-    # Mixtral models
     "mixtral-8x7b-instruct-v0.1": "mixtral-8x7b-instruct-v0.1",
     "mixtral-8x22b-instruct-v0.1": "mixtral-8x22b-instruct-v0.1",
-    
-    # Open source models
     "mistral-7b-instruct-v0.1": "mistral-7b-instruct-v0.1",
     "mistral-7b-instruct-v0.2": "mistral-7b-instruct-v0.2",
     "mistral-7b-instruct-v0.3": "mistral-7b-instruct-v0.3",
-    
-    # Code models
     "codestral-latest": "codestral-latest",
     "codestral-2405": "codestral-2405",
-    
-    # Embeddings
     "mistral-embed": "mistral-embed",
 }

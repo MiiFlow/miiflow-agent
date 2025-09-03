@@ -46,7 +46,7 @@ class AnthropicClient(ModelClient):
         wait=wait_exponential(multiplier=1, min=4, max=10),
         reraise=True
     )
-    async def chat(
+    async def achat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -75,21 +75,18 @@ class AnthropicClient(ModelClient):
                 timeout=self.timeout
             )
             
-            # Extract content
             content = ""
             if response.content:
                 for block in response.content:
                     if hasattr(block, 'text'):
                         content += block.text
             
-            # Create response message
             response_message = Message(
                 role=MessageRole.ASSISTANT,
                 content=content,
                 tool_calls=getattr(response, 'tool_calls', None)
             )
             
-            # Extract usage
             usage = TokenCount(
                 prompt_tokens=response.usage.input_tokens,
                 completion_tokens=response.usage.output_tokens,
@@ -116,7 +113,7 @@ class AnthropicClient(ModelClient):
         except Exception as e:
             raise ProviderError(f"Anthropic API error: {str(e)}", self.provider_name, original_error=e)
     
-    async def stream_chat(
+    async def astream_chat(
         self,
         messages: List[Message],
         temperature: float = 0.7,

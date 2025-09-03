@@ -88,7 +88,6 @@ class Message:
         if isinstance(self.content, str):
             message["content"] = self.content
         else:
-            # Multi-modal content
             content_list = []
             for block in self.content:
                 if isinstance(block, TextBlock):

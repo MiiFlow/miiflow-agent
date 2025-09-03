@@ -33,7 +33,7 @@ class OpenAIClient(ModelClient):
         wait=wait_exponential(multiplier=1, min=4, max=10),
         reraise=True
     )
-    async def chat(
+    async def achat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -100,7 +100,7 @@ class OpenAIClient(ModelClient):
         except Exception as e:
             raise ProviderError(f"OpenAI API error: {str(e)}", self.provider_name, original_error=e)
     
-    async def stream_chat(
+    async def astream_chat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -118,7 +118,6 @@ class OpenAIClient(ModelClient):
                 "stream": True,
             }
             
-            # GPT-5 models have specific parameter requirements
             if not self.model.startswith('gpt-5'):
                 request_params["temperature"] = temperature
             
@@ -139,14 +138,11 @@ class OpenAIClient(ModelClient):
                 if not chunk.choices:
                     continue
                 
-                # Use stream normalizer to convert OpenAI format to unified format
                 normalized_chunk = self.stream_normalizer.normalize(chunk)
                 
-                # Accumulate content
                 if normalized_chunk.delta:
                     accumulated_content += normalized_chunk.delta
                 
-                # Update accumulated content in the chunk
                 normalized_chunk.content = accumulated_content
                 
                 yield normalized_chunk

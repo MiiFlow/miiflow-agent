@@ -1,8 +1,9 @@
 """Core LLM client interface and base implementations."""
 
 import time
+import asyncio
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Dict, List, Optional, Union, Type, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union, Type, Protocol, runtime_checkable
 from dataclasses import dataclass
 
 from .message import Message, MessageRole
@@ -44,7 +45,7 @@ class ModelClientProtocol(Protocol):
     metrics_collector: MetricsCollector
     provider_name: str
     
-    async def chat(
+    async def achat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -52,10 +53,10 @@ class ModelClientProtocol(Protocol):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> ChatResponse:
-        """Send chat completion request."""
+        """Send async chat completion request."""
         ...
     
-    async def stream_chat(
+    async def astream_chat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -63,7 +64,29 @@ class ModelClientProtocol(Protocol):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> AsyncIterator[StreamChunk]:
-        """Send streaming chat completion request."""
+        """Send async streaming chat completion request."""
+        ...
+    
+    def chat(
+        self,
+        messages: List[Message],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs
+    ) -> ChatResponse:
+        """Send sync chat completion request."""
+        ...
+    
+    def stream_chat(
+        self,
+        messages: List[Message],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs
+    ) -> Iterator[StreamChunk]:
+        """Send sync streaming chat completion request."""
         ...
 
 
@@ -87,7 +110,7 @@ class ModelClient(ABC):
         self.provider_name = self.__class__.__name__.replace("Client", "").lower()
     
     @abstractmethod
-    async def chat(
+    async def achat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -95,11 +118,11 @@ class ModelClient(ABC):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> ChatResponse:
-        """Send chat completion request."""
+        """Send async chat completion request."""
         pass
     
     @abstractmethod
-    async def stream_chat(
+    async def astream_chat(
         self,
         messages: List[Message],
         temperature: float = 0.7,
@@ -107,8 +130,44 @@ class ModelClient(ABC):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> AsyncIterator[StreamChunk]:
-        """Send streaming chat completion request."""
+        """Send async streaming chat completion request."""
         pass
+    
+    def chat(
+        self,
+        messages: List[Message],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs
+    ) -> ChatResponse:
+        """Send sync chat completion request."""
+        return asyncio.run(self.achat(messages, temperature, max_tokens, tools, **kwargs))
+    
+    def stream_chat(
+        self,
+        messages: List[Message],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs
+    ) -> Iterator[StreamChunk]:
+        """Send sync streaming chat completion request."""
+        async def _async_stream():
+            async for chunk in self.astream_chat(messages, temperature, max_tokens, tools, **kwargs):
+                yield chunk
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            async_gen = _async_stream()
+            while True:
+                try:
+                    yield loop.run_until_complete(async_gen.__anext__())
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.close()
     
     def _record_metrics(self, usage: UsageData) -> None:
         """Record usage metrics."""
@@ -143,13 +202,10 @@ class LLMClient:
         from ..providers import get_provider_client
         from ..utils.env import load_env_file, get_api_key
         
-        # Auto-load .env file
         load_env_file()
         
-        # Auto-get API key if not provided
         if api_key is None:
             api_key = get_api_key(provider)
-            # Ollama doesn't require API key for local usage
             if api_key is None and provider.lower() != 'ollama':
                 raise ValueError(f"No API key found for {provider}. Set {provider.upper()}_API_KEY in .env or pass api_key parameter.")
         
@@ -162,17 +218,18 @@ class LLMClient:
         
         return cls(client)
     
-    async def chat(
+    # Async methods
+    async def achat(
         self,
         messages: Union[List[Dict[str, Any]], List[Message]],
         **kwargs
     ) -> ChatResponse:
-        """Send chat completion request."""
+        """Send async chat completion request."""
         normalized_messages = self._normalize_messages(messages)
         
         start_time = time.time()
         try:
-            response = await self.client.chat(normalized_messages, **kwargs)
+            response = await self.client.achat(normalized_messages, **kwargs)
             
             # Record successful usage
             self._record_usage(
@@ -194,19 +251,28 @@ class LLMClient:
             )
             raise
     
-    async def stream_chat(
+    # Sync wrapper methods
+    def chat(
+        self,
+        messages: Union[List[Dict[str, Any]], List[Message]],
+        **kwargs
+    ) -> ChatResponse:
+        """Send sync chat completion request."""
+        return asyncio.run(self.achat(messages, **kwargs))
+    
+    async def astream_chat(
         self,
         messages: Union[List[Dict[str, Any]], List[Message]],
         **kwargs
     ) -> AsyncIterator[StreamChunk]:
-        """Send streaming chat completion request."""
+        """Send async streaming chat completion request."""
         normalized_messages = self._normalize_messages(messages)
         
         start_time = time.time()
         total_tokens = TokenCount()
         
         try:
-            async for chunk in self.client.stream_chat(normalized_messages, **kwargs):
+            async for chunk in self.client.astream_chat(normalized_messages, **kwargs):
                 if chunk.usage:
                     total_tokens += chunk.usage
                 yield chunk
@@ -228,6 +294,29 @@ class LLMClient:
                 success=False
             )
             raise
+    
+    def stream_chat(
+        self,
+        messages: Union[List[Dict[str, Any]], List[Message]],
+        **kwargs
+    ) -> Iterator[StreamChunk]:
+        """Send sync streaming chat completion request."""
+        async def _async_stream():
+            async for chunk in self.astream_chat(messages, **kwargs):
+                yield chunk
+        
+        # Convert async generator to sync generator
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            async_gen = _async_stream()
+            while True:
+                try:
+                    yield loop.run_until_complete(async_gen.__anext__())
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.close()
     
     def _normalize_messages(self, messages: Union[List[Dict[str, Any]], List[Message]]) -> List[Message]:
         """Normalize message format."""

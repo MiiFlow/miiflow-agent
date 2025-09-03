@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from miiflow_llm.core import LLMClient, Message, MessageRole, TokenCount, StreamChunk, ChatResponse
-from miiflow_llm.core.exceptions import MiiFlowLLMError
+from miiflow_llm.core.exceptions import MiiflowLLMError
 
 
 class TestLLMClient:

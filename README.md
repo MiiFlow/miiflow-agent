@@ -1,4 +1,4 @@
-# MiiFlow LLM
+# Miiflow LLM
 
 Unified abstraction layer for large language model providers addressing streaming interface inconsistencies and provider-specific API variations.
 
@@ -28,10 +28,43 @@ client = LLMClient.create("openai", model="gpt-5")
 # client = LLMClient.create("anthropic", model="claude-3-5-sonnet-20241022")  
 # client = LLMClient.create("gemini", model="gemini-1.5-pro")
 
-# Unified streaming interface
+# Both sync and async support (llamaindex naming convention)
 messages = [Message.user("Explain quantum computing")]
-async for chunk in client.stream_chat(messages):
-    print(chunk.delta, end="")  # Same format everywhere!
+
+# Async methods (preferred for performance)
+response = await client.achat(messages)
+async for chunk in client.astream_chat(messages):
+    print(chunk.delta, end="")
+
+# Sync methods (convenience wrappers)
+response = client.chat(messages)  # Automatically handles asyncio
+for chunk in client.stream_chat(messages):
+    print(chunk.delta, end="")
+```
+
+## Sync vs Async Usage
+
+```python
+# ✅ Async (Recommended) - Best performance
+async def async_example():
+    client = LLMClient.create("openai", "gpt-4o-mini")
+    response = await client.achat([Message.user("Hello")])
+    
+    async for chunk in client.astream_chat([Message.user("Stream me")]):
+        print(chunk.delta, end="")
+
+# ✅ Sync (Convenient) - Automatic asyncio handling  
+def sync_example():
+    client = LLMClient.create("openai", "gpt-4o-mini")
+    response = client.chat([Message.user("Hello")])
+    
+    for chunk in client.stream_chat([Message.user("Stream me")]):
+        print(chunk.delta, end="")
+
+# ✅ Mixed usage in same application
+def mixed_example():
+    sync_result = sync_example()  # Runs in new event loop
+    asyncio.run(async_example())  # Runs in async context
 ```
 
 ## Supported Providers
@@ -161,9 +194,9 @@ MISTRAL_API_KEY=...  # Optional
 # OLLAMA_API_KEY not needed for local usage
 ```
 
-## Integration with MiiFlow Web
+## Integration with Miiflow Web
 
-### Installation in MiiFlow Web Project
+### Installation in Miiflow Web Project
 
 ```bash
 # In your miiflow-web project directory
@@ -308,7 +341,7 @@ for await (const chunk of llmClient.streamChat('openai', 'gpt-4o', messages)) {
 }
 ```
 
-### Configuration for MiiFlow Web
+### Configuration for Miiflow Web
 
 ```python
 # settings.py or config.py

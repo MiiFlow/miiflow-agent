@@ -1,5 +1,5 @@
 """
-MiiFlow LLM - A lightweight, unified interface for LLM providers.
+Miiflow LLM - A lightweight, unified interface for LLM providers.
 
 This package provides a consistent API for calling multiple LLM providers
 with support for streaming, tool calling, and structured output.
@@ -9,7 +9,7 @@ from .core.client import LLMClient, ModelClient, ChatResponse, StreamChunk
 from .core.message import Message, MessageRole, ContentBlock, TextBlock, ImageBlock
 from .core.metrics import LLMMetrics, TokenCount, UsageData, MetricsCollector
 from .core.exceptions import (
-    MiiFlowLLMError,
+    MiiflowLLMError,
     ProviderError,
     AuthenticationError,
     RateLimitError,
@@ -25,7 +25,7 @@ from .core.exceptions import (
 # from .agents.react import ReActAgent
 
 __version__ = "0.1.0"
-__author__ = "MiiFlow Team"
+__author__ = "Debjyoti Ray"
 
 __all__ = [
     # Core Components
@@ -44,7 +44,7 @@ __all__ = [
     "MetricsCollector",
     
     # Exceptions
-    "MiiFlowLLMError",
+    "MiiflowLLMError",
     "ProviderError", 
     "AuthenticationError",
     "RateLimitError",

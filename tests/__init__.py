@@ -1,1 +1,1 @@
-"""Test suite for MiiFlow LLM."""
+"""Test suite for Miiflow LLM."""

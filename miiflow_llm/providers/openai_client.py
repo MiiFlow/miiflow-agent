@@ -13,7 +13,7 @@ from ..core.exceptions import (
     AuthenticationError,
     RateLimitError,
     ModelError,
-    TimeoutError as MiiFlowTimeoutError,
+    TimeoutError as MiiflowTimeoutError,
     ProviderError,
 )
 from .stream_normalizer import get_stream_normalizer
@@ -96,7 +96,7 @@ class OpenAIClient(ModelClient):
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiFlowTimeoutError("Request timed out", self.timeout, original_error=e)
+            raise MiiflowTimeoutError("Request timed out", self.timeout, original_error=e)
         except Exception as e:
             raise ProviderError(f"OpenAI API error: {str(e)}", self.provider_name, original_error=e)
     
@@ -155,6 +155,6 @@ class OpenAIClient(ModelClient):
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiFlowTimeoutError("Streaming request timed out", self.timeout, original_error=e)
+            raise MiiflowTimeoutError("Streaming request timed out", self.timeout, original_error=e)
         except Exception as e:
             raise ProviderError(f"OpenAI streaming error: {str(e)}", self.provider_name, original_error=e)

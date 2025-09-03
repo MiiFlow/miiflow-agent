@@ -127,7 +127,7 @@ async def test_error_handling():
 
 
 if __name__ == "__main__":
-    print("MiiFlow LLM Streaming Demo")
+    print("Miiflow LLM Streaming Demo")
     print("=" * 40)
     
     # Run tests

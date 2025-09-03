@@ -14,7 +14,7 @@ from ..core.exceptions import (
     AuthenticationError,
     RateLimitError,
     ModelError,
-    TimeoutError as MiiFlowTimeoutError,
+    TimeoutError as MiiflowTimeoutError,
     ProviderError,
 )
 from .stream_normalizer import get_stream_normalizer
@@ -97,7 +97,7 @@ class GroqClient(ModelClient):
         except groq.APIConnectionError as e:
             raise ProviderError(f"Groq connection error: {str(e)}", self.provider_name, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiFlowTimeoutError("Request timed out", self.timeout, original_error=e)
+            raise MiiflowTimeoutError("Request timed out", self.timeout, original_error=e)
         except groq.APIStatusError as e:
             # Handle other HTTP status codes
             if e.status_code >= 500:
@@ -170,7 +170,7 @@ class GroqClient(ModelClient):
         except groq.APIConnectionError as e:
             raise ProviderError(f"Groq streaming connection error: {str(e)}", self.provider_name, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiFlowTimeoutError("Streaming request timed out", self.timeout, original_error=e)
+            raise MiiflowTimeoutError("Streaming request timed out", self.timeout, original_error=e)
         except groq.APIStatusError as e:
             # Handle other HTTP status codes
             if e.status_code >= 500:

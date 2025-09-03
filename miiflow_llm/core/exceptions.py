@@ -1,4 +1,4 @@
-"""Exception classes for MiiFlow LLM."""
+"""Exception classes for Miiflow LLM."""
 
 from enum import Enum
 from typing import Any, Optional
@@ -24,8 +24,8 @@ class ErrorType(Enum):
     STREAMING_ERROR = "streaming_error"
 
 
-class MiiFlowLLMError(Exception):
-    """Base exception for all MiiFlow LLM errors."""
+class MiiflowLLMError(Exception):
+    """Base exception for all Miiflow LLM errors."""
     
     def __init__(
         self,
@@ -45,21 +45,21 @@ class MiiFlowLLMError(Exception):
         super().__init__(message)
 
 
-class ProviderError(MiiFlowLLMError):
+class ProviderError(MiiflowLLMError):
     """Error from LLM provider API."""
     
     def __init__(self, message: str, provider: str, **kwargs):
         super().__init__(message, ErrorType.MODEL_ERROR, provider=provider, **kwargs)
 
 
-class AuthenticationError(MiiFlowLLMError):
+class AuthenticationError(MiiflowLLMError):
     """Authentication failed with provider."""
     
     def __init__(self, message: str, provider: str, **kwargs):
         super().__init__(message, ErrorType.AUTHENTICATION, provider=provider, **kwargs)
 
 
-class RateLimitError(MiiFlowLLMError):
+class RateLimitError(MiiflowLLMError):
     """Rate limit exceeded."""
     
     def __init__(self, message: str, provider: str, retry_after: Optional[float] = None, **kwargs):
@@ -72,14 +72,14 @@ class RateLimitError(MiiFlowLLMError):
         )
 
 
-class ModelError(MiiFlowLLMError):
+class ModelError(MiiflowLLMError):
     """Model-specific error (context length, etc.)."""
     
     def __init__(self, message: str, model: str, **kwargs):
         super().__init__(message, ErrorType.MODEL_ERROR, model=model, **kwargs)
 
 
-class TimeoutError(MiiFlowLLMError):
+class TimeoutError(MiiflowLLMError):
     """Request timeout."""
     
     def __init__(self, message: str, timeout_duration: float, **kwargs):
@@ -90,7 +90,7 @@ class TimeoutError(MiiFlowLLMError):
         )
 
 
-class ParsingError(MiiFlowLLMError):
+class ParsingError(MiiflowLLMError):
     """Error parsing structured output."""
     
     def __init__(self, message: str, raw_content: str, **kwargs):
@@ -98,7 +98,7 @@ class ParsingError(MiiFlowLLMError):
         super().__init__(message, ErrorType.PARSING_ERROR, **kwargs)
 
 
-class ToolError(MiiFlowLLMError):
+class ToolError(MiiflowLLMError):
     """Error executing tool."""
     
     def __init__(self, message: str, tool_name: str, **kwargs):

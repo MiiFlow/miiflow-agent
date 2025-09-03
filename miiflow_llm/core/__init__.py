@@ -1,4 +1,4 @@
-"""Core components for MiiFlow LLM."""
+"""Core components for Miiflow LLM."""
 
 from .client import LLMClient, ModelClient, ChatResponse, StreamChunk
 from .message import Message, MessageRole, ContentBlock, TextBlock, ImageBlock
@@ -9,7 +9,7 @@ from .streaming import (
     EnhancedStreamChunk
 )
 from .exceptions import (
-    MiiFlowLLMError,
+    MiiflowLLMError,
     ProviderError,
     AuthenticationError,
     RateLimitError,
@@ -47,7 +47,7 @@ __all__ = [
     "UnifiedStreamingClient", 
     "IncrementalParser", 
     "EnhancedStreamChunk",
-    "MiiFlowLLMError",
+    "MiiflowLLMError",
     "ProviderError",
     "AuthenticationError", 
     "RateLimitError",

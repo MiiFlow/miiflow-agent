@@ -5,9 +5,9 @@ description = "A lightweight, unified interface for LLM providers with streaming
 authors = ["Debjyoti Ray <debjyotiray0104@gmail.com/ dev@miiflow.ai>", "Yaozhong Kang <yaozhong@miiflow.ai>"]
 readme = "README.md"
 license = "MIT"
-homepage = "https://github.com/MiiFlow/miiflow-llm"
-repository = "https://github.com/MiiFlow/miiflow-llm"
-documentation = "https://github.com/MiiFlow/miiflow-llm#readme"
+homepage = "https://github.com/Miiflow/miiflow-llm"
+repository = "https://github.com/Miiflow/miiflow-llm"
+documentation = "https://github.com/Miiflow/miiflow-llm#readme"
 keywords = ["llm", "openai", "anthropic", "agents", "streaming", "tools"]
 classifiers = [
     "Development Status :: 4 - Beta",

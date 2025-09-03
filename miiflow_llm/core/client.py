@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .message import Message, MessageRole
 from .metrics import MetricsCollector, TokenCount, UsageData
-from .exceptions import MiiFlowLLMError, TimeoutError
+from .exceptions import MiiflowLLMError, TimeoutError
 
 
 @dataclass

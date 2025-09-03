@@ -186,21 +186,15 @@ class TestLLMClient:
                 assert client.client.model == model
     
     @pytest.mark.asyncio
-    async def test_mistral_provider_when_available(self):
-        """Test Mistral provider when mistralai package is available."""
+    async def test_mistral_provider_creation(self):
+        """Test Mistral provider creation."""
         with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
             mock_get_key.return_value = "test-key"
             
-            # Mock the mistralai import to be available
-            with patch('miiflow_llm.providers.mistral_client.MISTRAL_AVAILABLE', True):
-                # Also mock the actual MistralAsyncClient
-                with patch('miiflow_llm.providers.mistral_client.MistralAsyncClient') as mock_mistral:
-                    mock_mistral.return_value = MagicMock()
-                    
-                    try:
-                        client = LLMClient.create("mistral", "mistral-small-latest")
-                        assert client.client.provider_name == "mistral"
-                        assert client.client.model == "mistral-small-latest"
-                    except (ImportError, NotImplementedError):
-                        # Skip if mistralai has issues or is deprecated
-                        pytest.skip("mistralai package has compatibility issues")
+            # Mock the actual Mistral client
+            with patch('miiflow_llm.providers.mistral_client.Mistral') as mock_mistral:
+                mock_mistral.return_value = MagicMock()
+                
+                client = LLMClient.create("mistral", "mistral-small-latest")
+                assert client.client.provider_name == "mistral"
+                assert client.client.model == "mistral-small-latest"

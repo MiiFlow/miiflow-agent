@@ -41,6 +41,13 @@ class OllamaClient(ModelClient):
         
         self.api_key = api_key
     
+    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert universal schema to Ollama format (OpenAI compatible)."""
+        return {
+            "type": "function",
+            "function": schema
+        }
+    
     def _convert_messages_to_ollama_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """Convert messages to Ollama format."""
         ollama_messages = []

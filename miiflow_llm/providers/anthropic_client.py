@@ -28,6 +28,14 @@ class AnthropicClient(ModelClient):
         self.provider_name = "anthropic"
         self.stream_normalizer = get_stream_normalizer("anthropic")
     
+    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert universal schema to Anthropic format."""
+        return {
+            "name": schema["name"],
+            "description": schema["description"],
+            "input_schema": schema["parameters"]
+        }
+    
     def _prepare_messages(self, messages: List[Message]) -> tuple[Optional[str], List[Dict[str, Any]]]:
         """Prepare messages for Anthropic format (system separate)."""
         system_content = None

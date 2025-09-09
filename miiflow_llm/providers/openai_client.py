@@ -28,6 +28,13 @@ class OpenAIClient(ModelClient):
         self.provider_name = "openai"
         self.stream_normalizer = get_stream_normalizer("openai")
     
+    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert universal schema to OpenAI format."""
+        return {
+            "type": "function",
+            "function": schema
+        }
+    
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),

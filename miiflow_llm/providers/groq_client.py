@@ -25,9 +25,16 @@ class GroqClient(ModelClient):
     
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
         super().__init__(model=model, api_key=api_key, **kwargs)
-        self.client = AsyncGroq(api_key=api_key)
+        self.client = Groq(api_key=api_key)
         self.provider_name = "groq"
         self.stream_normalizer = get_stream_normalizer("groq")
+    
+    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert universal schema to Groq format (OpenAI compatible)."""
+        return {
+            "type": "function",
+            "function": schema
+        }
     
     @retry(
         stop=stop_after_attempt(3),

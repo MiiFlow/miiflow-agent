@@ -20,7 +20,7 @@ from .stream_normalizer import get_stream_normalizer
 
 
 class XAIClient(ModelClient):
-    """xAI Grok provider client (OpenAI-compatible API)."""
+    """xAI provider client."""
     
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
         super().__init__(model=model, api_key=api_key, **kwargs)
@@ -30,6 +30,13 @@ class XAIClient(ModelClient):
         )
         self.provider_name = "xai"
         self.stream_normalizer = get_stream_normalizer("xai")
+    
+    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert universal schema to xAI format (OpenAI compatible)."""
+        return {
+            "type": "function",
+            "function": schema
+        }
     
     @retry(
         stop=stop_after_attempt(3),

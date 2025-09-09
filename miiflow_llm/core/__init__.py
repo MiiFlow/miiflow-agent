@@ -19,15 +19,34 @@ from .exceptions import (
     ToolError,
 )
 from .tools import (
-    ToolRegistry,
-    ToolSchema,
-    ParameterSchema,
-    ToolType,
-    Observation,
-    tool,
+    # Production-grade modular tools
     FunctionTool,
-    HTTPTool,
-    BaseTool
+    ToolRegistry,
+    FunctionOutput,
+    ToolResult,
+    FunctionType,
+    ParameterType,
+    PreparedCall,
+    ToolPreparationError,
+    ToolExecutionError,
+    tool,
+    detect_function_type,
+    get_fun_schema
+)
+from .agent import (
+    # Core agent architecture - Framework layer
+    Agent,
+    RunContext,
+    RunResult,
+    AgentType,
+    
+    # Protocols for applications to implement
+    DatabaseService,
+    VectorStoreService,
+    KnowledgeService,
+    
+    # Example for documentation
+    ExampleDeps,
 )
 
 __all__ = [
@@ -55,13 +74,32 @@ __all__ = [
     "TimeoutError",
     "ParsingError",
     "ToolError",
-    "ToolRegistry",
-    "ToolSchema",
-    "ParameterSchema",
-    "ToolType",
-    "Observation",
-    "tool",
+ 
     "FunctionTool",
-    "HTTPTool",
-    "BaseTool",
+    "ToolRegistry",
+    "SimpleToolRegistry",  # Backward compatibility
+    "FunctionOutput", 
+    "ToolResult",
+    "FunctionType",
+    "ParameterType",
+    "PreparedCall",
+    "ToolPreparationError",
+    "ToolExecutionError",
+    "tool",
+    "detect_function_type",
+    "get_fun_schema",
+    
+    # Core agent architecture - Framework layer
+    "Agent",
+    "RunContext", 
+    "RunResult",
+    "AgentType",
+    
+    # Protocols for applications to implement
+    "DatabaseService",
+    "VectorStoreService", 
+    "KnowledgeService",
+    
+    # Example for documentation
+    "ExampleDeps",
 ]

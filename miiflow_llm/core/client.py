@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from .message import Message, MessageRole
 from .metrics import MetricsCollector, TokenCount, UsageData
 from .exceptions import MiiflowLLMError, TimeoutError
+from .tools import ToolRegistry, FunctionTool
 
 
 @dataclass
@@ -109,6 +110,18 @@ class ModelClient(ABC):
         self.metrics_collector = metrics_collector or MetricsCollector()
         self.provider_name = self.__class__.__name__.replace("Client", "").lower()
     
+    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert universal schema to provider-specific format.
+        
+        Args:
+            schema: Universal schema dictionary
+            
+        Returns:
+            Provider-specific schema format
+        """
+        # Default implementation - subclasses should override for provider-specific formats
+        return schema
+    
     @abstractmethod
     async def achat(
         self,
@@ -181,11 +194,13 @@ class LLMClient:
     def __init__(
         self,
         client: ModelClient,
-        metrics_collector: Optional[MetricsCollector] = None
+        metrics_collector: Optional[MetricsCollector] = None,
+        tool_registry: Optional[ToolRegistry] = None
     ):
         self.client = client
         self.metrics_collector = metrics_collector or MetricsCollector()
         self.client.metrics_collector = self.metrics_collector
+        self.tool_registry = tool_registry or ToolRegistry()
         
         # Initialize unified streaming client
         self._unified_streaming_client = None
@@ -222,14 +237,38 @@ class LLMClient:
     async def achat(
         self,
         messages: Union[List[Dict[str, Any]], List[Message]],
+        tools: Optional[List[FunctionTool]] = None,
         **kwargs
     ) -> ChatResponse:
         """Send async chat completion request."""
         normalized_messages = self._normalize_messages(messages)
         
+        # Convert tools to provider-specific format if provided
+        formatted_tools = None
+        if tools:
+            # Register tools if not already registered
+            for tool in tools:
+                if tool.name not in self.tool_registry.tools:
+                    self.tool_registry.register(tool)
+            
+            # Get schemas in provider format
+            tool_names = [tool.name for tool in tools]
+            all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+            formatted_tools = [schema for schema in all_schemas 
+                             if self._extract_tool_name(schema) in tool_names]
+        elif self.tool_registry.tools:
+            # If no tools passed but registry has tools, use all registry tools
+            # This allows agents to use all available tools including HTTP tools
+            all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+            formatted_tools = all_schemas
+        
         start_time = time.time()
         try:
-            response = await self.client.achat(normalized_messages, **kwargs)
+            response = await self.client.achat(
+                normalized_messages, 
+                tools=formatted_tools, 
+                **kwargs
+            )
             
             # Record successful usage
             self._record_usage(
@@ -255,24 +294,49 @@ class LLMClient:
     def chat(
         self,
         messages: Union[List[Dict[str, Any]], List[Message]],
+        tools: Optional[List[FunctionTool]] = None,
         **kwargs
     ) -> ChatResponse:
         """Send sync chat completion request."""
-        return asyncio.run(self.achat(messages, **kwargs))
+        return asyncio.run(self.achat(messages, tools=tools, **kwargs))
     
     async def astream_chat(
         self,
         messages: Union[List[Dict[str, Any]], List[Message]],
+        tools: Optional[List[FunctionTool]] = None,
         **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Send async streaming chat completion request."""
         normalized_messages = self._normalize_messages(messages)
         
+        # Convert tools to provider-specific format if provided
+        formatted_tools = None
+        if tools:
+            # Register tools if not already registered
+            for tool in tools:
+                if tool.name not in self.tool_registry.tools:
+                    self.tool_registry.register(tool)
+            
+            # Get schemas in provider format
+            tool_names = [tool.name for tool in tools]
+            all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+            formatted_tools = [schema for schema in all_schemas 
+                             if self._extract_tool_name(schema) in tool_names]
+        elif self.tool_registry.tools:
+            # If no tools passed but registry has tools, use all registry tools
+            # This allows agents to use all available tools including HTTP tools
+            all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+            formatted_tools = all_schemas
+        
         start_time = time.time()
         total_tokens = TokenCount()
         
         try:
-            async for chunk in self.client.astream_chat(normalized_messages, **kwargs):
+            async for chunk in self.client.astream_chat(
+                normalized_messages, 
+                tools=formatted_tools, 
+                **kwargs
+            ):
                 if chunk.usage:
                     total_tokens += chunk.usage
                 yield chunk
@@ -298,11 +362,12 @@ class LLMClient:
     def stream_chat(
         self,
         messages: Union[List[Dict[str, Any]], List[Message]],
+        tools: Optional[List[FunctionTool]] = None,
         **kwargs
     ) -> Iterator[StreamChunk]:
         """Send sync streaming chat completion request."""
         async def _async_stream():
-            async for chunk in self.astream_chat(messages, **kwargs):
+            async for chunk in self.astream_chat(messages, tools=tools, **kwargs):
                 yield chunk
         
         # Convert async generator to sync generator
@@ -359,6 +424,17 @@ class LLMClient:
         )
         
         self.metrics_collector.record_usage(usage)
+    
+    def _extract_tool_name(self, schema: Dict[str, Any]) -> str:
+        """Extract tool name from provider-specific schema."""
+        if "function" in schema:
+            # OpenAI format
+            return schema["function"]["name"]
+        elif "name" in schema:
+            # Anthropic/Gemini format
+            return schema["name"]
+        else:
+            raise ValueError(f"Unable to extract tool name from schema: {schema}")
     
     def get_metrics(self) -> Dict[str, Any]:
         """Get collected metrics."""

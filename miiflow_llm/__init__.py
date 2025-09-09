@@ -18,11 +18,9 @@ from .core.exceptions import (
     ParsingError,
     ToolError,
 )
-# from .tools.registry import ToolRegistry, tool, async_tool
-# from .tools.schema import JSONSchema, ValidationResult
-# from .agents.simple import SimpleAgent
-# from .agents.function_calling import FunctionCallingAgent
-# from .agents.react import ReActAgent
+
+# Agent Interface - Clean abstraction for miiflow-web
+from .agents import AgentClient, AgentConfig, create_agent, ContextType, AgentContext
 
 __version__ = "0.1.0"
 __author__ = "Debjyoti Ray"
@@ -53,15 +51,10 @@ __all__ = [
     "ParsingError",
     "ToolError",
     
-    # Tools (coming soon)
-    # "ToolRegistry",
-    # "tool", 
-    # "async_tool",
-    # "JSONSchema",
-    # "ValidationResult",
-    
-    # Agents (coming soon)
-    # "SimpleAgent",
-    # "FunctionCallingAgent", 
-    # "ReActAgent",
+    # Agent Interface - Clean abstraction for miiflow-web
+    "AgentClient",
+    "AgentConfig", 
+    "create_agent",
+    "ContextType",
+    "AgentContext",
 ]

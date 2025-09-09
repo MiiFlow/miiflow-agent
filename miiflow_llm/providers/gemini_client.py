@@ -59,6 +59,14 @@ class GeminiClient(ModelClient):
         
         self.provider_name = "gemini"
     
+    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert universal schema to Gemini format."""
+        return {
+            "name": schema["name"],
+            "description": schema["description"],
+            "parameters": schema["parameters"]
+        }
+    
     def _convert_messages_to_gemini_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """Convert messages to Gemini format."""
         gemini_messages = []

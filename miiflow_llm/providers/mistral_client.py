@@ -35,6 +35,13 @@ class MistralClient(ModelClient):
         self.provider_name = "mistral"
         self.stream_normalizer = get_stream_normalizer("mistral")
     
+    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert universal schema to Mistral format (OpenAI compatible)."""
+        return {
+            "type": "function",
+            "function": schema
+        }
+    
     def _convert_messages_to_mistral_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """Convert messages to Mistral format."""
         mistral_messages = []

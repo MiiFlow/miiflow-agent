@@ -19,7 +19,7 @@ class FunctionTool:
     
     def __init__(self, fn: Callable, name: Optional[str] = None, description: Optional[str] = None):
         from ..schemas import ToolSchema, ParameterSchema
-        from ..types import ToolType
+        from ..types import ToolType, ParameterType
         
         self.fn = fn
         self.function_type = detect_function_type(fn)
@@ -28,9 +28,13 @@ class FunctionTool:
         parameters = {}
         if 'parameters' in schema_dict and 'properties' in schema_dict['parameters']:
             for param_name, param_info in schema_dict['parameters']['properties'].items():
+                # Convert string type to ParameterType enum
+                type_str = param_info.get('type', 'string')
+                param_type = ParameterType(type_str) if isinstance(type_str, str) else type_str
+                
                 parameters[param_name] = ParameterSchema(
                     name=param_name,
-                    type=param_info.get('type', 'string'),
+                    type=param_type,
                     description=param_info.get('description', f'Parameter {param_name}'),
                     required=param_name in schema_dict['parameters'].get('required', []),
                     default=param_info.get('default')

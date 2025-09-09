@@ -99,7 +99,6 @@ class HTTPTool:
                     execution_time=execution_time,
                     metadata={
                         "status_code": response.status_code,
-                        "headers": dict(response.headers),
                         "url": str(response.url),
                         "method": method
                     }

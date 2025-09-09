@@ -3,7 +3,7 @@
 import inspect
 from typing import Any, Callable, Dict, List, Union, get_type_hints
 
-from .types import FunctionType
+from .types import FunctionType, ParameterType
 
 
 def detect_function_type(fn: Callable) -> FunctionType:
@@ -46,7 +46,7 @@ def get_fun_schema(fn: Callable) -> Dict[str, Any]:
         param_description = param_docs.get(param_name, f"Parameter {param_name}")
         
         properties[param_name] = {
-            "type": json_type,
+            "type": json_type.value,
             "description": param_description
         }
         
@@ -72,7 +72,7 @@ def get_fun_schema(fn: Callable) -> Dict[str, Any]:
     
     if return_type != Any:
         schema["returns"] = {
-            "type": _python_type_to_json_type(return_type),
+            "type": _python_type_to_json_type(return_type).value,
             "description": f"Returns {return_type.__name__}"
         }
     
@@ -100,16 +100,16 @@ def _parse_docstring_params(docstring: str) -> Dict[str, str]:
     return param_docs
 
 
-def _python_type_to_json_type(python_type: type) -> str:
+def _python_type_to_json_type(python_type: type) -> ParameterType:
     """Convert Python type to JSON schema type."""
     type_mapping = {
-        str: "string",
-        int: "integer",
-        float: "number", 
-        bool: "boolean",
-        list: "array",
-        dict: "object",
-        type(None): "null"
+        str: ParameterType.STRING,
+        int: ParameterType.INTEGER,
+        float: ParameterType.NUMBER, 
+        bool: ParameterType.BOOLEAN,
+        list: ParameterType.ARRAY,
+        dict: ParameterType.OBJECT,
+        type(None): ParameterType.NULL
     }
     
     origin = getattr(python_type, '__origin__', None)
@@ -117,11 +117,11 @@ def _python_type_to_json_type(python_type: type) -> str:
         args = getattr(python_type, '__args__', ())
         if len(args) == 2 and type(None) in args:
             non_none_type = next(arg for arg in args if arg is not type(None))
-            return type_mapping.get(non_none_type, "string")
+            return type_mapping.get(non_none_type, ParameterType.STRING)
     
     if origin in (list, List):
-        return "array"
+        return ParameterType.ARRAY
     if origin in (dict, Dict):
-        return "object"
+        return ParameterType.OBJECT
     
-    return type_mapping.get(python_type, "string")
+    return type_mapping.get(python_type, ParameterType.STRING)

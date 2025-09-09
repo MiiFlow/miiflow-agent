@@ -38,7 +38,7 @@ from .schemas import (
     FunctionOutput,
     PreparedCall
 )
-from .types import ToolType, FunctionType
+from .types import ToolType, FunctionType, ParameterType
 
 # Decorators and utilities
 from .decorators import (
@@ -100,6 +100,7 @@ __all__ = [
     "PreparedCall",
     "ToolType",
     "FunctionType",
+    "ParameterType",
     
     # Decorators
     "tool",
@@ -167,9 +168,13 @@ def register_function(registry, func, name=None, description=None):
     parameters = {}
     if 'parameters' in schema_dict and 'properties' in schema_dict['parameters']:
         for param_name, param_info in schema_dict['parameters']['properties'].items():
+            # Convert string type to ParameterType enum
+            type_str = param_info.get('type', 'string')
+            param_type = ParameterType(type_str)
+            
             parameters[param_name] = ParameterSchema(
                 name=param_name,
-                type=param_info.get('type', 'string'),
+                type=param_type,
                 description=param_info.get('description', ''),
                 required=param_name in schema_dict['parameters'].get('required', []),
                 default=param_info.get('default')

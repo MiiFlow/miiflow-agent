@@ -3,14 +3,14 @@
 from typing import Any, Dict, List, Optional, Generic
 from dataclasses import dataclass, field
 
-from .types import ResultType, ToolType
+from .types import ResultType, ToolType, ParameterType
 
 
 @dataclass
 class ParameterSchema:
     """Schema definition for tool parameters."""
     name: str
-    type: str  # "string", "integer", "number", "boolean", "array", "object"
+    type: ParameterType
     description: str
     required: bool = True
     default: Optional[Any] = None
@@ -22,7 +22,7 @@ class ParameterSchema:
     def to_json_schema_property(self) -> Dict[str, Any]:
         """Convert to JSON Schema property format."""
         prop = {
-            "type": self.type,
+            "type": self.type.value,
             "description": self.description
         }
         

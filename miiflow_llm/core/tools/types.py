@@ -20,3 +20,14 @@ class ToolType(Enum):
     """Types of tools supported by the registry."""
     FUNCTION = "function"
     HTTP_API = "http_api"
+
+
+class ParameterType(Enum):
+    """JSON Schema parameter types for tool parameters."""
+    STRING = "string"
+    INTEGER = "integer"
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+    ARRAY = "array"
+    OBJECT = "object"
+    NULL = "null"

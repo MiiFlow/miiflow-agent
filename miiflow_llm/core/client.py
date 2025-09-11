@@ -111,14 +111,7 @@ class ModelClient(ABC):
         self.provider_name = self.__class__.__name__.replace("Client", "").lower()
     
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert universal schema to provider-specific format.
-        
-        Args:
-            schema: Universal schema dictionary
-            
-        Returns:
-            Provider-specific schema format
-        """
+        """Convert universal schema to provider-specific format."""
         # Default implementation - subclasses should override for provider-specific formats
         return schema
     
@@ -243,24 +236,16 @@ class LLMClient:
         """Send async chat completion request."""
         normalized_messages = self._normalize_messages(messages)
         
-        # Convert tools to provider-specific format if provided
         formatted_tools = None
         if tools:
-            # Register tools if not already registered
             for tool in tools:
-                if tool.name not in self.tool_registry.tools:
-                    self.tool_registry.register(tool)
-            
-            # Get schemas in provider format
-            tool_names = [tool.name for tool in tools]
+                self.tool_registry.register(tool)
+            tool_names = [getattr(tool, '_function_tool', tool).name if hasattr(getattr(tool, '_function_tool', tool), 'name') 
+                         else getattr(tool, '__name__', str(tool)) for tool in tools]
             all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
-            formatted_tools = [schema for schema in all_schemas 
-                             if self._extract_tool_name(schema) in tool_names]
+            formatted_tools = [s for s in all_schemas if self._extract_tool_name(s) in tool_names]
         elif self.tool_registry.tools:
-            # If no tools passed but registry has tools, use all registry tools
-            # This allows agents to use all available tools including HTTP tools
-            all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
-            formatted_tools = all_schemas
+            formatted_tools = self.tool_registry.get_schemas(self.client.provider_name, self.client)
         
         start_time = time.time()
         try:
@@ -309,24 +294,16 @@ class LLMClient:
         """Send async streaming chat completion request."""
         normalized_messages = self._normalize_messages(messages)
         
-        # Convert tools to provider-specific format if provided
         formatted_tools = None
         if tools:
-            # Register tools if not already registered
             for tool in tools:
-                if tool.name not in self.tool_registry.tools:
-                    self.tool_registry.register(tool)
-            
-            # Get schemas in provider format
-            tool_names = [tool.name for tool in tools]
+                self.tool_registry.register(tool)
+            tool_names = [getattr(tool, '_function_tool', tool).name if hasattr(getattr(tool, '_function_tool', tool), 'name') 
+                         else getattr(tool, '__name__', str(tool)) for tool in tools]
             all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
-            formatted_tools = [schema for schema in all_schemas 
-                             if self._extract_tool_name(schema) in tool_names]
+            formatted_tools = [s for s in all_schemas if self._extract_tool_name(s) in tool_names]
         elif self.tool_registry.tools:
-            # If no tools passed but registry has tools, use all registry tools
-            # This allows agents to use all available tools including HTTP tools
-            all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
-            formatted_tools = all_schemas
+            formatted_tools = self.tool_registry.get_schemas(self.client.provider_name, self.client)
         
         start_time = time.time()
         total_tokens = TokenCount()

@@ -1,12 +1,4 @@
-"""Unified Agent architecture for miiflow-llm - Complete LlamaIndex replacement.
-
-This module provides the core agent system that miiflow-web will use to replace
-LlamaIndex functionality. It supports:
-- Dependency injection for application-specific services
-- Context management for conversation state
-- Tool calling with proper typing
-- Customizable agent behaviors for different use cases
-"""
+"""Unified Agent architecture with internal episodic memory."""
 
 import asyncio
 import time
@@ -29,13 +21,9 @@ Result = TypeVar('Result')
 
 
 class AgentType(Enum):
-    """Types of agents for different miiflow-web use cases."""
-    CHAT = "chat"              # General conversation agent
-    RAG = "rag"                # Retrieval-augmented generation
-    SEARCH = "search"          # Search and discovery
-    ANALYSIS = "analysis"      # Data analysis and insights
-    WORKFLOW = "workflow"      # Multi-step task execution
-    KNOWLEDGE = "knowledge"    # Knowledge base interaction
+    """Agent types based on reasoning approach."""
+    SINGLE_HOP = "single_hop"      # Simple, direct response
+    REACT = "react"                # ReAct with multi-hop reasoning
 
 
 @dataclass
@@ -44,7 +32,6 @@ class RunResult(Generic[Result]):
     
     data: Result
     messages: List[Message]
-    usage_cost: float = 0.0
     all_messages: List[Message] = field(default_factory=list)
     
     def __post_init__(self):
@@ -52,33 +39,28 @@ class RunResult(Generic[Result]):
             self.all_messages = self.messages
 
 
-# Protocols for miiflow-web to implement
 class DatabaseService(Protocol):
-    """Protocol for database services that miiflow-web provides."""
     async def query(self, sql: str) -> List[Dict[str, Any]]: ...
     async def get_user_context(self, user_id: str) -> Dict[str, Any]: ...
 
 
 class VectorStoreService(Protocol):
-    """Protocol for vector store services (replacing LlamaIndex VectorStore)."""
     async def similarity_search(self, query: str, k: int = 5) -> List[Dict[str, Any]]: ...
     async def add_documents(self, documents: List[Dict[str, Any]]) -> None: ...
 
 
-class KnowledgeService(Protocol):
-    """Protocol for knowledge base services."""
-    async def get_relevant_docs(self, query: str) -> List[Dict[str, Any]]: ...
-    async def get_thread_context(self, thread_id: str) -> Dict[str, Any]: ...
-    async def save_thread_context(self, thread_id: str, context_data: Dict[str, Any]) -> None: ...
+class ContextService(Protocol):
+    async def retrieve_context(self, query: str, context_id: Optional[str] = None) -> Dict[str, Any]: ...
+    async def store_context(self, context_id: str, context_data: Dict[str, Any]) -> None: ...
+
+
+class SearchService(Protocol):
+    async def search(self, query: str, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]: ...
 
 
 @dataclass 
 class RunContext(Generic[Deps]):
-    """Context passed to tools and agent functions with dependency injection.
-    
-    This replaces LlamaIndex's context management and provides miiflow-web
-    with a clean dependency injection system.
-    """
+    """Context passed to tools and agent functions with dependency injection."""
     
     deps: Deps
     messages: List[Message] = field(default_factory=list)
@@ -116,26 +98,22 @@ class RunContext(Generic[Deps]):
 
 
 class Agent(Generic[Deps, Result]):
-    """Unified Agent architecture - Complete LlamaIndex replacement for miiflow-web.
-    
-    This agent provides:
-    - Dependency injection for miiflow-web services (database, vector store, etc.)
-    - Context management for conversation state
-    - Tool calling with proper typing
-    - Customizable behaviors for different agent types
-    """
+    """Unified Agent with internal episodic memory and dependency injection."""
     
     def __init__(
         self,
         client: LLMClient,
         *,
-        agent_type: AgentType = AgentType.CHAT,
+        agent_type: AgentType = AgentType.SINGLE_HOP,
         deps_type: Optional[Type[Deps]] = None,
         result_type: Optional[Type[Result]] = None,
         system_prompt: Optional[Union[str, Callable[[RunContext[Deps]], str]]] = None,
         retries: int = 1,
         max_iterations: int = 10,
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        tools: Optional[List[FunctionTool]] = None,
+        max_stored_threads: int = 100,
+        max_messages_per_thread: int = 1000
     ):
         self.client = client
         self.agent_type = agent_type
@@ -146,21 +124,22 @@ class Agent(Generic[Deps, Result]):
         self.max_iterations = max_iterations
         self.temperature = temperature
         
+        # Internal episodic memory for conversation continuity
+        self._thread_conversations: Dict[str, List[Message]] = {}
+        self._thread_metadata: Dict[str, Dict[str, Any]] = {}
+        self.max_stored_threads = max_stored_threads
+        self.max_messages_per_thread = max_messages_per_thread
+        
         # Share the tool registry with LLMClient for consistency
         self.tool_registry = self.client.tool_registry
         self._tools: List[FunctionTool] = []
         
-        # Agent-specific configurations
-        self._configure_for_type()
-    
-    def _configure_for_type(self):
-        """Configure agent based on its type for miiflow-web use cases."""
-        if self.agent_type == AgentType.RAG:
-            self.max_iterations = 3
-        elif self.agent_type == AgentType.WORKFLOW:
-            self.max_iterations = 20
-        elif self.agent_type == AgentType.ANALYSIS:
-            self.temperature = 0.1
+        # Register provided tools
+        if tools:
+            for tool in tools:
+                self.tool_registry.register(tool)
+                self._tools.append(tool)
+        
     
     def tool(
         self, 
@@ -232,18 +211,25 @@ class Agent(Generic[Deps, Result]):
             thread_id=thread_id
         )
         
-        if thread_id and hasattr(deps, 'knowledge'):
-            try:
-                thread_context = await deps.knowledge.get_thread_context(thread_id)
-                if thread_context and 'messages' in thread_context:
-                    previous_messages = [
-                        Message(role=MessageRole(msg['role']), content=msg['content'])
-                        for msg in thread_context['messages']
-                    ]
-                    context.messages.extend(previous_messages)
-                    context.metadata['restored_messages'] = len(previous_messages)
-            except Exception as e:
-                logger.warning(f"Could not load thread context: {e}")
+        if thread_id:
+            if thread_id in self._thread_conversations:
+                previous_messages = self._thread_conversations[thread_id]
+                context.messages.extend(previous_messages)
+                context.metadata['restored_messages'] = len(previous_messages)
+            elif deps and hasattr(deps, 'context_service'):
+                try:
+                    thread_context = await deps.context_service.retrieve_context(
+                        query="", context_id=thread_id
+                    )
+                    if thread_context and 'messages' in thread_context:
+                        previous_messages = [
+                            Message(role=MessageRole(msg['role']), content=msg['content'])
+                            for msg in thread_context['messages']
+                        ]
+                        context.messages.extend(previous_messages)
+                        context.metadata['restored_messages'] = len(previous_messages)
+                except Exception as e:
+                    logger.warning(f"Could not load thread context: {e}")
         
         system_msg = None
         if self.system_prompt:
@@ -263,6 +249,13 @@ class Agent(Generic[Deps, Result]):
             try:
                 result = await self._execute_with_context(context)
                 
+                if thread_id:
+                    messages_to_store = context.messages[-self.max_messages_per_thread:]
+                    self._thread_conversations[thread_id] = messages_to_store
+                    if len(self._thread_conversations) > self.max_stored_threads:
+                        oldest_thread = next(iter(self._thread_conversations))
+                        del self._thread_conversations[oldest_thread]
+                
                 return RunResult(
                     data=result,
                     messages=context.messages,
@@ -277,7 +270,36 @@ class Agent(Generic[Deps, Result]):
         raise MiiflowLLMError("Agent execution failed", ErrorType.MODEL_ERROR)
     
     async def _execute_with_context(self, context: RunContext[Deps]) -> Result:
-        """Execute agent with multi-hop reasoning and persistent memory."""
+        """Route to appropriate execution based on agent type."""
+        if self.agent_type == AgentType.SINGLE_HOP:
+            return await self._execute_single_hop(context)
+        else:  # AgentType.REACT
+            return await self._execute_react(context)
+    
+    async def _execute_single_hop(self, context: RunContext[Deps]) -> Result:
+        """Execute simple single-hop request-response (like LLM adapter pattern)."""
+        response = await self.client.achat(
+            messages=context.messages,
+            tools=self._tools if self._tools else None,
+            temperature=self.temperature
+        )
+        
+        context.messages.append(response.message)
+        
+        if response.message.tool_calls:
+            await self._execute_tool_calls(response.message.tool_calls, context)
+            final_response = await self.client.achat(
+                messages=context.messages,
+                tools=None, 
+                temperature=self.temperature
+            )
+            context.messages.append(final_response.message)
+            return final_response.message.content
+        
+        return response.message.content
+    
+    async def _execute_react(self, context: RunContext[Deps]) -> Result:
+        """Execute ReAct agent with multi-hop reasoning and persistent memory."""
         reasoning_steps = []
         
         for iteration in range(self.max_iterations):
@@ -302,7 +324,7 @@ class Agent(Generic[Deps, Result]):
             
             response = await self.client.achat(
                 messages=enhanced_messages,
-                tools=None,
+                tools=self._tools if self._tools else None,
                 temperature=self.temperature
             )
             
@@ -342,7 +364,7 @@ class Agent(Generic[Deps, Result]):
             reasoning_step["result"] = response.message.content
             reasoning_steps.append(reasoning_step)
             
-            if context.thread_id and hasattr(context.deps, 'knowledge'):
+            if context.thread_id and hasattr(context.deps, 'context_service'):
                 await self._save_conversation_context(context, reasoning_steps)
             
             if self.result_type == str:
@@ -379,8 +401,8 @@ class Agent(Generic[Deps, Result]):
                 "timestamp": time.time()
             }
             
-            if hasattr(context.deps.knowledge, 'save_thread_context'):
-                await context.deps.knowledge.save_thread_context(context.thread_id, conversation_data)
+            if hasattr(context.deps, 'context_service'):
+                await context.deps.context_service.store_context(context.thread_id, conversation_data)
         
         except Exception as e:
             logger.warning(f"Could not save conversation context: {e}")
@@ -399,15 +421,19 @@ class Agent(Generic[Deps, Result]):
             if hasattr(tool_call, 'function'):
                 tool_name = tool_call.function.name
                 tool_args = tool_call.function.arguments
-                if isinstance(tool_args, str):
+                if isinstance(tool_args, str) and tool_args.strip():
                     import json
                     tool_args = json.loads(tool_args)
+                elif not tool_args or (isinstance(tool_args, str) and not tool_args.strip()):
+                    tool_args = {}
             else:
                 tool_name = tool_call.get("function", {}).get("name")
                 tool_args = tool_call.get("function", {}).get("arguments", {})
-                if isinstance(tool_args, str):
+                if isinstance(tool_args, str) and tool_args.strip():
                     import json
                     tool_args = json.loads(tool_args)
+                elif not tool_args or (isinstance(tool_args, str) and not tool_args.strip()):
+                    tool_args = {}
             
             if tool_args is None:
                 tool_args = {}
@@ -440,16 +466,6 @@ class Agent(Generic[Deps, Result]):
                 content=str(observation.output) if observation.success else observation.error,
                 tool_call_id=tool_call.id if hasattr(tool_call, 'id') else tool_call.get("id")
             ))
-    
-    def _tool_supports_context(self, tool_name: str) -> bool:
-        """Check if a tool supports context injection."""
-        if tool_name in self.tool_registry.tools:
-            tool = self.tool_registry.tools[tool_name]
-            if hasattr(tool, 'fn'):
-                import inspect
-                sig = inspect.signature(tool.fn)
-                return 'context' in sig.parameters
-        return False
     
     def _create_react_loop(
         self,
@@ -492,17 +508,6 @@ class Agent(Generic[Deps, Result]):
         safety_profile: str = "balanced"
     ):
         """Run agent in ReAct mode with structured reasoning.
-        
-        Args:
-            query: User query to process
-            context: Run context with dependencies
-            max_steps: Maximum reasoning steps (default: 10)
-            max_budget: Maximum cost in dollars (optional)
-            max_time_seconds: Maximum execution time (optional)
-            safety_profile: Safety profile ("conservative", "balanced", "permissive")
-            
-        Returns:
-            ReActResult with complete reasoning chain
         """
         react_loop = self._create_react_loop(max_steps, max_budget, max_time_seconds, safety_profile)
         return await react_loop.execute(query, context, stream_events=False)
@@ -517,23 +522,168 @@ class Agent(Generic[Deps, Result]):
         safety_profile: str = "balanced"
     ):
         """Run agent in ReAct mode with streaming events.
-        
-        Args:
-            query: User query to process
-            context: Run context with dependencies
-            max_steps: Maximum reasoning steps (default: 10)
-            max_budget: Maximum cost in dollars (optional)
-            max_time_seconds: Maximum execution time (optional)
-            safety_profile: Safety profile ("conservative", "balanced", "permissive")
-            
-        Yields:
             ReActEvent objects for each reasoning step
         """
         react_loop = self._create_react_loop(max_steps, max_budget, max_time_seconds, safety_profile)
         async for event in react_loop.stream_execute(query, context):
             yield event
+    
+    async def stream_single_hop(
+        self,
+        user_prompt: str,
+        *,
+        deps: Optional[Deps] = None,
+        message_history: Optional[List[Message]] = None,
+        thread_id: Optional[str] = None
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Stream single-hop execution with real-time events."""
+        
+        context = RunContext(
+            deps=deps,
+            messages=message_history or [],
+            thread_id=thread_id
+        )
+        
+        if thread_id:
+            if thread_id in self._thread_conversations:
+                previous_messages = self._thread_conversations[thread_id]
+                context.messages.extend(previous_messages)
+                context.metadata['restored_messages'] = len(previous_messages)
+            elif deps and hasattr(deps, 'context_service'):
+                try:
+                    thread_context = await deps.context_service.retrieve_context(
+                        query="", context_id=thread_id
+                    )
+                    if thread_context and 'messages' in thread_context:
+                        previous_messages = [
+                            Message(role=MessageRole(msg['role']), content=msg['content'])
+                            for msg in thread_context['messages']
+                        ]
+                        context.messages.extend(previous_messages)
+                        context.metadata['restored_messages'] = len(previous_messages)
+                except Exception as e:
+                    logger.warning(f"Could not load thread context: {e}")
+        
+        if self.system_prompt:
+            if callable(self.system_prompt):
+                system_content = self.system_prompt(context)
+            else:
+                system_content = self.system_prompt
+            
+            system_msg = Message(role=MessageRole.SYSTEM, content=system_content)
+            context.messages.append(system_msg)
+        
+        user_msg = Message(role=MessageRole.USER, content=user_prompt)
+        context.messages.append(user_msg)
+        
+        yield {
+            "event": "execution_start",
+            "data": {
+                "prompt": user_prompt,
+                "context_length": len(context.messages),
+                "tools_available": len(self._tools)
+            }
+        }
+        
+        try:
+            yield {"event": "llm_start", "data": {}}
+            
+            buffer = ""
+            final_tool_calls = None
+            
+            async for chunk in self.client.astream_chat(
+                messages=context.messages,
+                tools=self._tools if self._tools else None,
+                temperature=self.temperature
+            ):
+                if chunk.delta:
+                    buffer += chunk.delta
+                    yield {
+                        "event": "llm_chunk",
+                        "data": {"delta": chunk.delta, "content": buffer}
+                    }
+                
+                if chunk.tool_calls and chunk.finish_reason:
+                    final_tool_calls = chunk.tool_calls
+                
+                if chunk.finish_reason:
+                    break
+            
+            response_message = Message(
+                role=MessageRole.ASSISTANT,
+                content=buffer,
+                tool_calls=final_tool_calls
+            )
+            context.messages.append(response_message)
+            
+            if final_tool_calls:
+                yield {
+                    "event": "tools_start",
+                    "data": {"tool_count": len(final_tool_calls)}
+                }
+                
+                await self._execute_tool_calls(final_tool_calls, context)
+                
+                yield {"event": "tools_complete", "data": {}}
+                
+                final_response = await self.client.achat(
+                    messages=context.messages,
+                    tools=None,
+                    temperature=self.temperature
+                )
+                context.messages.append(final_response.message)
+                result = final_response.message.content
+            else:
+                result = buffer
+            
+            if thread_id:
+                messages_to_store = context.messages[-self.max_messages_per_thread:]
+                self._thread_conversations[thread_id] = messages_to_store
+                if len(self._thread_conversations) > self.max_stored_threads:
+                    oldest_thread = next(iter(self._thread_conversations))
+                    del self._thread_conversations[oldest_thread]
+            
+            yield {
+                "event": "execution_complete",
+                "data": {"result": result}
+            }
+            
+        except Exception as e:
+            yield {
+                "event": "error",
+                "data": {"error": str(e), "error_type": type(e).__name__}
+            }
+            raise
 
 
 class ExampleDeps:
-    """Example dependency container - applications should create their own."""
+    """Example dependency container showing the abstracted approach.
+    
+    Applications should create their own dependency containers that implement
+    the service protocols. The agent doesn't need to know implementation details.
+    
+    Example implementations:
+    
+    # Database-based implementation (miiflow-web style)
+    class MiiflowWebDeps:
+        def __init__(self, db_pool, vector_client, redis_client):
+            self.context_service = DatabaseContextService(db_pool)  # DB-based
+            self.search_service = VectorSearchService(vector_client)  # Vector DB
+            self.database = PostgreSQLService(db_pool)  # Direct DB access
+            
+    # Simple file-based implementation  
+    class SimpleAppDeps:
+        def __init__(self):
+            self.context_service = FileContextService("./contexts/")  # File-based  
+            self.search_service = InMemorySearchService()  # In-memory
+            
+    # Hybrid implementation
+    class HybridDeps:
+        def __init__(self):
+            self.context_service = RedisContextService()  # Redis for speed
+            self.search_service = ElasticsearchService()  # Full-text search
+            self.database = RESTAPIService("api.example.com")  # External API
+            
+    The agent works with any of these through the protocol interfaces.
+    """
     pass

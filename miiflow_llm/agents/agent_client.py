@@ -1,12 +1,13 @@
 """Clean interface for interacting with agents."""
 
 import logging
-from typing import Dict, Any, List, Optional, AsyncIterator, Union
+from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
 
 from ..core import LLMClient, Message, MessageRole
 from ..core.tools import FunctionTool, ToolRegistry
+from ..core.tools.decorators import get_tool_from_function, is_tool
 from ..core.agent import Agent, RunResult, AgentType, RunContext
 from .context import AgentContext, ContextType
 
@@ -75,41 +76,6 @@ class AgentClient:
             }
         }
     
-    async def stream(
-        self,
-        prompt: str,
-        context: AgentContext,
-        **kwargs
-    ) -> AsyncIterator[Dict[str, Any]]:
-        """Stream agent responses with structured chunks."""
-        agent_deps = self._build_agent_deps(context)
-        message_history = self._build_message_history(context)
-        
-        messages = message_history or []
-        messages.append(Message(role=MessageRole.USER, content=prompt))
-        
-        formatted_tools = None
-        if self.agent._tools or self.agent.tool_registry.tools:
-            formatted_tools = self.agent.tool_registry.get_schemas(
-                self.agent.client.client.provider_name
-            )
-        
-        async for chunk in self.agent.client.astream_chat(
-            messages, 
-            tools=formatted_tools,
-            **kwargs
-        ):
-            yield {
-                "content": chunk.content,
-                "delta": chunk.delta,
-                "finish_reason": chunk.finish_reason,
-                "context_type": context.context_type.value,
-                "metadata": {
-                    "model": self.config.model,
-                    "provider": self.config.provider
-                }
-            }
-    
     def add_tool(self, tool: FunctionTool) -> None:
         """Add a tool to this agent instance."""
         self.agent.tool_registry.register(tool)
@@ -118,6 +84,75 @@ class AgentClient:
     def list_tools(self) -> List[str]:
         """List tools registered with this agent."""
         return self.agent.tool_registry.list_tools()
+    
+    async def stream_react(
+        self,
+        prompt: str,
+        context: AgentContext,
+        **kwargs
+    ):
+        """Stream ReAct execution with proper abstraction.
+        
+        Delegates to Agent.stream_react while maintaining clean interface.
+        """
+        agent_deps = self._build_agent_deps(context)
+        message_history = self._build_message_history(context)
+        
+        from ..core.agent import RunContext
+        run_context = RunContext(
+            deps=agent_deps,
+            messages=message_history or [],
+            thread_id=context.thread_id
+        )
+        
+        try:
+            async for event in self.agent.stream_react(prompt, run_context, **kwargs):
+                yield event
+        except Exception as e:
+            # Emit error event with AgentClient context
+            yield {
+                "event": "error", 
+                "data": {
+                    "error": str(e), 
+                    "error_type": type(e).__name__,
+                    "context": "AgentClient.stream_react"
+                }
+            }
+            raise
+    
+    async def stream_single_hop(
+        self,
+        prompt: str,
+        context: AgentContext,
+        **kwargs
+    ):
+        """Stream single-hop execution with proper abstraction.
+        
+        Delegates to Agent.stream_single_hop while maintaining clean interface.
+        """
+        agent_deps = self._build_agent_deps(context)
+        message_history = self._build_message_history(context)
+        
+        try:
+            async for event in self.agent.stream_single_hop(
+                prompt,
+                deps=agent_deps,
+                message_history=message_history,
+                thread_id=context.thread_id,
+                **kwargs
+            ):
+                yield event
+        except Exception as e:
+            # Emit error event with AgentClient context  
+            yield {
+                "event": "error",
+                "data": {
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "context": "AgentClient.stream_single_hop"
+                }
+            }
+            raise
     
     def _build_agent_deps(self, context: AgentContext) -> Any:
         """Convert AgentContext to agent dependencies."""
@@ -152,25 +187,22 @@ def create_agent(config: AgentConfig) -> AgentClient:
         raise ValueError(f"Failed to create LLM client: {e}")
     
     agent_type_mapping = {
-        ContextType.USER: AgentType.CHAT,
-        ContextType.EMAIL: AgentType.CHAT, 
-        ContextType.DOCUMENT: AgentType.RAG,
-        ContextType.WORKFLOW: AgentType.WORKFLOW,
-        ContextType.RAG: AgentType.RAG
+        ContextType.USER: AgentType.SINGLE_HOP,
+        ContextType.EMAIL: AgentType.SINGLE_HOP, 
+        ContextType.DOCUMENT: AgentType.REACT,
+        ContextType.WORKFLOW: AgentType.REACT,
+        ContextType.RAG: AgentType.REACT
     }
     
-    agent_type = agent_type_mapping.get(config.context_type, AgentType.CHAT)
+    agent_type = agent_type_mapping.get(config.context_type, AgentType.SINGLE_HOP)
     
     agent = Agent(
         llm_client,
         agent_type=agent_type,
         system_prompt=config.system_prompt,
         temperature=config.temperature,
-        max_iterations=config.max_iterations
+        max_iterations=config.max_iterations,
+        tools=config.tools
     )
-    
-    for tool in config.tools or []:
-        agent.tool_registry.register(tool)
-        agent._tools.append(tool)
     
     return AgentClient(config, agent)

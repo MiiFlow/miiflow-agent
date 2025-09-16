@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from miiflow_llm.core.agent import (
     Agent, RunContext, RunResult, AgentType,
-    DatabaseService, VectorStoreService, KnowledgeService
+    DatabaseService, VectorStoreService, ContextService, SearchService
 )
 from miiflow_llm.core.client import LLMClient, ChatResponse
 from miiflow_llm.core.message import Message, MessageRole
@@ -21,7 +21,8 @@ class MockDeps:
     
     db: DatabaseService
     vector_store: VectorStoreService
-    knowledge: KnowledgeService
+    context_service: ContextService
+    search_service: SearchService
     user_id: Optional[str] = None
     thread_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -36,6 +37,27 @@ class TestUnifiedAgentArchitecture:
         client = MagicMock()
         client.provider_name = "openai"
         client.achat = AsyncMock()
+        
+        # Mock the convert_schema_to_provider_format method to return proper schemas
+        def mock_convert_schema(schema):
+            """Mock schema conversion that returns properly formatted tool schemas."""
+            if isinstance(schema, dict):
+                # Return OpenAI-style function calling schema
+                return {
+                    "type": "function",
+                    "function": {
+                        "name": schema.get('name', 'unknown_tool'),
+                        "description": schema.get('description', 'A tool function'),
+                        "parameters": schema.get('parameters', {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        })
+                    }
+                }
+            return schema
+        
+        client.convert_schema_to_provider_format = MagicMock(side_effect=mock_convert_schema)
         return client
     
     @pytest.fixture
@@ -57,14 +79,18 @@ class TestUnifiedAgentArchitecture:
         ])
         vector_service.add_documents = AsyncMock()
         
-        knowledge_service = MagicMock()
-        knowledge_service.get_relevant_docs = AsyncMock(return_value=[{"doc": "relevant"}])
-        knowledge_service.get_thread_context = AsyncMock(return_value={"thread": "context"})
+        context_service = MagicMock()
+        context_service.retrieve_context = AsyncMock(return_value={"messages": [{"role": "user", "content": "Hello"}]})
+        context_service.store_context = AsyncMock()
+        
+        search_service = MagicMock()
+        search_service.search = AsyncMock(return_value=[{"doc": "relevant search result"}])
         
         return {
             "db": db_service,
             "vector_store": vector_service,
-            "knowledge": knowledge_service
+            "context_service": context_service,
+            "search_service": search_service
         }
     
     @pytest.fixture
@@ -73,21 +99,20 @@ class TestUnifiedAgentArchitecture:
         return MockDeps(
             db=mock_services["db"],
             vector_store=mock_services["vector_store"],
-            knowledge=mock_services["knowledge"],
+            context_service=mock_services["context_service"],
+            search_service=mock_services["search_service"],
             user_id="test_user_123",
             thread_id="thread_456"
         )
     
     def test_agent_type_configuration(self, llm_client):
         """Test that different agent types are configured properly."""
-        rag_agent = Agent(llm_client, agent_type=AgentType.RAG)
-        assert rag_agent.max_iterations == 3
+        single_hop_agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP)
+        assert single_hop_agent.agent_type == AgentType.SINGLE_HOP
         
-        workflow_agent = Agent(llm_client, agent_type=AgentType.WORKFLOW)
-        assert workflow_agent.max_iterations == 20
-        
-        analysis_agent = Agent(llm_client, agent_type=AgentType.ANALYSIS)
-        assert analysis_agent.temperature == 0.1
+        react_agent = Agent(llm_client, agent_type=AgentType.REACT)
+        assert react_agent.agent_type == AgentType.REACT
+        assert react_agent.max_iterations == 10  # Default value
     
     def test_run_context_flexible_integration(self, test_deps):
         """Test RunContext with flexible dependency injection."""
@@ -107,22 +132,19 @@ class TestUnifiedAgentArchitecture:
     
     def test_flexible_agent_creation(self, llm_client):
         """Test flexible agent creation for different types."""
-        chat_agent = Agent(llm_client, agent_type=AgentType.CHAT, deps_type=MockDeps)
-        assert chat_agent.agent_type == AgentType.CHAT
-        assert chat_agent.deps_type == MockDeps
-        assert len(chat_agent._tools) == 0
+        single_hop_agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP, deps_type=MockDeps)
+        assert single_hop_agent.agent_type == AgentType.SINGLE_HOP
+        assert single_hop_agent.deps_type == MockDeps
+        assert len(single_hop_agent._tools) == 0
         
-        rag_agent = Agent(llm_client, agent_type=AgentType.RAG, deps_type=MockDeps)
-        assert rag_agent.agent_type == AgentType.RAG
-        assert rag_agent.max_iterations == 3
-        
-        search_agent = Agent(llm_client, agent_type=AgentType.SEARCH, deps_type=MockDeps)
-        assert search_agent.agent_type == AgentType.SEARCH
+        react_agent = Agent(llm_client, agent_type=AgentType.REACT, deps_type=MockDeps)
+        assert react_agent.agent_type == AgentType.REACT
+        assert react_agent.max_iterations == 10
     
     @pytest.mark.asyncio
     async def test_agent_with_dependency_injection(self, llm_client, mock_client, test_deps):
         """Test agent with flexible dependency injection."""
-        agent = Agent(llm_client, agent_type=AgentType.CHAT, deps_type=MockDeps)
+        agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP, deps_type=MockDeps)
         
         @agent.tool(name="get_user_context", description="Get user context information")
         async def get_user_context(context: RunContext[MockDeps]) -> str:
@@ -170,8 +192,8 @@ class TestUnifiedAgentArchitecture:
     
     @pytest.mark.asyncio
     async def test_rag_agent_knowledge_search(self, llm_client, mock_client, test_deps):
-        """Test RAG agent using flexible vector store."""
-        agent = Agent(llm_client, agent_type=AgentType.RAG, deps_type=MockDeps)
+        """Test REACT agent using flexible vector store."""
+        agent = Agent(llm_client, agent_type=AgentType.REACT, deps_type=MockDeps)
         
         @agent.tool(name="search_knowledge", description="Search the knowledge base")
         async def search_knowledge(context: RunContext[MockDeps], query: str) -> str:
@@ -218,15 +240,15 @@ class TestUnifiedAgentArchitecture:
     
     def test_flexible_agent_with_custom_prompt(self, llm_client):
         """Test flexible agent creation with custom configuration."""
-        chat_agent = Agent(llm_client, agent_type=AgentType.CHAT, deps_type=MockDeps)
-        assert chat_agent.agent_type == AgentType.CHAT
+        single_hop_agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP, deps_type=MockDeps)
+        assert single_hop_agent.agent_type == AgentType.SINGLE_HOP
         
-        rag_agent = Agent(llm_client, agent_type=AgentType.RAG, deps_type=MockDeps)
-        assert rag_agent.agent_type == AgentType.RAG
+        react_agent = Agent(llm_client, agent_type=AgentType.REACT, deps_type=MockDeps)
+        assert react_agent.agent_type == AgentType.REACT
         
         custom_agent = Agent(
             llm_client, 
-            agent_type=AgentType.ANALYSIS,
+            agent_type=AgentType.REACT,
             deps_type=MockDeps,
             system_prompt="Custom analysis prompt"
         )
@@ -248,21 +270,27 @@ class TestUnifiedAgentArchitecture:
             async def add_documents(self, documents: list) -> None:
                 pass
         
-        class MockKnowledgeService:
-            async def get_relevant_docs(self, query: str) -> list:
-                return [{"doc": "test"}]
+        class MockContextService:
+            async def retrieve_context(self, query: str, context_id: str = None) -> dict:
+                return {"thread": context_id}
             
-            async def get_thread_context(self, thread_id: str) -> dict:
-                return {"thread": thread_id}
+            async def store_context(self, context_id: str, context_data: dict) -> None:
+                pass
+                
+        class MockSearchService:
+            async def search(self, query: str, filters: dict = None) -> list:
+                return [{"doc": "search result"}]
         
         db_service: DatabaseService = MockDBService()
         vector_service: VectorStoreService = MockVectorService()
-        knowledge_service: KnowledgeService = MockKnowledgeService()
+        context_service: ContextService = MockContextService()
+        search_service: SearchService = MockSearchService()
         
         deps = MockDeps(
             db=db_service,
             vector_store=vector_service,
-            knowledge=knowledge_service,
+            context_service=context_service,
+            search_service=search_service,
             user_id="test"
         )
         
@@ -273,13 +301,13 @@ class TestLlamaIndexReplacementPatterns:
     """Test patterns that specifically replace LlamaIndex functionality."""
     
     def test_rag_pattern_replacement(self):
-        """Test that RAG agent replaces LlamaIndex RAG patterns."""
+        """Test that REACT agent replaces LlamaIndex RAG patterns."""
         from miiflow_llm.core.client import LLMClient
         mock_provider = MagicMock()
         mock_provider.provider_name = "test"
         llm_client = LLMClient(mock_provider)
         
-        agent = Agent(llm_client, agent_type=AgentType.RAG)
+        agent = Agent(llm_client, agent_type=AgentType.REACT)
         
         @agent.tool("search_knowledge")
         async def search_knowledge(query: str, context) -> str:
@@ -293,13 +321,13 @@ class TestLlamaIndexReplacementPatterns:
         assert "get_thread_context" in agent.tool_registry.tools
     
     def test_search_pattern_replacement(self):
-        """Test that search agent replaces LlamaIndex search patterns.""" 
+        """Test that REACT agent replaces LlamaIndex search patterns.""" 
         from miiflow_llm.core.client import LLMClient
         mock_provider = MagicMock()
         mock_provider.provider_name = "test"
         llm_client = LLMClient(mock_provider)
         
-        agent = Agent(llm_client, agent_type=AgentType.SEARCH)
+        agent = Agent(llm_client, agent_type=AgentType.REACT)
         
         @agent.tool("semantic_search")
         async def semantic_search(query: str, context) -> str:
@@ -308,19 +336,19 @@ class TestLlamaIndexReplacementPatterns:
         assert "semantic_search" in agent.tool_registry.tools
     
     def test_workflow_pattern_replacement(self):
-        """Test that workflow agent replaces LlamaIndex workflow patterns."""
+        """Test that REACT agent replaces LlamaIndex workflow patterns."""
         from miiflow_llm.core.client import LLMClient
         mock_provider = MagicMock()
         mock_provider.provider_name = "test"
         llm_client = LLMClient(mock_provider)
         
-        agent = Agent(llm_client, agent_type=AgentType.WORKFLOW)
+        agent = Agent(llm_client, agent_type=AgentType.REACT)
         
         @agent.tool("execute_step")
         async def execute_step(step: str, context) -> str:
             return f"Executed step: {step}"
         
-        assert agent.max_iterations == 20
+        assert agent.max_iterations == 10  # Default REACT max_iterations
         assert "execute_step" in agent.tool_registry.tools
 
 
@@ -330,11 +358,11 @@ class TestImportPatterns:
     def test_core_imports(self):
         """Test that miiflow-web can import everything it needs."""
         from miiflow_llm.core import Agent, RunContext, RunResult, AgentType
-        from miiflow_llm.core import DatabaseService, VectorStoreService, KnowledgeService
+        from miiflow_llm.core import DatabaseService, VectorStoreService, ContextService, SearchService
         
         assert Agent is not None
         assert RunContext is not None
-        assert AgentType.CHAT is not None
+        assert AgentType.SINGLE_HOP is not None
     
     def test_agent_typing_support(self):
         """Test that proper type annotations work.""" 

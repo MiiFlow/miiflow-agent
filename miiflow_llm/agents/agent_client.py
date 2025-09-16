@@ -9,7 +9,7 @@ from ..core import LLMClient, Message, MessageRole
 from ..core.tools import FunctionTool, ToolRegistry
 from ..core.tools.decorators import get_tool_from_function, is_tool
 from ..core.agent import Agent, RunResult, AgentType, RunContext
-from .context import AgentContext, ContextType
+from .context import AgentContext
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ class AgentConfig:
     
     provider: str  # "openai", "anthropic", etc.
     model: str     # "gpt-4", "claude-3", etc.
-    context_type: ContextType
+    agent_type: AgentType  # SINGLE_HOP or REACT
     tools: List[FunctionTool] = None
     system_prompt: Optional[str] = None
     temperature: float = 0.7
@@ -72,7 +72,7 @@ class AgentClient:
             "metadata": {
                 "model": self.config.model,
                 "provider": self.config.provider,
-                "context_type": context.context_type.value
+                "agent_type": self.config.agent_type.value
             }
         }
     
@@ -186,19 +186,9 @@ def create_agent(config: AgentConfig) -> AgentClient:
     except Exception as e:
         raise ValueError(f"Failed to create LLM client: {e}")
     
-    agent_type_mapping = {
-        ContextType.USER: AgentType.SINGLE_HOP,
-        ContextType.EMAIL: AgentType.SINGLE_HOP, 
-        ContextType.DOCUMENT: AgentType.REACT,
-        ContextType.WORKFLOW: AgentType.REACT,
-        ContextType.RAG: AgentType.REACT
-    }
-    
-    agent_type = agent_type_mapping.get(config.context_type, AgentType.SINGLE_HOP)
-    
     agent = Agent(
         llm_client,
-        agent_type=agent_type,
+        agent_type=config.agent_type,
         system_prompt=config.system_prompt,
         temperature=config.temperature,
         max_iterations=config.max_iterations,

@@ -42,21 +42,22 @@ class AgentClient:
     async def run(
         self, 
         prompt: str, 
-        context: AgentContext,
+        context: Optional[AgentContext] = None,
+        message_history: Optional[List[Message]] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """Run agent with structured output."""
-        agent_deps = self._build_agent_deps(context)
-        message_history = self._build_message_history(context)
-        
+        """Run agent with structured output (stateless)."""
+        if context is None:
+            context = AgentContext()
+            
+        # Pass message history directly to agent if provided
         result: RunResult = await self.agent.run(
             prompt,
-            deps=agent_deps,
             message_history=message_history,
-            thread_id=context.thread_id,
             **kwargs
         )
         
+        # Count tool calls from messages
         tool_calls_count = sum(len(msg.tool_calls) for msg in result.messages if msg.tool_calls)
         tool_messages_count = sum(1 for msg in result.messages if msg.role == MessageRole.TOOL)
         
@@ -64,8 +65,6 @@ class AgentClient:
         
         return {
             "response": result.data,
-            "context_updated": True,
-            "thread_id": context.thread_id,
             "reasoning_steps": len(result.all_messages),
             "tool_calls_made": tool_calls_count,
             "tool_results_received": tool_messages_count,
@@ -88,21 +87,21 @@ class AgentClient:
     async def stream_react(
         self,
         prompt: str,
-        context: AgentContext,
+        context: Optional[AgentContext] = None,
+        message_history: Optional[List[Message]] = None,
         **kwargs
     ):
-        """Stream ReAct execution with proper abstraction.
+        """Stream ReAct execution (stateless).
         
         Delegates to Agent.stream_react while maintaining clean interface.
         """
-        agent_deps = self._build_agent_deps(context)
-        message_history = self._build_message_history(context)
-        
-        from ..core.agent import RunContext
+        if context is None:
+            context = AgentContext()
+            
+        # Create a basic RunContext for streaming
         run_context = RunContext(
-            deps=agent_deps,
-            messages=message_history or [],
-            thread_id=context.thread_id
+            deps=context,
+            messages=message_history or []
         )
         
         try:
@@ -123,22 +122,21 @@ class AgentClient:
     async def stream_single_hop(
         self,
         prompt: str,
-        context: AgentContext,
+        context: Optional[AgentContext] = None,
+        message_history: Optional[List[Message]] = None,
         **kwargs
     ):
-        """Stream single-hop execution with proper abstraction.
+        """Stream single-hop execution (stateless).
         
         Delegates to Agent.stream_single_hop while maintaining clean interface.
         """
-        agent_deps = self._build_agent_deps(context)
-        message_history = self._build_message_history(context)
-        
+        if context is None:
+            context = AgentContext()
+            
         try:
             async for event in self.agent.stream_single_hop(
                 prompt,
-                deps=agent_deps,
                 message_history=message_history,
-                thread_id=context.thread_id,
                 **kwargs
             ):
                 yield event
@@ -153,22 +151,6 @@ class AgentClient:
                 }
             }
             raise
-    
-    def _build_agent_deps(self, context: AgentContext) -> Any:
-        """Convert AgentContext to agent dependencies."""
-        return context
-    
-    def _build_message_history(self, context: AgentContext) -> Optional[List[Message]]:
-        """Build message history from context."""
-        if context.get("message_history"):
-            return [
-                Message(
-                    role=MessageRole(msg["role"]), 
-                    content=msg["content"]
-                )
-                for msg in context.get("message_history", [])
-            ]
-        return None
 
 
 def create_agent(config: AgentConfig) -> AgentClient:

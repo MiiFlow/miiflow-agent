@@ -1,16 +1,13 @@
 """Minimal context system for agent execution."""
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from dataclasses import dataclass, field
 
 
 @dataclass
 class AgentContext:
-    """Context container for agent execution."""
+    """Simple context container for agent execution metadata only."""
     
-    user_id: Optional[str] = None
-    thread_id: Optional[str] = None
-    session_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def get(self, key: str, default=None):

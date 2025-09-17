@@ -1,11 +1,10 @@
-"""Tests for the unified Agent architecture - Complete LlamaIndex replacement."""
+"""Tests for the unified Agent architecture (stateless)."""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from miiflow_llm.core.agent import (
-    Agent, RunContext, RunResult, AgentType,
-    DatabaseService, VectorStoreService, ContextService, SearchService
+    Agent, RunContext, RunResult, AgentType
 )
 from miiflow_llm.core.client import LLMClient, ChatResponse
 from miiflow_llm.core.message import Message, MessageRole
@@ -14,22 +13,22 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-# Test-specific dependency container (flexible implementation)
+# Test-specific dependency container (stateless)
 @dataclass
 class MockDeps:
-    """Test dependency container that implements the protocols."""
+    """Test dependency container for stateless operations."""
     
-    db: DatabaseService
-    vector_store: VectorStoreService
-    context_service: ContextService
-    search_service: SearchService
-    user_id: Optional[str] = None
-    thread_id: Optional[str] = None
-    session_id: Optional[str] = None
+    api_key: Optional[str] = None
+    user_role: Optional[str] = None
+    metadata: dict = None
+    
+    def __post_init__(self):
+        if self.metadata is None:
+            self.metadata = {}
 
 
 class TestUnifiedAgentArchitecture:
-    """Test the unified agent system that replaces LlamaIndex."""
+    """Test the unified agent system (stateless)."""
     
     @pytest.fixture
     def mock_client(self):
@@ -66,43 +65,12 @@ class TestUnifiedAgentArchitecture:
         return LLMClient(mock_client)
     
     @pytest.fixture
-    def mock_services(self):
-        """Mock miiflow-web services."""
-        db_service = MagicMock()
-        db_service.query = AsyncMock(return_value=[{"result": "test_data"}])
-        db_service.get_user_context = AsyncMock(return_value={"user": "test_user"})
-        
-        vector_service = MagicMock() 
-        vector_service.similarity_search = AsyncMock(return_value=[
-            {"content": "relevant doc 1", "title": "Doc 1"},
-            {"content": "relevant doc 2", "title": "Doc 2"}
-        ])
-        vector_service.add_documents = AsyncMock()
-        
-        context_service = MagicMock()
-        context_service.retrieve_context = AsyncMock(return_value={"messages": [{"role": "user", "content": "Hello"}]})
-        context_service.store_context = AsyncMock()
-        
-        search_service = MagicMock()
-        search_service.search = AsyncMock(return_value=[{"doc": "relevant search result"}])
-        
-        return {
-            "db": db_service,
-            "vector_store": vector_service,
-            "context_service": context_service,
-            "search_service": search_service
-        }
-    
-    @pytest.fixture
-    def test_deps(self, mock_services):
-        """MockDeps instance with mock services."""
+    def test_deps(self):
+        """MockDeps instance for testing."""
         return MockDeps(
-            db=mock_services["db"],
-            vector_store=mock_services["vector_store"],
-            context_service=mock_services["context_service"],
-            search_service=mock_services["search_service"],
-            user_id="test_user_123",
-            thread_id="thread_456"
+            api_key="test_key_123",
+            user_role="admin",
+            metadata={"environment": "test"}
         )
     
     def test_agent_type_configuration(self, llm_client):
@@ -114,24 +82,19 @@ class TestUnifiedAgentArchitecture:
         assert react_agent.agent_type == AgentType.REACT
         assert react_agent.max_iterations == 10  # Default value
     
-    def test_run_context_flexible_integration(self, test_deps):
-        """Test RunContext with flexible dependency injection."""
+    def test_run_context_stateless(self, test_deps):
+        """Test RunContext with stateless dependency injection."""
         context = RunContext(
             deps=test_deps,
-            user_id="user123", 
-            thread_id="thread456",
-            session_id="session789",
-            metadata={"custom": "data"}
+            metadata={"request_id": "12345"}
         )
         
-        assert context.deps.user_id == "test_user_123"
-        assert context.user_id == "user123"
-        assert context.thread_id == "thread456"
-        assert context.has_context("custom")
-        assert not context.has_context("nonexistent")
+        assert context.deps.user_role == "admin"
+        assert context.metadata.get("request_id") == "12345"
+        assert len(context.messages) == 0  # No persisted history
     
-    def test_flexible_agent_creation(self, llm_client):
-        """Test flexible agent creation for different types."""
+    def test_stateless_agent_creation(self, llm_client):
+        """Test stateless agent creation for different types."""
         single_hop_agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP, deps_type=MockDeps)
         assert single_hop_agent.agent_type == AgentType.SINGLE_HOP
         assert single_hop_agent.deps_type == MockDeps
@@ -143,19 +106,18 @@ class TestUnifiedAgentArchitecture:
     
     @pytest.mark.asyncio
     async def test_agent_with_dependency_injection(self, llm_client, mock_client, test_deps):
-        """Test agent with flexible dependency injection."""
+        """Test agent with stateless dependency injection."""
         agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP, deps_type=MockDeps)
         
-        @agent.tool(name="get_user_context", description="Get user context information")
-        async def get_user_context(context: RunContext[MockDeps]) -> str:
-            """Get user context from the database."""
+        @agent.tool(name="get_user_info", description="Get user information from deps")
+        async def get_user_info(context: RunContext[MockDeps]) -> str:
+            """Get user info from dependency container."""
             try:
-                if context.deps and context.deps.user_id:
-                    user_data = await context.deps.db.get_user_context(context.deps.user_id)
-                    return f"User context: {user_data}"
-                return "No user context available"
+                if context.deps and context.deps.user_role:
+                    return f"User role: {context.deps.user_role}, API key: {context.deps.api_key[:8]}..."
+                return "No user info available"
             except Exception as e:
-                return f"Error getting user context: {e}"
+                return f"Error getting user info: {e}"
         
         tool_call_response = ChatResponse(
             message=Message(
@@ -164,7 +126,7 @@ class TestUnifiedAgentArchitecture:
                 tool_calls=[{
                     "id": "call_123",
                     "function": {
-                        "name": "get_user_context",
+                        "name": "get_user_info",
                         "arguments": '{}'
                     }
                 }]
@@ -175,7 +137,7 @@ class TestUnifiedAgentArchitecture:
         )
         
         final_response = ChatResponse(
-            message=Message(role=MessageRole.ASSISTANT, content="Hello! I can see your user context."),
+            message=Message(role=MessageRole.ASSISTANT, content="Hello! I can see your user information."),
             usage=TokenCount(prompt_tokens=25, completion_tokens=8, total_tokens=33),
             model="gpt-4",
             provider="openai"
@@ -186,25 +148,24 @@ class TestUnifiedAgentArchitecture:
         result = await agent.run("Hello", deps=test_deps)
         
         assert isinstance(result, RunResult)
-        assert result.data == "Hello! I can see your user context."
-        
-        test_deps.db.get_user_context.assert_called_once_with("test_user_123")
+        assert result.data == "Hello! I can see your user information."
     
     @pytest.mark.asyncio
-    async def test_rag_agent_knowledge_search(self, llm_client, mock_client, test_deps):
-        """Test REACT agent using flexible vector store."""
+    async def test_react_agent_with_tools(self, llm_client, mock_client, test_deps):
+        """Test REACT agent using tools."""
         agent = Agent(llm_client, agent_type=AgentType.REACT, deps_type=MockDeps)
         
-        @agent.tool(name="search_knowledge", description="Search the knowledge base")
-        async def search_knowledge(context: RunContext[MockDeps], query: str) -> str:
-            """Search the vector store for relevant documents."""
+        @agent.tool(name="calculate", description="Perform calculations")
+        async def calculate(context: RunContext[MockDeps], expression: str) -> str:
+            """Simple calculator tool."""
             try:
-                if context.deps and context.deps.vector_store:
-                    results = await context.deps.vector_store.similarity_search(query, k=5)
-                    return f"Found {len(results)} relevant documents: {results}"
-                return "Vector store not available"
+                # Safe eval for simple expressions
+                if all(c in "0123456789+-*/.()" for c in expression.replace(" ", "")):
+                    result = eval(expression)
+                    return f"Result: {result}"
+                return "Invalid expression"
             except Exception as e:
-                return f"Error searching knowledge: {e}"
+                return f"Calculation error: {e}"
         
         tool_call_response = ChatResponse(
             message=Message(
@@ -213,8 +174,8 @@ class TestUnifiedAgentArchitecture:
                 tool_calls=[{
                     "id": "call_456", 
                     "function": {
-                        "name": "search_knowledge",
-                        "arguments": '{"query": "What is AI?"}'
+                        "name": "calculate",
+                        "arguments": '{"expression": "15 * 4"}'
                     }
                 }]
             ),
@@ -224,7 +185,7 @@ class TestUnifiedAgentArchitecture:
         )
         
         final_response = ChatResponse(
-            message=Message(role=MessageRole.ASSISTANT, content="Based on the knowledge search, AI is..."),
+            message=Message(role=MessageRole.ASSISTANT, content="The result is 60."),
             usage=TokenCount(prompt_tokens=40, completion_tokens=12, total_tokens=52),
             model="gpt-4", 
             provider="openai"
@@ -232,14 +193,12 @@ class TestUnifiedAgentArchitecture:
         
         mock_client.achat.side_effect = [tool_call_response, final_response]
         
-        result = await agent.run("What is AI?", deps=test_deps)
+        result = await agent.run("What is 15 * 4?", deps=test_deps)
         
-        assert result.data == "Based on the knowledge search, AI is..."
-        
-        test_deps.vector_store.similarity_search.assert_called_once_with("What is AI?", k=5)
+        assert result.data == "The result is 60."
     
-    def test_flexible_agent_with_custom_prompt(self, llm_client):
-        """Test flexible agent creation with custom configuration."""
+    def test_agent_with_custom_prompt(self, llm_client):
+        """Test agent creation with custom configuration."""
         single_hop_agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP, deps_type=MockDeps)
         assert single_hop_agent.agent_type == AgentType.SINGLE_HOP
         
@@ -250,58 +209,77 @@ class TestUnifiedAgentArchitecture:
             llm_client, 
             agent_type=AgentType.REACT,
             deps_type=MockDeps,
-            system_prompt="Custom analysis prompt"
+            system_prompt="You are a helpful assistant specialized in calculations."
         )
-        assert custom_agent.system_prompt == "Custom analysis prompt"
+        assert custom_agent.system_prompt == "You are a helpful assistant specialized in calculations."
     
-    def test_agent_protocol_compatibility(self):
-        """Test that miiflow-web services implement the required protocols."""
-        class MockDBService:
-            async def query(self, sql: str) -> list:
-                return [{"test": "data"}]
-            
-            async def get_user_context(self, user_id: str) -> dict:
-                return {"user": user_id}
+    def test_message_history_passthrough(self, llm_client):
+        """Test that message history can be passed through but not persisted."""
+        agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP)
         
-        class MockVectorService:
-            async def similarity_search(self, query: str, k: int = 5) -> list:
-                return [{"content": "test"}]
-            
-            async def add_documents(self, documents: list) -> None:
-                pass
+        # Create some message history
+        message_history = [
+            Message(role=MessageRole.USER, content="Hello"),
+            Message(role=MessageRole.ASSISTANT, content="Hi there!"),
+        ]
         
-        class MockContextService:
-            async def retrieve_context(self, query: str, context_id: str = None) -> dict:
-                return {"thread": context_id}
-            
-            async def store_context(self, context_id: str, context_data: dict) -> None:
-                pass
-                
-        class MockSearchService:
-            async def search(self, query: str, filters: dict = None) -> list:
-                return [{"doc": "search result"}]
-        
-        db_service: DatabaseService = MockDBService()
-        vector_service: VectorStoreService = MockVectorService()
-        context_service: ContextService = MockContextService()
-        search_service: SearchService = MockSearchService()
-        
-        deps = MockDeps(
-            db=db_service,
-            vector_store=vector_service,
-            context_service=context_service,
-            search_service=search_service,
-            user_id="test"
+        context = RunContext(
+            deps=None,
+            messages=message_history
         )
         
-        assert deps.user_id == "test"
-
-
-class TestLlamaIndexReplacementPatterns:
-    """Test patterns that specifically replace LlamaIndex functionality."""
+        assert len(context.messages) == 2
+        assert context.last_user_message().content == "Hello"
+        assert context.last_agent_message().content == "Hi there!"
     
-    def test_rag_pattern_replacement(self):
-        """Test that REACT agent replaces LlamaIndex RAG patterns."""
+    @pytest.mark.asyncio 
+    async def test_stateless_tool_execution(self, llm_client, mock_client):
+        """Test that tools execute without any memory persistence."""
+        agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP)
+        
+        @agent.tool(name="echo", description="Echo the input")
+        async def echo_tool(text: str) -> str:
+            """Simple echo tool without context injection."""
+            return f"Echo: {text}"
+        
+        tool_call_response = ChatResponse(
+            message=Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                tool_calls=[{
+                    "id": "call_echo",
+                    "function": {
+                        "name": "echo",
+                        "arguments": '{"text": "Hello World"}'
+                    }
+                }]
+            ),
+            usage=TokenCount(prompt_tokens=15, completion_tokens=5, total_tokens=20),
+            model="gpt-4",
+            provider="openai"
+        )
+        
+        final_response = ChatResponse(
+            message=Message(role=MessageRole.ASSISTANT, content="I echoed your message."),
+            usage=TokenCount(prompt_tokens=20, completion_tokens=6, total_tokens=26),
+            model="gpt-4",
+            provider="openai"
+        )
+        
+        mock_client.achat.side_effect = [tool_call_response, final_response]
+        
+        result = await agent.run("Please echo 'Hello World'")
+        
+        assert result.data == "I echoed your message."
+        # Verify tool was registered
+        assert "echo" in agent.tool_registry.tools
+
+
+class TestStatelessPatterns:
+    """Test patterns for stateless agent operations."""
+    
+    def test_tool_registration_patterns(self):
+        """Test various tool registration patterns."""
         from miiflow_llm.core.client import LLMClient
         mock_provider = MagicMock()
         mock_provider.provider_name = "test"
@@ -309,60 +287,63 @@ class TestLlamaIndexReplacementPatterns:
         
         agent = Agent(llm_client, agent_type=AgentType.REACT)
         
-        @agent.tool("search_knowledge")
-        async def search_knowledge(query: str, context) -> str:
+        @agent.tool("search")
+        async def search_tool(query: str) -> str:
             return f"Searching for: {query}"
             
-        @agent.tool("get_thread_context")  
-        async def get_thread_context(context) -> str:
-            return "Thread context"
+        @agent.tool(name="compute", description="Perform computation")  
+        async def compute_tool(expression: str) -> str:
+            return f"Computing: {expression}"
         
-        assert "search_knowledge" in agent.tool_registry.tools
-        assert "get_thread_context" in agent.tool_registry.tools
+        assert "search" in agent.tool_registry.tools
+        assert "compute" in agent.tool_registry.tools
     
-    def test_search_pattern_replacement(self):
-        """Test that REACT agent replaces LlamaIndex search patterns.""" 
+    def test_agent_types_behavior(self):
+        """Test that different agent types behave correctly."""
         from miiflow_llm.core.client import LLMClient
         mock_provider = MagicMock()
         mock_provider.provider_name = "test"
         llm_client = LLMClient(mock_provider)
         
-        agent = Agent(llm_client, agent_type=AgentType.REACT)
+        single_hop = Agent(llm_client, agent_type=AgentType.SINGLE_HOP)
+        react = Agent(llm_client, agent_type=AgentType.REACT)
         
-        @agent.tool("semantic_search")
-        async def semantic_search(query: str, context) -> str:
-            return f"Search results for: {query}"
-        
-        assert "semantic_search" in agent.tool_registry.tools
+        assert single_hop.max_iterations == 10  # Default
+        assert react.max_iterations == 10
+        assert single_hop.agent_type != react.agent_type
     
-    def test_workflow_pattern_replacement(self):
-        """Test that REACT agent replaces LlamaIndex workflow patterns."""
+    def test_context_injection_patterns(self):
+        """Test context injection works without memory persistence."""
         from miiflow_llm.core.client import LLMClient
-        mock_provider = MagicMock()
+        mock_provider = MagicMock()  
         mock_provider.provider_name = "test"
         llm_client = LLMClient(mock_provider)
         
-        agent = Agent(llm_client, agent_type=AgentType.REACT)
+        agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP, deps_type=MockDeps)
         
-        @agent.tool("execute_step")
-        async def execute_step(step: str, context) -> str:
-            return f"Executed step: {step}"
+        @agent.tool("get_context")
+        async def get_context_tool(context: RunContext[MockDeps]) -> str:
+            """Tool that uses context injection."""
+            if context.deps:
+                return f"Context role: {context.deps.user_role}"
+            return "No context"
         
-        assert agent.max_iterations == 10  # Default REACT max_iterations
-        assert "execute_step" in agent.tool_registry.tools
+        # Verify tool was registered with context injection
+        tool = agent.tool_registry.tools["get_context"]
+        assert hasattr(tool, 'context_injection')
 
 
 class TestImportPatterns:
-    """Test that imports work correctly for miiflow-web."""
+    """Test that imports work correctly."""
     
     def test_core_imports(self):
-        """Test that miiflow-web can import everything it needs."""
+        """Test that applications can import everything they need."""
         from miiflow_llm.core import Agent, RunContext, RunResult, AgentType
-        from miiflow_llm.core import DatabaseService, VectorStoreService, ContextService, SearchService
         
         assert Agent is not None
         assert RunContext is not None
         assert AgentType.SINGLE_HOP is not None
+        assert AgentType.REACT is not None
     
     def test_agent_typing_support(self):
         """Test that proper type annotations work.""" 

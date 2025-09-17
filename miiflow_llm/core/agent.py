@@ -1,9 +1,9 @@
-"""Unified Agent architecture with internal episodic memory."""
+"""Unified Agent architecture focused on LLM reasoning (stateless)."""
 
 import asyncio
 import time
 import logging
-from typing import Any, Dict, List, Optional, Type, TypeVar, Generic, Callable, Union, Protocol, AsyncIterator
+from typing import Any, Dict, List, Optional, Type, TypeVar, Generic, Callable, Union, AsyncIterator
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -39,35 +39,13 @@ class RunResult(Generic[Result]):
             self.all_messages = self.messages
 
 
-class DatabaseService(Protocol):
-    async def query(self, sql: str) -> List[Dict[str, Any]]: ...
-    async def get_user_context(self, user_id: str) -> Dict[str, Any]: ...
-
-
-class VectorStoreService(Protocol):
-    async def similarity_search(self, query: str, k: int = 5) -> List[Dict[str, Any]]: ...
-    async def add_documents(self, documents: List[Dict[str, Any]]) -> None: ...
-
-
-class ContextService(Protocol):
-    async def retrieve_context(self, query: str, context_id: Optional[str] = None) -> Dict[str, Any]: ...
-    async def store_context(self, context_id: str, context_data: Dict[str, Any]) -> None: ...
-
-
-class SearchService(Protocol):
-    async def search(self, query: str, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]: ...
-
-
 @dataclass 
 class RunContext(Generic[Deps]):
-    """Context passed to tools and agent functions with dependency injection."""
+    """Context passed to tools and agent functions (stateless)."""
     
     deps: Deps
     messages: List[Message] = field(default_factory=list)
     retry: int = 0
-    user_id: Optional[str] = None
-    thread_id: Optional[str] = None
-    session_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def last_user_message(self) -> Optional[Message]:
@@ -85,20 +63,16 @@ class RunContext(Generic[Deps]):
         return None
     
     def get_conversation_summary(self) -> str:
-        """Get a summary of the conversation for context."""
+        """Get a summary of the current conversation context."""
         if len(self.messages) <= 2:
             return "New conversation"
         
         user_messages = [msg.content for msg in self.messages if msg.role == MessageRole.USER]
         return f"Conversation with {len(user_messages)} user messages"
-    
-    def has_context(self, key: str) -> bool:
-        """Check if context has a specific key."""
-        return key in self.metadata
 
 
 class Agent(Generic[Deps, Result]):
-    """Unified Agent with internal episodic memory and dependency injection."""
+    """Unified Agent focused on LLM reasoning (stateless)."""
     
     def __init__(
         self,
@@ -111,9 +85,7 @@ class Agent(Generic[Deps, Result]):
         retries: int = 1,
         max_iterations: int = 10,
         temperature: float = 0.7,
-        tools: Optional[List[FunctionTool]] = None,
-        max_stored_threads: int = 100,
-        max_messages_per_thread: int = 1000
+        tools: Optional[List[FunctionTool]] = None
     ):
         self.client = client
         self.agent_type = agent_type
@@ -123,12 +95,6 @@ class Agent(Generic[Deps, Result]):
         self.retries = retries
         self.max_iterations = max_iterations
         self.temperature = temperature
-        
-        # Internal episodic memory for conversation continuity
-        self._thread_conversations: Dict[str, List[Message]] = {}
-        self._thread_metadata: Dict[str, Dict[str, Any]] = {}
-        self.max_stored_threads = max_stored_threads
-        self.max_messages_per_thread = max_messages_per_thread
         
         # Share the tool registry with LLMClient for consistency
         self.tool_registry = self.client.tool_registry
@@ -200,38 +166,16 @@ class Agent(Generic[Deps, Result]):
         user_prompt: str, 
         *,
         deps: Optional[Deps] = None,
-        message_history: Optional[List[Message]] = None,
-        thread_id: Optional[str] = None
+        message_history: Optional[List[Message]] = None
     ) -> RunResult[Result]:
-        """Run the agent with dependency injection."""
+        """Run the agent with dependency injection (stateless)."""
         
         context = RunContext(
             deps=deps,
-            messages=message_history or [],
-            thread_id=thread_id
+            messages=message_history or []
         )
         
-        if thread_id:
-            if thread_id in self._thread_conversations:
-                previous_messages = self._thread_conversations[thread_id]
-                context.messages.extend(previous_messages)
-                context.metadata['restored_messages'] = len(previous_messages)
-            elif deps and hasattr(deps, 'context_service'):
-                try:
-                    thread_context = await deps.context_service.retrieve_context(
-                        query="", context_id=thread_id
-                    )
-                    if thread_context and 'messages' in thread_context:
-                        previous_messages = [
-                            Message(role=MessageRole(msg['role']), content=msg['content'])
-                            for msg in thread_context['messages']
-                        ]
-                        context.messages.extend(previous_messages)
-                        context.metadata['restored_messages'] = len(previous_messages)
-                except Exception as e:
-                    logger.warning(f"Could not load thread context: {e}")
-        
-        system_msg = None
+        # Add system prompt if provided
         if self.system_prompt:
             if callable(self.system_prompt):
                 system_content = self.system_prompt(context)
@@ -241,20 +185,15 @@ class Agent(Generic[Deps, Result]):
             system_msg = Message(role=MessageRole.SYSTEM, content=system_content)
             context.messages.append(system_msg)
         
+        # Add user message
         user_msg = Message(role=MessageRole.USER, content=user_prompt)
         context.messages.append(user_msg)
         
+        # Execute with retries
         for attempt in range(self.retries):
             context.retry = attempt
             try:
                 result = await self._execute_with_context(context)
-                
-                if thread_id:
-                    messages_to_store = context.messages[-self.max_messages_per_thread:]
-                    self._thread_conversations[thread_id] = messages_to_store
-                    if len(self._thread_conversations) > self.max_stored_threads:
-                        oldest_thread = next(iter(self._thread_conversations))
-                        del self._thread_conversations[oldest_thread]
                 
                 return RunResult(
                     data=result,
@@ -286,6 +225,7 @@ class Agent(Generic[Deps, Result]):
         
         context.messages.append(response.message)
         
+        # Handle tool calls if present
         if response.message.tool_calls:
             await self._execute_tool_calls(response.message.tool_calls, context)
             final_response = await self.client.achat(
@@ -299,7 +239,7 @@ class Agent(Generic[Deps, Result]):
         return response.message.content
     
     async def _execute_react(self, context: RunContext[Deps]) -> Result:
-        """Execute ReAct agent with multi-hop reasoning and persistent memory."""
+        """Execute ReAct agent with multi-hop reasoning."""
         reasoning_steps = []
         
         for iteration in range(self.max_iterations):
@@ -315,6 +255,7 @@ class Agent(Generic[Deps, Result]):
             
             enhanced_messages = context.messages.copy()
             
+            # Add reasoning summary for context
             if iteration > 0:
                 reasoning_summary = self._build_reasoning_summary(reasoning_steps)
                 enhanced_messages.append(Message(
@@ -331,6 +272,7 @@ class Agent(Generic[Deps, Result]):
             reasoning_step["reasoning"] = f"LLM response in step {iteration + 1}"
             context.messages.append(response.message)
             
+            # Handle tool calls
             if response.message.tool_calls:
                 reasoning_step["action"] = "tool_execution" 
                 reasoning_step["tools_called"] = [
@@ -342,6 +284,7 @@ class Agent(Generic[Deps, Result]):
                 reasoning_step["result"] = "tools_executed"
                 reasoning_steps.append(reasoning_step)
                 
+                # Detect tool loops
                 if iteration > 2:
                     recent_steps = reasoning_steps[-3:]
                     if all(step.get("action") == "tool_execution" for step in recent_steps):
@@ -351,6 +294,7 @@ class Agent(Generic[Deps, Result]):
                             content="You have executed several tools successfully. Please provide your final answer based on the tool results. Do not call any more tools."
                         ))
                 
+                # Force termination near max iterations
                 if iteration >= self.max_iterations - 2:
                     logger.debug(f"Near max iterations ({iteration}/{self.max_iterations}), forcing termination")
                     context.messages.append(Message(
@@ -360,12 +304,10 @@ class Agent(Generic[Deps, Result]):
                 
                 continue
             
+            # Final response without tool calls
             reasoning_step["action"] = "final_response"
             reasoning_step["result"] = response.message.content
             reasoning_steps.append(reasoning_step)
-            
-            if context.thread_id and hasattr(context.deps, 'context_service'):
-                await self._save_conversation_context(context, reasoning_steps)
             
             if self.result_type == str:
                 return response.message.content
@@ -388,25 +330,6 @@ class Agent(Generic[Deps, Result]):
         
         return " → ".join(summary_parts)
     
-    async def _save_conversation_context(self, context: RunContext[Deps], reasoning_steps: List[Dict]):
-        """Save conversation context for persistent memory."""
-        try:
-            conversation_data = {
-                "messages": [
-                    {"role": msg.role.value, "content": msg.content} 
-                    for msg in context.messages
-                ],
-                "reasoning_chain": reasoning_steps,
-                "metadata": context.metadata,
-                "timestamp": time.time()
-            }
-            
-            if hasattr(context.deps, 'context_service'):
-                await context.deps.context_service.store_context(context.thread_id, conversation_data)
-        
-        except Exception as e:
-            logger.warning(f"Could not save conversation context: {e}")
-    
     async def _execute_tool_calls(
         self, 
         tool_calls: List[Dict[str, Any]], 
@@ -418,6 +341,7 @@ class Agent(Generic[Deps, Result]):
         for i, tool_call in enumerate(tool_calls):
             logger.debug(f"Executing tool call {i+1}/{len(tool_calls)}")
             
+            # Extract tool name and arguments
             if hasattr(tool_call, 'function'):
                 tool_name = tool_call.function.name
                 tool_args = tool_call.function.arguments
@@ -443,12 +367,13 @@ class Agent(Generic[Deps, Result]):
             
             logger.debug(f"Tool '{tool_name}' with args: {tool_args}")
             
+            # Execute tool with context injection if needed
             tool = self.tool_registry.tools.get(tool_name)
             if tool and hasattr(tool, 'context_injection'):
                 injection_pattern = tool.context_injection
                 
                 if injection_pattern['pattern'] == 'first_param':
-                    logger.debug(f"Using Pydantic AI context injection for {tool_name}")
+                    logger.debug(f"Using context injection for {tool_name}")
                     observation = await self.tool_registry.execute_safe_with_context(
                         tool_name, context, **tool_args
                     )
@@ -461,6 +386,7 @@ class Agent(Generic[Deps, Result]):
             
             logger.debug(f"Tool '{tool_name}' execution result: success={observation.success}, output='{observation.output}'")
             
+            # Add tool result message
             context.messages.append(Message(
                 role=MessageRole.TOOL,
                 content=str(observation.output) if observation.success else observation.error,
@@ -507,8 +433,7 @@ class Agent(Generic[Deps, Result]):
         max_time_seconds: Optional[float] = None,
         safety_profile: str = "balanced"
     ):
-        """Run agent in ReAct mode with structured reasoning.
-        """
+        """Run agent in ReAct mode with structured reasoning."""
         react_loop = self._create_react_loop(max_steps, max_budget, max_time_seconds, safety_profile)
         return await react_loop.execute(query, context, stream_events=False)
     
@@ -521,9 +446,7 @@ class Agent(Generic[Deps, Result]):
         max_time_seconds: Optional[float] = None,
         safety_profile: str = "balanced"
     ):
-        """Run agent in ReAct mode with streaming events.
-            ReActEvent objects for each reasoning step
-        """
+        """Run agent in ReAct mode with streaming events."""
         react_loop = self._create_react_loop(max_steps, max_budget, max_time_seconds, safety_profile)
         async for event in react_loop.stream_execute(query, context):
             yield event
@@ -533,37 +456,16 @@ class Agent(Generic[Deps, Result]):
         user_prompt: str,
         *,
         deps: Optional[Deps] = None,
-        message_history: Optional[List[Message]] = None,
-        thread_id: Optional[str] = None
+        message_history: Optional[List[Message]] = None
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream single-hop execution with real-time events."""
         
         context = RunContext(
             deps=deps,
-            messages=message_history or [],
-            thread_id=thread_id
+            messages=message_history or []
         )
         
-        if thread_id:
-            if thread_id in self._thread_conversations:
-                previous_messages = self._thread_conversations[thread_id]
-                context.messages.extend(previous_messages)
-                context.metadata['restored_messages'] = len(previous_messages)
-            elif deps and hasattr(deps, 'context_service'):
-                try:
-                    thread_context = await deps.context_service.retrieve_context(
-                        query="", context_id=thread_id
-                    )
-                    if thread_context and 'messages' in thread_context:
-                        previous_messages = [
-                            Message(role=MessageRole(msg['role']), content=msg['content'])
-                            for msg in thread_context['messages']
-                        ]
-                        context.messages.extend(previous_messages)
-                        context.metadata['restored_messages'] = len(previous_messages)
-                except Exception as e:
-                    logger.warning(f"Could not load thread context: {e}")
-        
+        # Add system prompt if provided
         if self.system_prompt:
             if callable(self.system_prompt):
                 system_content = self.system_prompt(context)
@@ -573,6 +475,7 @@ class Agent(Generic[Deps, Result]):
             system_msg = Message(role=MessageRole.SYSTEM, content=system_content)
             context.messages.append(system_msg)
         
+        # Add user message
         user_msg = Message(role=MessageRole.USER, content=user_prompt)
         context.messages.append(user_msg)
         
@@ -591,6 +494,7 @@ class Agent(Generic[Deps, Result]):
             buffer = ""
             final_tool_calls = None
             
+            # Stream LLM response
             async for chunk in self.client.astream_chat(
                 messages=context.messages,
                 tools=self._tools if self._tools else None,
@@ -616,6 +520,7 @@ class Agent(Generic[Deps, Result]):
             )
             context.messages.append(response_message)
             
+            # Handle tool calls if present
             if final_tool_calls:
                 yield {
                     "event": "tools_start",
@@ -626,6 +531,7 @@ class Agent(Generic[Deps, Result]):
                 
                 yield {"event": "tools_complete", "data": {}}
                 
+                # Get final response after tool execution
                 final_response = await self.client.achat(
                     messages=context.messages,
                     tools=None,
@@ -635,13 +541,6 @@ class Agent(Generic[Deps, Result]):
                 result = final_response.message.content
             else:
                 result = buffer
-            
-            if thread_id:
-                messages_to_store = context.messages[-self.max_messages_per_thread:]
-                self._thread_conversations[thread_id] = messages_to_store
-                if len(self._thread_conversations) > self.max_stored_threads:
-                    oldest_thread = next(iter(self._thread_conversations))
-                    del self._thread_conversations[oldest_thread]
             
             yield {
                 "event": "execution_complete",
@@ -654,36 +553,3 @@ class Agent(Generic[Deps, Result]):
                 "data": {"error": str(e), "error_type": type(e).__name__}
             }
             raise
-
-
-class ExampleDeps:
-    """Example dependency container showing the abstracted approach.
-    
-    Applications should create their own dependency containers that implement
-    the service protocols. The agent doesn't need to know implementation details.
-    
-    Example implementations:
-    
-    # Database-based implementation (miiflow-web style)
-    class MiiflowWebDeps:
-        def __init__(self, db_pool, vector_client, redis_client):
-            self.context_service = DatabaseContextService(db_pool)  # DB-based
-            self.search_service = VectorSearchService(vector_client)  # Vector DB
-            self.database = PostgreSQLService(db_pool)  # Direct DB access
-            
-    # Simple file-based implementation  
-    class SimpleAppDeps:
-        def __init__(self):
-            self.context_service = FileContextService("./contexts/")  # File-based  
-            self.search_service = InMemorySearchService()  # In-memory
-            
-    # Hybrid implementation
-    class HybridDeps:
-        def __init__(self):
-            self.context_service = RedisContextService()  # Redis for speed
-            self.search_service = ElasticsearchService()  # Full-text search
-            self.database = RESTAPIService("api.example.com")  # External API
-            
-    The agent works with any of these through the protocol interfaces.
-    """
-    pass

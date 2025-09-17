@@ -34,19 +34,11 @@ from .tools import (
     get_fun_schema
 )
 from .agent import (
-    # Core agent architecture - Framework layer
+    # Core agent architecture - Stateless framework
     Agent,
     RunContext,
     RunResult,
     AgentType,
-    
-    # Protocols for applications to implement
-    DatabaseService,
-    VectorStoreService,
-    KnowledgeService,
-    
-    # Example for documentation
-    ExampleDeps,
 )
 
 __all__ = [
@@ -89,17 +81,9 @@ __all__ = [
     "detect_function_type",
     "get_fun_schema",
     
-    # Core agent architecture - Framework layer
+    # Core agent architecture - Stateless framework
     "Agent",
     "RunContext", 
     "RunResult",
     "AgentType",
-    
-    # Protocols for applications to implement
-    "DatabaseService",
-    "VectorStoreService", 
-    "KnowledgeService",
-    
-    # Example for documentation
-    "ExampleDeps",
 ]

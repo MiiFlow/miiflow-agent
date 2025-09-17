@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import groq
-from groq import AsyncGroq
+from groq import AsyncGroq, Groq
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ..core.client import ModelClient, ChatResponse, StreamChunk
@@ -25,7 +25,7 @@ class GroqClient(ModelClient):
     
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
         super().__init__(model=model, api_key=api_key, **kwargs)
-        self.client = Groq(api_key=api_key)
+        self.client = AsyncGroq(api_key=api_key)
         self.provider_name = "groq"
         self.stream_normalizer = get_stream_normalizer("groq")
     

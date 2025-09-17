@@ -4,6 +4,7 @@ import asyncio
 import httpx
 from typing import List, Dict, Any, Optional
 from miiflow_llm.core.tools import tool
+from miiflow_llm.core.tools.http.proxy_utils import get_proxy_config, should_use_proxy
 
 
 @tool("get_user_posts", "Fetch posts for a specific user from JSONPlaceholder API")
@@ -14,7 +15,14 @@ async def get_user_posts(userId: int) -> str:
     url = "https://jsonplaceholder.typicode.com/posts"
     
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Configure proxy if available and needed
+        proxy_config = get_proxy_config()
+        client_kwargs = {"timeout": 10.0}
+        
+        if proxy_config and should_use_proxy(url):
+            client_kwargs["proxies"] = proxy_config
+        
+        async with httpx.AsyncClient(**client_kwargs) as client:
             response = await client.get(url, params={"userId": userId})
             response.raise_for_status()
             
@@ -55,7 +63,14 @@ async def get_all_users() -> str:
     url = "https://jsonplaceholder.typicode.com/users"
     
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Configure proxy if available and needed
+        proxy_config = get_proxy_config()
+        client_kwargs = {"timeout": 10.0}
+        
+        if proxy_config and should_use_proxy(url):
+            client_kwargs["proxies"] = proxy_config
+        
+        async with httpx.AsyncClient(**client_kwargs) as client:
             response = await client.get(url)
             response.raise_for_status()
             
@@ -91,7 +106,14 @@ async def get_post_comments(postId: int) -> str:
     url = f"https://jsonplaceholder.typicode.com/posts/{postId}/comments"
     
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Configure proxy if available and needed
+        proxy_config = get_proxy_config()
+        client_kwargs = {"timeout": 10.0}
+        
+        if proxy_config and should_use_proxy(url):
+            client_kwargs["proxies"] = proxy_config
+        
+        async with httpx.AsyncClient(**client_kwargs) as client:
             response = await client.get(url)
             response.raise_for_status()
             

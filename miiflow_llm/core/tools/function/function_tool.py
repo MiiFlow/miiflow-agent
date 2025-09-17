@@ -150,7 +150,7 @@ class FunctionTool:
     
     def _filter_context_parameters(self):
         """Filter context parameters from the definition."""
-        if self.context_injection['pattern'] == 'first_param':
+        if self.context_injection['pattern'] in ('first_param', 'keyword'):
             param_name = self.context_injection['param_name']
             if param_name in self.definition.parameters:
                 del self.definition.parameters[param_name]

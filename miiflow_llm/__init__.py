@@ -20,7 +20,7 @@ from .core.exceptions import (
 )
 
 # Agent Interface - Clean abstraction for miiflow-web
-from .agents import AgentClient, AgentConfig, create_agent, ContextType, AgentContext
+from .agents import AgentClient, AgentConfig, create_agent, AgentContext
 
 __version__ = "0.1.0"
 __author__ = "Debjyoti Ray"
@@ -55,6 +55,5 @@ __all__ = [
     "AgentClient",
     "AgentConfig", 
     "create_agent",
-    "ContextType",
     "AgentContext",
 ]

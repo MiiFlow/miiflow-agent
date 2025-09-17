@@ -9,9 +9,10 @@ logger = logging.getLogger(__name__)
 
 
 class ContextPattern(Enum):
-    """Context injection patterns for function tools - Pure Pydantic AI style."""
+    """Context injection patterns for function tools."""
     NONE = "none"
     FIRST_PARAM = "first_param"  # Pydantic AI style: fn(ctx, ...)
+    KEYWORD = "keyword"  # Current style: fn(..., context=None)
 
 
 def detect_context_pattern(fn: Callable) -> ContextPattern:
@@ -29,14 +30,18 @@ def filter_context_params(fn_schema: Dict[str, Any], fn: Callable) -> Dict[str, 
 
 def analyze_context_pattern(fn: Callable) -> Dict[str, Any]:
     """Analyze how this function expects context injection.
-    Currently only supports Pydantic AI style: context as first parameter.
-
+    
+    Supports two patterns:
+    1. Pydantic AI style: context as first parameter (ctx, context)
+    2. Current style: context as keyword parameter anywhere in signature
     """
     sig = inspect.signature(fn)
     params = list(sig.parameters.items())
     
     if not params:
         return {'pattern': 'none'}
+    
+    # Check for first parameter pattern (Pydantic AI style)
     first_param_name, first_param = params[0]
     if first_param_name in ('ctx', 'context'):
         return {
@@ -44,6 +49,15 @@ def analyze_context_pattern(fn: Callable) -> Dict[str, Any]:
             'param_name': first_param_name,
             'param_index': 0
         }
+    
+    # Check for keyword pattern (current style)
+    for i, (param_name, param) in enumerate(params):
+        if param_name == 'context' and i > 0:  # Not first param, but named context
+            return {
+                'pattern': 'keyword',
+                'param_name': param_name,
+                'param_index': i
+            }
     
     return {'pattern': 'none'}
 

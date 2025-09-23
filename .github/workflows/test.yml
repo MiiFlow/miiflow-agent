@@ -32,7 +32,11 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e .[all]
+        # Install build tools needed for Poetry projects
+        pip install build wheel setuptools
+        # Install the project with all extras
+        pip install -e ".[all]"
+        # Install additional test dependencies
         pip install python-dotenv pytest pytest-asyncio
 
     - name: Run unit tests

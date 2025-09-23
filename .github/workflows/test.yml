@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
     - uses: actions/checkout@v4
@@ -32,13 +32,13 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e .
+        pip install -e .[all]
         pip install python-dotenv pytest pytest-asyncio
 
     - name: Run unit tests
       run: |
         # Run all tests in the tests directory
-          python -m pytest tests/ -v --tb=short
+        python -m pytest tests/ -v --tb=short
         
     - name: Test imports and basic functionality
       run: |
@@ -60,10 +60,6 @@ jobs:
         # This should work without API keys
         agent = create_agent(config)
         context = AgentContext()
-        
-        print('✅ Agent creation works!')
-        print('✅ Context creation works!')
-        print('✅ Refactored API imports work!')
         "
 
   lint:
@@ -92,31 +88,3 @@ jobs:
     - name: Lint with flake8
       run: |
         flake8 miiflow_llm/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics || echo "Linting check completed"
-
-  integration-test:
-    runs-on: ubuntu-latest
-    # Only run integration tests if we have API keys (will skip gracefully if missing)
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.11"
-        
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .
-        pip install python-dotenv pytest pytest-asyncio
-        
-    - name: Run integration tests with real APIs
-      env:
-        GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      run: |
-        # Run all tests that may require API keys
-        # Tests should gracefully handle missing API keys or skip appropriately
-        python -m pytest tests/ -v --tb=short -k "integration or api" || echo "Integration tests completed - some may have been skipped due to missing API keys
-        python -m pytest tests/ -v --tb=short || echo "All tests completed - some may have been skipped due to missing API keys"

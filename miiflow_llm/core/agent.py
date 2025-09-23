@@ -15,21 +15,18 @@ from .message import Message, MessageRole
 from .tools import FunctionTool, ToolRegistry
 from .exceptions import MiiflowLLMError, ErrorType
 
-# Type variables for dependency injection and results
+
 Deps = TypeVar('Deps')
 Result = TypeVar('Result')
 
 
 class AgentType(Enum):
-    """Agent types based on reasoning approach."""
     SINGLE_HOP = "single_hop"      # Simple, direct response
     REACT = "react"                # ReAct with multi-hop reasoning
 
 
 @dataclass
 class RunResult(Generic[Result]):
-    """Result from an agent run with metadata."""
-    
     data: Result
     messages: List[Message]
     all_messages: List[Message] = field(default_factory=list)
@@ -107,59 +104,28 @@ class Agent(Generic[Deps, Result]):
                 self._tools.append(tool)
         
     
-    def tool(
-        self, 
-        name_or_func=None, 
-        description: Optional[str] = None, 
-        *,
-        name: Optional[str] = None
-    ) -> Callable:
-        """Decorator to register a tool with this agent.
+    def add_tool(self, func: Callable) -> None:
+        """Add a tool function (decorated with global @tool) to this agent.
         
-        Supports multiple calling styles:
+        Usage:
+        from miiflow_llm.core.tools import tool
         
-        @agent.tool  # Simple - uses function name
-        async def search(ctx: RunContext, query: str) -> str:
-            ...
-        
-        @agent.tool("custom_name")  # With custom name
-        async def search_func(ctx: RunContext, query: str) -> str:
-            ...
+        @tool("search", "Search the web")
+        def search_web(query: str) -> str:
+            return search_results
             
-        @agent.tool("custom_name", "Custom description")  # With name and description
-        async def search_func(ctx: RunContext, query: str) -> str:
-            ...
-            
-        @agent.tool(name="custom_name", description="Custom description")  # With keywords
-        async def search_func(ctx: RunContext, query: str) -> str:
-            ...
+        agent.add_tool(search_web)
         """
+        from .tools.decorators import get_tool_from_function
         
-        def decorator(func: Callable) -> Callable:
-            # Determine tool name - keyword takes precedence
-            tool_name = name
-            tool_desc = description
-            
-            if not tool_name:
-                if isinstance(name_or_func, str):
-                    tool_name = name_or_func
-                elif name_or_func is not None and not callable(name_or_func):
-                    tool_name = str(name_or_func)
-            
-            tool_instance = FunctionTool(func, tool_name, tool_desc)
-            
-            self.tool_registry.register(tool_instance)
-            self._tools.append(tool_instance)
-            
-            logger.debug(f"Registered tool '{tool_instance.name}' with context pattern: {tool_instance.context_injection['pattern']}")
-            
-            return tool_instance
+        tool_instance = get_tool_from_function(func)
+        if not tool_instance:
+            raise ValueError(f"Function {func.__name__} is not decorated with @tool")
         
-        # Handle direct decoration (@agent.tool)
-        if callable(name_or_func):
-            return decorator(name_or_func)
-        else:
-            return decorator
+        self.tool_registry.register(tool_instance)
+        self._tools.append(tool_instance)
+        
+        logger.debug(f"Added tool '{tool_instance.name}' to agent")
     
     async def run(
         self, 
@@ -211,124 +177,42 @@ class Agent(Generic[Deps, Result]):
     async def _execute_with_context(self, context: RunContext[Deps]) -> Result:
         """Route to appropriate execution based on agent type."""
         if self.agent_type == AgentType.SINGLE_HOP:
-            return await self._execute_single_hop(context)
-        else:  # AgentType.REACT
-            return await self._execute_react(context)
-    
-    async def _execute_single_hop(self, context: RunContext[Deps]) -> Result:
-        """Execute simple single-hop request-response (like LLM adapter pattern)."""
-        response = await self.client.achat(
-            messages=context.messages,
-            tools=self._tools if self._tools else None,
-            temperature=self.temperature
-        )
-        
-        context.messages.append(response.message)
-        
-        # Handle tool calls if present
-        if response.message.tool_calls:
-            await self._execute_tool_calls(response.message.tool_calls, context)
-            final_response = await self.client.achat(
-                messages=context.messages,
-                tools=None, 
-                temperature=self.temperature
-            )
-            context.messages.append(final_response.message)
-            return final_response.message.content
-        
-        return response.message.content
-    
-    async def _execute_react(self, context: RunContext[Deps]) -> Result:
-        """Execute ReAct agent with multi-hop reasoning."""
-        reasoning_steps = []
-        
-        for iteration in range(self.max_iterations):
-            reasoning_step = {
-                "step": iteration + 1,
-                "timestamp": time.time(),
-                "context_summary": context.get_conversation_summary(),
-                "tools_available": len(self._tools),
-                "reasoning": None,
-                "action": None,
-                "result": None
-            }
-            
-            enhanced_messages = context.messages.copy()
-            
-            # Add reasoning summary for context
-            if iteration > 0:
-                reasoning_summary = self._build_reasoning_summary(reasoning_steps)
-                enhanced_messages.append(Message(
-                    role=MessageRole.SYSTEM,
-                    content=f"Previous reasoning steps: {reasoning_summary}"
-                ))
-            
-            response = await self.client.achat(
-                messages=enhanced_messages,
-                tools=self._tools if self._tools else None,
-                temperature=self.temperature
-            )
-            
-            reasoning_step["reasoning"] = f"LLM response in step {iteration + 1}"
-            context.messages.append(response.message)
-            
-            # Handle tool calls
-            if response.message.tool_calls:
-                reasoning_step["action"] = "tool_execution" 
-                reasoning_step["tools_called"] = [
-                    tc.function.name if hasattr(tc, 'function') else tc.get("function", {}).get("name") 
-                    for tc in response.message.tool_calls
-                ]
-                
-                await self._execute_tool_calls(response.message.tool_calls, context)
-                reasoning_step["result"] = "tools_executed"
-                reasoning_steps.append(reasoning_step)
-                
-                # Detect tool loops
-                if iteration > 2:
-                    recent_steps = reasoning_steps[-3:]
-                    if all(step.get("action") == "tool_execution" for step in recent_steps):
-                        logger.debug(f"Detected potential tool loop at iteration {iteration}")
-                        context.messages.append(Message(
-                            role=MessageRole.SYSTEM,
-                            content="You have executed several tools successfully. Please provide your final answer based on the tool results. Do not call any more tools."
-                        ))
-                
-                # Force termination near max iterations
-                if iteration >= self.max_iterations - 2:
-                    logger.debug(f"Near max iterations ({iteration}/{self.max_iterations}), forcing termination")
-                    context.messages.append(Message(
-                        role=MessageRole.SYSTEM,
-                        content="This is your final opportunity to respond. Provide your best answer based on available information. Do not call any tools."
-                    ))
-                
-                continue
-            
-            # Final response without tool calls
-            reasoning_step["action"] = "final_response"
-            reasoning_step["result"] = response.message.content
-            reasoning_steps.append(reasoning_step)
-            
+            # Extract user prompt from context messages
+            user_prompt = ""
+            for msg in reversed(context.messages):
+                if msg.role == MessageRole.USER:
+                    user_prompt = msg.content
+                    break
+
+            final_answer = None
+            async for event in self.stream_single_hop(user_prompt, context=context):
+                if isinstance(event, dict) and event.get("event") == "execution_complete":
+                    final_answer = event.get("data", {}).get("result", "")
+                    break
+
             if self.result_type == str:
-                return response.message.content
+                return final_answer or "No final answer received"
             else:
-                return response.message.content
-        
-        raise MiiflowLLMError(f"Agent exceeded maximum reasoning steps ({self.max_iterations})", ErrorType.MODEL_ERROR)
+                return final_answer or "No final answer received"
+        else:  # AgentType.REACT
+            # Extract user prompt from context messages
+            user_prompt = ""
+            for msg in reversed(context.messages):
+                if msg.role == MessageRole.USER:
+                    user_prompt = msg.content
+                    break
+
+            final_answer = None
+            async for event in self.stream_react(user_prompt, context, max_steps=self.max_iterations):
+                if event.event_type.value == "final_answer":
+                    final_answer = event.data.get("answer", "")
+                    break
+
+            if self.result_type == str:
+                return final_answer or "No final answer received"
+            else:
+                return final_answer or "No final answer received"
     
-    def _build_reasoning_summary(self, reasoning_steps: List[Dict]) -> str:
-        """Build a summary of previous reasoning steps."""
-        if not reasoning_steps:
-            return "No previous steps"
-        
-        summary_parts = []
-        for step in reasoning_steps[-3:]:
-            step_summary = f"Step {step['step']}: {step['action']}"
-            if step.get('tools_called'):
-                step_summary += f" (used tools: {', '.join(step['tools_called'])})"
-            summary_parts.append(step_summary)
-        
-        return " → ".join(summary_parts)
     
     async def _execute_tool_calls(
         self, 
@@ -393,91 +277,68 @@ class Agent(Generic[Deps, Result]):
                 tool_call_id=tool_call.id if hasattr(tool_call, 'id') else tool_call.get("id")
             ))
     
-    def _create_react_loop(
-        self,
-        max_steps: int = 10,
-        max_budget: Optional[float] = None,
-        max_time_seconds: Optional[float] = None,
-        safety_profile: str = "balanced"
-    ):
-        """Create a configured ReAct loop."""
-        from .react import ReActLoop, SafetyProfiles
-        
-        # Select safety profile
-        if safety_profile == "conservative":
-            safety_manager = SafetyProfiles.conservative()
-        elif safety_profile == "balanced":
-            safety_manager = SafetyProfiles.balanced()
-        elif safety_profile == "permissive":
-            safety_manager = SafetyProfiles.permissive()
-        else:
-            # Custom safety manager with provided parameters
-            from .react.safety import SafetyManager
-            safety_manager = SafetyManager(
-                max_steps=max_steps,
-                max_budget=max_budget,
-                max_time_seconds=max_time_seconds
-            )
-        
-        return ReActLoop(
-            agent=self,
-            safety_manager=safety_manager
-        )
-    
-    async def run_react(
-        self,
-        query: str,
-        context: RunContext,
-        max_steps: int = 10,
-        max_budget: Optional[float] = None,
-        max_time_seconds: Optional[float] = None,
-        safety_profile: str = "balanced"
-    ):
-        """Run agent in ReAct mode with structured reasoning."""
-        react_loop = self._create_react_loop(max_steps, max_budget, max_time_seconds, safety_profile)
-        return await react_loop.execute(query, context, stream_events=False)
-    
     async def stream_react(
         self,
         query: str,
         context: RunContext,
         max_steps: int = 10,
         max_budget: Optional[float] = None,
-        max_time_seconds: Optional[float] = None,
-        safety_profile: str = "balanced"
+        max_time_seconds: Optional[float] = None
     ):
         """Run agent in ReAct mode with streaming events."""
-        react_loop = self._create_react_loop(max_steps, max_budget, max_time_seconds, safety_profile)
-        async for event in react_loop.stream_execute(query, context):
-            yield event
+        from .react import ReActFactory
+        
+        orchestrator = ReActFactory.create_orchestrator(
+            agent=self,
+            max_steps=max_steps,
+            max_budget=max_budget,
+            max_time_seconds=max_time_seconds
+        )
+        
+        # Real-time streaming setup
+        event_queue = asyncio.Queue()
+
+        def real_time_stream(event):
+            """Stream events immediately as they're published."""
+            try:
+                event_queue.put_nowait(event)
+            except asyncio.QueueFull:
+                import logging
+                logging.getLogger(__name__).warning("Event queue full, dropping event")
+
+        orchestrator.event_bus.subscribe(real_time_stream)
+        execution_task = asyncio.create_task(orchestrator.execute(query, context))
+
+        try:
+            while not execution_task.done():
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
+                    yield event  
+                    event_queue.task_done()
+                except asyncio.TimeoutError:
+                    continue
+
+            while not event_queue.empty():
+                try:
+                    event = event_queue.get_nowait()
+                    yield event
+                    event_queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
+            await execution_task
+
+        finally:
+            orchestrator.event_bus.unsubscribe(real_time_stream)
     
     async def stream_single_hop(
         self,
         user_prompt: str,
         *,
-        deps: Optional[Deps] = None,
-        message_history: Optional[List[Message]] = None
+        context: RunContext[Deps]
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Stream single-hop execution with real-time events."""
+        """Stream single-hop execution - uses context from run() (no duplication)."""
         
-        context = RunContext(
-            deps=deps,
-            messages=message_history or []
-        )
-        
-        # Add system prompt if provided
-        if self.system_prompt:
-            if callable(self.system_prompt):
-                system_content = self.system_prompt(context)
-            else:
-                system_content = self.system_prompt
-            
-            system_msg = Message(role=MessageRole.SYSTEM, content=system_content)
-            context.messages.append(system_msg)
-        
-        # Add user message
-        user_msg = Message(role=MessageRole.USER, content=user_prompt)
-        context.messages.append(user_msg)
+        # Context is provided by run() - no setup duplication!
         
         yield {
             "event": "execution_start",
@@ -493,7 +354,8 @@ class Agent(Generic[Deps, Result]):
             
             buffer = ""
             final_tool_calls = None
-            
+            has_tool_calls = False
+
             # Stream LLM response
             async for chunk in self.client.astream_chat(
                 messages=context.messages,
@@ -506,12 +368,22 @@ class Agent(Generic[Deps, Result]):
                         "event": "llm_chunk",
                         "data": {"delta": chunk.delta, "content": buffer}
                     }
-                
-                if chunk.tool_calls and chunk.finish_reason:
-                    final_tool_calls = chunk.tool_calls
-                
+
+                # Check if we have tool calls
+                if chunk.tool_calls:
+                    has_tool_calls = True
+
                 if chunk.finish_reason:
                     break
+
+            # If we had tool calls, get them properly by making a non-streaming call
+            if has_tool_calls:
+                response = await self.client.achat(
+                    messages=context.messages,
+                    tools=self._tools if self._tools else None,
+                    temperature=self.temperature
+                )
+                final_tool_calls = response.message.tool_calls
             
             response_message = Message(
                 role=MessageRole.ASSISTANT,
@@ -530,8 +402,6 @@ class Agent(Generic[Deps, Result]):
                 await self._execute_tool_calls(final_tool_calls, context)
                 
                 yield {"event": "tools_complete", "data": {}}
-                
-                # Get final response after tool execution
                 final_response = await self.client.achat(
                     messages=context.messages,
                     tools=None,

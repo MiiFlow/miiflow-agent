@@ -50,9 +50,10 @@ class AgentClient:
         if context is None:
             context = AgentContext()
             
-        # Pass message history directly to agent if provided
+        # Pass context and message history to core agent
         result: RunResult = await self.agent.run(
             prompt,
+            deps=context.deps if hasattr(context, 'deps') else None,
             message_history=message_history,
             **kwargs
         )
@@ -100,7 +101,7 @@ class AgentClient:
             
         # Create a basic RunContext for streaming
         run_context = RunContext(
-            deps=context,
+            deps=context.deps if hasattr(context, 'deps') else None,
             messages=message_history or []
         )
         
@@ -121,23 +122,15 @@ class AgentClient:
     
     async def stream_single_hop(
         self,
-        prompt: str,
-        context: Optional[AgentContext] = None,
-        message_history: Optional[List[Message]] = None,
-        **kwargs
+        user_prompt: str,
+        *,
+        context: RunContext
     ):
-        """Stream single-hop execution (stateless).
-        
-        Delegates to Agent.stream_single_hop while maintaining clean interface.
-        """
-        if context is None:
-            context = AgentContext()
-            
+        """Stream single-hop execution - matches core agent signature exactly."""
         try:
             async for event in self.agent.stream_single_hop(
-                prompt,
-                message_history=message_history,
-                **kwargs
+                user_prompt,
+                context=context
             ):
                 yield event
         except Exception as e:

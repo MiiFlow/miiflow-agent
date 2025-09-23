@@ -2,7 +2,9 @@
 """Test function tools using decorated tools from examples."""
 
 import asyncio
-from miiflow_llm.agents import create_agent, AgentConfig, ContextType, AgentContext
+import time
+from miiflow_llm.agents import create_agent, AgentConfig, AgentContext
+from miiflow_llm.core.agent import AgentType
 
 
 import sys
@@ -27,7 +29,7 @@ async def test_with_working_config():
     agent = create_agent(AgentConfig(
         provider='openai',
         model='gpt-4o-mini',
-        context_type=ContextType.USER,
+        agent_type=AgentType.SINGLE_HOP,
         tools=function_tools,
         max_iterations=20,
         system_prompt="""You are a professional assistant with access to calculation and data retrieval tools.
@@ -54,7 +56,7 @@ GUIDELINES:
         print(f"  {name}: {desc} | params: {params}")
     print()
 
-    context = AgentContext(ContextType.USER)
+    context = AgentContext()
 
     # Test 1: Function tool (known to work)
     print("\nTest 1: Function Tool")
@@ -66,7 +68,7 @@ GUIDELINES:
 
     # Test 2: HTTP tool with same agent
     print("\nTest 2: HTTP Tool")
-    result2 = await agent.run("Get posts for user 1+4 and what is 2*46", context=context)
+    result2 = await agent.run("Get posts for user 2, then calculate 45* 45", context=context)
     response2 = result2.get('response', str(result2))
     tool_calls2 = result2.get('tool_calls_made', 0)
     print(f"Agent: {response2}")
@@ -79,5 +81,81 @@ GUIDELINES:
     else:
         print(f"\nNeither tool worked properly")
 
+async def test_streaming_react():
+    """Test real-time ReAct streaming with the same tools."""
+    print("\n" + "="*60)
+    print(" Testing Real-Time ReAct Streaming")
+    print("="*60)
+
+    # Same tool setup as working test
+    function_tools = []
+    for func in [calculate, get_user_posts, get_all_users]:
+        tool = get_tool_from_function(func)
+        if tool:
+            function_tools.append(tool)
+
+    # Create ReAct agent
+    agent = create_agent(AgentConfig(
+        provider='openai',
+        model='gpt-4o-mini',
+        agent_type=AgentType.REACT,  # Enable ReAct mode for streaming
+        tools=function_tools,
+        max_iterations=10,
+        system_prompt="""You are an AI assistant using ReAct (Reasoning + Acting) pattern.
+
+TOOLS AVAILABLE:
+- calculate: Evaluate mathematical expressions
+- get_user_posts: Fetch user posts from API by user ID
+- get_all_users: Fetch all users from API
+
+Think step by step and use tools when needed."""
+    ))
+
+    print(f"ReAct Agent created with {len(agent.list_tools())} tools")
+    print(f"Agent type: {agent.agent.agent_type}")
+
+    context = AgentContext()
+    query = "Get posts for user 2, then calculate how many posts they have multiplied by 3"
+
+    print(f"\nQuery: '{query}'")
+    print("Starting real-time streaming...\n")
+
+    start_time = time.time()
+    event_count = 0
+
+    try:
+        # Stream ReAct events in real-time
+        async for event in agent.stream_react(query, context):
+            elapsed = time.time() - start_time
+            event_count += 1
+
+            print(f" [{elapsed:.3f}s] {event.event_type.value}")
+
+            # Show relevant event details
+            if event.event_type.value == "thought":
+                thought = event.data.get("thought", "")
+                print(f"   💭 {thought}")
+            elif event.event_type.value == "action_planned":
+                action = event.data.get("action", "")
+                print(f"   📋 Planning: {action}")
+            elif event.event_type.value == "observation":
+                obs = event.data.get("observation", "")
+                action = event.data.get("action", "")
+                success = "SUCCESS" if event.data.get("success", True) else "❌"
+                print(f"   {success} {action}: {obs}...")
+            elif event.event_type.value == "final_answer":
+                answer = event.data.get("answer", "")
+                print(f"{answer}")
+
+            print()
+
+        total_time = time.time() - start_time
+        print(f" Streaming complete! {event_count} events in {total_time:.3f}s")
+
+    except Exception as e:
+        print(f" Streaming error: {e}")
+
 if __name__ == "__main__":
+    # Run both tests
     asyncio.run(test_with_working_config())
+    asyncio.run(test_streaming_react())

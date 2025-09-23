@@ -9,6 +9,7 @@ from miiflow_llm.core.agent import (
 from miiflow_llm.core.client import LLMClient, ChatResponse
 from miiflow_llm.core.message import Message, MessageRole
 from miiflow_llm.core.metrics import TokenCount
+from miiflow_llm.core.tools import tool
 from dataclasses import dataclass
 from typing import Optional
 
@@ -208,8 +209,8 @@ class TestStatelessPatterns:
         agent.add_tool(get_context_tool)
         
         # Verify tool was registered with context injection
-        tool = agent.tool_registry.tools["get_context"]
-        assert hasattr(tool, 'context_injection')
+        context_tool = agent.tool_registry.tools["get_context"]
+        assert hasattr(context_tool, 'context_injection')
 
 
 class TestImportPatterns:

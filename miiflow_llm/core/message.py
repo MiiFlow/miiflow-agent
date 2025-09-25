@@ -165,107 +165,7 @@ class Message:
         
         return cls(role=MessageRole.USER, content=content, **kwargs)
     
-    def to_openai_format(self) -> Dict[str, Any]:
-        """Convert to OpenAI message format."""
-        message = {"role": self.role.value}
-        
-        if isinstance(self.content, str):
-            message["content"] = self.content
-        else:
-            content_list = []
-            for block in self.content:
-                if isinstance(block, TextBlock):
-                    content_list.append({"type": "text", "text": block.text})
-                elif isinstance(block, ImageBlock):
-                    content_list.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": block.image_url,
-                            "detail": block.detail
-                        }
-                    })
-                elif isinstance(block, DocumentBlock):
-                    try:
-                        from miiflow_llm.utils.pdf_extractor import extract_pdf_text_simple
-                        pdf_text = extract_pdf_text_simple(block.document_url)
-                        
-                        filename_info = f" [{block.filename}]" if block.filename else ""
-                        pdf_content = f"[PDF Document{filename_info}]\n\n{pdf_text}"
-                        
-                        content_list.append({"type": "text", "text": pdf_content})
-                    except Exception as e:
-                        filename_info = f" {block.filename}" if block.filename else ""
-                        error_content = f"[Error processing PDF{filename_info}: {str(e)}]"
-                        content_list.append({"type": "text", "text": error_content})
-            
-            message["content"] = content_list
-        
-        if self.name:
-            message["name"] = self.name
-        if self.tool_call_id:
-            message["tool_call_id"] = self.tool_call_id
-        if self.tool_calls:
-            message["tool_calls"] = self.tool_calls
-            
-        return message
     
-    def to_anthropic_format(self) -> Dict[str, Any]:
-        """Convert to Anthropic message format."""
-        message = {"role": self.role.value}
-        
-        if isinstance(self.content, str):
-            message["content"] = self.content
-        else:
-            content_list = []
-            for block in self.content:
-                if isinstance(block, TextBlock):
-                    content_list.append({"type": "text", "text": block.text})
-                elif isinstance(block, ImageBlock):
-                    if block.image_url.startswith("data:"):
-                        # Extract base64 content and media type using universal helper
-                        base64_content, media_type = self._extract_base64_from_data_uri(block.image_url)
-                        content_list.append({
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": base64_content
-                            }
-                        })
-                    else:
-                        content_list.append({
-                            "type": "image",
-                            "source": {
-                                "type": "url",
-                                "media_type": "image/jpeg",  # Default for URLs
-                                "data": block.image_url
-                            }
-                        })
-                elif isinstance(block, DocumentBlock):
-                    # Anthropic supports documents natively (PDFs, etc.)
-                    if block.document_url.startswith("data:"):
-                        # Extract base64 content and media type using universal helper
-                        base64_content, media_type = self._extract_base64_from_data_uri(block.document_url)
-                        content_list.append({
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": base64_content
-                            }
-                        })
-                    else:
-                        content_list.append({
-                            "type": "document", 
-                            "source": {
-                                "type": "url",
-                                "media_type": f"application/{block.document_type}",
-                                "data": block.document_url
-                            }
-                        })
-            message["content"] = content_list
-            
-        return message
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
@@ -279,29 +179,6 @@ class Message:
             "metadata": self.metadata,
         }
     
-    @staticmethod
-    def _extract_base64_from_data_uri(data_uri: str) -> tuple[str, str]:
-        """
-        Universal base64 extractor for all multimedia content types.
-        """
-        if not data_uri.startswith("data:"):
-            return data_uri, "application/octet-stream"
-        
-        try:
-            if "," not in data_uri:
-                return data_uri, "application/octet-stream"
-                
-            header, base64_content = data_uri.split(",", 1)
-            
-            # Extract media type from header: data:media_type;base64
-            media_type = "application/octet-stream"  # default fallback
-            if ":" in header and ";" in header:
-                media_type = header.split(":")[1].split(";")[0]
-            
-            return base64_content, media_type
-            
-        except Exception:
-            return data_uri, "application/octet-stream"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Message":

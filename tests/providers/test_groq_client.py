@@ -183,7 +183,7 @@ class TestGroqClient:
         ]
         
         # Test that messages can be converted to OpenAI format (Groq uses OpenAI format)
-        converted = [msg.to_openai_format() for msg in messages]
+        converted = [client.convert_message_to_provider_format(msg) for msg in messages]
         
         assert len(converted) == 3
         assert converted[0]["role"] == "system"

@@ -156,8 +156,8 @@ class TestOpenAIClient:
             Message.assistant("Hi there!"),
         ]
         
-        # Test that messages can be converted to OpenAI format
-        converted = [msg.to_openai_format() for msg in messages]
+        # Test that messages can be converted to OpenAI format using provider
+        converted = [client.convert_message_to_provider_format(msg) for msg in messages]
         
         assert len(converted) == 3
         assert converted[0]["role"] == "system"
@@ -177,8 +177,8 @@ class TestOpenAIClient:
             ImageBlock(image_url="data:image/jpeg;base64,/9j/4AAQSkZJRg...", detail="high")
         ])
         
-        # Test multimodal message conversion through to_openai_format
-        converted = multimodal_message.to_openai_format()
+        # Test multimodal message conversion through provider
+        converted = client.convert_message_to_provider_format(multimodal_message)
         
         assert converted["role"] == "user"
         # Basic validation that multimodal conversion works

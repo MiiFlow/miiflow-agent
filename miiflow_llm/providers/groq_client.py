@@ -36,6 +36,11 @@ class GroqClient(ModelClient):
             "function": schema
         }
     
+    def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
+        """Convert Message to Groq format (reuse OpenAI logic since compatible)."""
+        from .openai_client import OpenAIClient
+        return OpenAIClient.convert_message_to_provider_format(OpenAIClient("", ""), message)
+    
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -51,7 +56,7 @@ class GroqClient(ModelClient):
     ) -> ChatResponse:
         """Send chat completion request to Groq."""
         try:
-            groq_messages = [msg.to_openai_format() for msg in messages]
+            groq_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
             
             request_params = {
                 "model": self.model,
@@ -129,7 +134,7 @@ class GroqClient(ModelClient):
     ) -> AsyncIterator[StreamChunk]:
         """Send streaming chat completion request to Groq."""
         try:
-            groq_messages = [msg.to_openai_format() for msg in messages]
+            groq_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
             
             request_params = {
                 "model": self.model,

@@ -35,6 +35,52 @@ class OpenAIClient(ModelClient):
             "function": schema
         }
     
+    def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
+        """Convert Message to OpenAI format."""
+        from ..core.message import TextBlock, ImageBlock, DocumentBlock
+        
+        openai_message = {"role": message.role.value}
+        
+        if isinstance(message.content, str):
+            openai_message["content"] = message.content
+        else:
+            content_list = []
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    content_list.append({"type": "text", "text": block.text})
+                elif isinstance(block, ImageBlock):
+                    content_list.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": block.image_url,
+                            "detail": block.detail
+                        }
+                    })
+                elif isinstance(block, DocumentBlock):
+                    try:
+                        from ..utils.pdf_extractor import extract_pdf_text_simple
+                        pdf_text = extract_pdf_text_simple(block.document_url)
+                        
+                        filename_info = f" [{block.filename}]" if block.filename else ""
+                        pdf_content = f"[PDF Document{filename_info}]\n\n{pdf_text}"
+                        
+                        content_list.append({"type": "text", "text": pdf_content})
+                    except Exception as e:
+                        filename_info = f" {block.filename}" if block.filename else ""
+                        error_content = f"[Error processing PDF{filename_info}: {str(e)}]"
+                        content_list.append({"type": "text", "text": error_content})
+            
+            openai_message["content"] = content_list
+        
+        if message.name:
+            openai_message["name"] = message.name
+        if message.tool_call_id:
+            openai_message["tool_call_id"] = message.tool_call_id
+        if message.tool_calls:
+            openai_message["tool_calls"] = message.tool_calls
+            
+        return openai_message
+    
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -50,7 +96,7 @@ class OpenAIClient(ModelClient):
     ) -> ChatResponse:
         """Send chat completion request to OpenAI."""
         try:
-            openai_messages = [msg.to_openai_format() for msg in messages]
+            openai_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
             
             request_params = {
                 "model": self.model,
@@ -117,7 +163,7 @@ class OpenAIClient(ModelClient):
     ) -> AsyncIterator[StreamChunk]:
         """Send streaming chat completion request to OpenAI."""
         try:
-            openai_messages = [msg.to_openai_format() for msg in messages]
+            openai_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
             
             request_params = {
                 "model": self.model,

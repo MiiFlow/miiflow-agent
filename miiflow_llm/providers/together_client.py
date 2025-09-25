@@ -54,12 +54,17 @@ class TogetherClient(ModelClient):
             "function": schema
         }
     
+    def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
+        """Convert Message to Together format (reuse OpenAI logic since compatible)."""
+        from .openai_client import OpenAIClient
+        return OpenAIClient.convert_message_to_provider_format(OpenAIClient("", ""), message)
+    
     def _convert_messages_to_openai_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """Convert messages to OpenAI format."""
         openai_messages = []
         
         for message in messages:
-            openai_message = message.to_openai_format()
+            openai_message = self.convert_message_to_provider_format(message)
             openai_messages.append(openai_message)
         
         return openai_messages

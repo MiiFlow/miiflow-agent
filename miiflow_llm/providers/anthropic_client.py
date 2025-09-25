@@ -36,6 +36,85 @@ class AnthropicClient(ModelClient):
             "input_schema": schema["parameters"]
         }
     
+    def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
+        """Convert Message to Anthropic format."""
+        from ..core.message import TextBlock, ImageBlock, DocumentBlock
+        
+        anthropic_message = {"role": message.role.value}
+        
+        if isinstance(message.content, str):
+            anthropic_message["content"] = message.content
+        else:
+            content_list = []
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    content_list.append({"type": "text", "text": block.text})
+                elif isinstance(block, ImageBlock):
+                    if block.image_url.startswith("data:"):
+                        base64_content, media_type = self._extract_base64_from_data_uri(block.image_url)
+                        content_list.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": base64_content
+                            }
+                        })
+                    else:
+                        content_list.append({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "media_type": "image/jpeg",  # Default for URLs
+                                "data": block.image_url
+                            }
+                        })
+                elif isinstance(block, DocumentBlock):
+                    if block.document_url.startswith("data:"):
+                        base64_content, media_type = self._extract_base64_from_data_uri(block.document_url)
+                        content_list.append({
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": base64_content
+                            }
+                        })
+                    else:
+                        content_list.append({
+                            "type": "document", 
+                            "source": {
+                                "type": "url",
+                                "media_type": f"application/{block.document_type}",
+                                "data": block.document_url
+                            }
+                        })
+            anthropic_message["content"] = content_list
+            
+        return anthropic_message
+    
+    @staticmethod
+    def _extract_base64_from_data_uri(data_uri: str) -> tuple[str, str]:
+        """Universal base64 extractor for all multimedia content types."""
+        if not data_uri.startswith("data:"):
+            return data_uri, "application/octet-stream"
+        
+        try:
+            if "," not in data_uri:
+                return data_uri, "application/octet-stream"
+                
+            header, base64_content = data_uri.split(",", 1)
+            
+            # Extract media type from header: data:media_type;base64
+            media_type = "application/octet-stream"  # default fallback
+            if ":" in header and ";" in header:
+                media_type = header.split(":")[1].split(";")[0]
+            
+            return base64_content, media_type
+            
+        except Exception:
+            return data_uri, "application/octet-stream"
+    
     def _prepare_messages(self, messages: List[Message]) -> tuple[Optional[str], List[Dict[str, Any]]]:
         """Prepare messages for Anthropic format (system separate)."""
         system_content = None
@@ -45,7 +124,7 @@ class AnthropicClient(ModelClient):
             if msg.role == MessageRole.SYSTEM:
                 system_content = msg.content if isinstance(msg.content, str) else str(msg.content)
             else:
-                anthropic_messages.append(msg.to_anthropic_format())
+                anthropic_messages.append(self.convert_message_to_provider_format(msg))
         
         return system_content, anthropic_messages
     

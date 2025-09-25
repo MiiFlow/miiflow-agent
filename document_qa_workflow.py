@@ -172,7 +172,7 @@ When analyzing documents, always provide:
             print(f"Processing document: {request.document_path}")
             print(f"Metadata: {document_metadata.get('pages', '?')} pages, {document_metadata.get('file_size', 0)/1024:.1f} KB")
             
-            message = Message.user_with_pdf(
+            message = Message.from_pdf(
                 text=request.query,
                 pdf_url=pdf_data_uri,
                 filename=Path(request.document_path).name
@@ -226,7 +226,7 @@ When analyzing documents, always provide:
             raise ValueError("Streaming analysis requires AgentType.REACT")
         
         pdf_data_uri = self._load_document_as_base64(request.document_path)
-        message = Message.user_with_pdf(
+        message = Message.from_pdf(
             text=request.query,
             pdf_url=pdf_data_uri,
             filename=Path(request.document_path).name

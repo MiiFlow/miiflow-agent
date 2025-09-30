@@ -5,6 +5,14 @@ import logging
 from typing import Optional, Dict, Any
 
 from ..agent import RunContext
+
+# Import observability components
+try:
+    from opentelemetry import trace
+    from ..observability.context import set_trace_context
+    OBSERVABILITY_AVAILABLE = True
+except ImportError:
+    OBSERVABILITY_AVAILABLE = False
 from ..message import Message, MessageRole
 from .data import ReActStep, ReActResult, StopReason, REACT_SYSTEM_PROMPT
 from .parser import ReActParser, ReActParsingError
@@ -31,8 +39,121 @@ class ReActOrchestrator:
         self.parser = parser
 
     async def execute(self, query: str, context: RunContext) -> ReActResult:
+        """Execute ReAct reasoning with observability."""
         execution_state = ExecutionState()
 
+        # Get tracer for observability using standard OpenTelemetry
+        tracer = None
+        if OBSERVABILITY_AVAILABLE:
+            tracer = trace.get_tracer(__name__)
+            if context.trace_context:
+                set_trace_context(context.trace_context)
+
+        if tracer:
+            with tracer.start_as_current_span(
+                "react.execute",
+                attributes={
+                    "query": query[:200] + "..." if len(query) > 200 else query,
+                    "max_steps": execution_state.max_steps
+                }
+            ) as span:
+                return await self._execute_with_observability(query, context, execution_state, span)
+        else:
+            return await self._execute_without_observability(query, context, execution_state)
+
+    async def _execute_with_observability(
+        self, query: str, context: RunContext, execution_state, span
+    ) -> ReActResult:
+        """Execute ReAct with observability tracing."""
+        try:
+            self._setup_context(query, context)
+            span.add_event("react_execution_start", {"query": query})
+
+            while execution_state.is_running:
+                execution_state.current_step += 1
+
+                # Create span for each ReAct step
+                tracer = trace.get_tracer(__name__)
+                with tracer.start_as_current_span(
+                    f"react.step_{execution_state.current_step}",
+                    attributes={
+                        "step_number": execution_state.current_step,
+                        "max_steps": execution_state.max_steps
+                    }
+                ) as step_span:
+                    if await self._should_stop(execution_state):
+                        span.add_event("react_early_stop", {
+                            "reason": "max_steps_reached",
+                            "steps_completed": execution_state.current_step - 1
+                        })
+                        break
+
+                    step = await self._execute_reasoning_step(context, execution_state)
+                    execution_state.steps.append(step)
+
+                    # Add step metadata to span
+                    if step.thought:
+                        step_span.set_attribute("thought", step.thought[:100] + "..." if len(step.thought) > 100 else step.thought)
+                    if step.action:
+                        step_span.set_attribute("action", step.action)
+                    step_span.set_attribute("is_final", step.is_final_step)
+                    step_span.set_attribute("is_error", step.is_error_step)
+
+                    span.add_event("react_step_complete", {
+                        "step": execution_state.current_step,
+                        "action": step.action if step.action else None,
+                        "is_final": step.is_final_step,
+                        "is_error": step.is_error_step
+                    })
+
+                    if step.is_final_step:
+                        execution_state.final_answer = step.answer
+                        await self._publish_final_answer_event(step, execution_state)
+                        span.add_event("react_final_answer", {
+                            "steps_completed": execution_state.current_step,
+                            "answer_length": len(step.answer) if step.answer else 0
+                        })
+                        break
+
+                    if step.is_error_step:
+                        span.add_event("react_error_step", {
+                            "step": execution_state.current_step,
+                            "error": step.observation
+                        })
+                        step_span.set_attribute("error", True)
+                        step_span.set_attribute("error_message", step.observation)
+                        break
+
+            result = self._build_result(execution_state)
+
+            # Add final result metadata
+            span.set_attribute("total_steps", len(execution_state.steps))
+            span.set_attribute("success", execution_state.final_answer is not None)
+            if result.stop_reason:
+                span.set_attribute("stop_reason", result.stop_reason.value)
+
+            span.add_event("react_execution_complete", {
+                "total_steps": len(execution_state.steps),
+                "success": execution_state.final_answer is not None,
+                "stop_reason": result.stop_reason.value if result.stop_reason else None
+            })
+
+            return result
+
+        except Exception as e:
+            span.add_event("react_execution_error", {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "steps_completed": len(execution_state.steps)
+            })
+            span.set_attribute("error", True)
+            span.set_attribute("error_message", str(e))
+            raise
+
+    async def _execute_without_observability(
+        self, query: str, context: RunContext, execution_state
+    ) -> ReActResult:
+        """Execute ReAct without observability (fallback)."""
         try:
             self._setup_context(query, context)
             while execution_state.is_running:
@@ -290,8 +411,9 @@ class ReActOrchestrator:
 class ExecutionState:
     """Simple state container for execution tracking."""
 
-    def __init__(self):
+    def __init__(self, max_steps: int = 10):
         self.current_step = 0
+        self.max_steps = max_steps
         self.steps = []
         self.start_time = time.time()
         self.is_running = True

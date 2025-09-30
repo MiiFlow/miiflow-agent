@@ -1,8 +1,46 @@
 #!/usr/bin/env python3
-"""Test function tools using decorated tools from examples."""
+"""Test function tools using decorated tools from examples with Phoenix observability."""
 
 import asyncio
+import os
 import time
+
+# Enable Phoenix observability using the cleaned-up API
+print("🔍 Setting up Phoenix observability...")
+
+# Import the new cleaned-up observability system
+from miiflow_llm.core.observability import (
+    enable_phoenix_tracing,
+    launch_local_phoenix,
+    check_instrumentation_status,
+    get_logger
+)
+
+# Setup observability
+print("⚙️  Initializing observability...")
+try:
+    # Launch Phoenix session
+    session = launch_local_phoenix()
+    if session:
+        print(f"✓ Phoenix started: {session.url}")
+        
+        # Enable tracing
+        success = enable_phoenix_tracing(endpoint="http://localhost:6006")
+        print(f"✓ Phoenix tracing enabled: {success}")
+    else:
+        print("⚠️  Failed to start Phoenix")
+    
+    # Check instrumentation status
+    instrumentation_status = check_instrumentation_status()
+    for provider, status in instrumentation_status.items():
+        available = "✓" if status.get("available", False) else "✗"
+        instrumented = "✓" if status.get("instrumented", False) else "✗"
+        print(f"  {provider}: Available {available}, Instrumented {instrumented}")
+        
+except Exception as e:
+    print(f"⚠️  Observability setup failed: {e}")
+    print("Continuing without observability...")
+
 from miiflow_llm.agents import create_agent, AgentConfig, AgentContext
 from miiflow_llm.core.agent import AgentType
 
@@ -81,6 +119,27 @@ GUIDELINES:
     else:
         print(f"\nNeither tool worked properly")
 
+    # Show observability status after tests
+    print("\n" + "="*50)
+    print("📊 Observability Status After Tests")
+    print("="*50)
+    
+    # Check if Phoenix tracing is working
+    print("✓ Phoenix tracing should be capturing LLM calls")
+    print("✓ Check Phoenix Dashboard at http://localhost:6006/ for traces")
+    print("✓ Structured logging with trace correlation is active")
+    
+    # Show current instrumentation status
+    try:
+        instrumentation_status = check_instrumentation_status()
+        print("✓ Current instrumentation status:")
+        for provider, status in instrumentation_status.items():
+            available = "✓" if status.get("available", False) else "✗"
+            instrumented = "✓" if status.get("instrumented", False) else "✗"
+            print(f"    {provider}: Available {available}, Instrumented {instrumented}")
+    except Exception as e:
+        print(f"⚠️  Could not check instrumentation status: {e}")
+
 async def test_streaming_react():
     """Test real-time ReAct streaming with the same tools."""
     print("\n" + "="*60)
@@ -156,6 +215,22 @@ Think step by step and use tools when needed."""
         print(f" Streaming error: {e}")
 
 if __name__ == "__main__":
+    print("🚀 Starting tests with Phoenix observability enabled...")
+    print("="*60)
+    
     # Run both tests
     asyncio.run(test_with_working_config())
     asyncio.run(test_streaming_react())
+    
+    # Keep session open until user input
+    print("\n🎉 Tests completed!")
+    print("🌐 Phoenix Dashboard should be available at: http://localhost:6006/")
+    print("📊 You can now explore the traces and observability data.")
+    print("💡 Keep this session running to maintain Phoenix access.")
+    
+    try:
+        input("\nPress Enter to exit and stop the session...")
+    except KeyboardInterrupt:
+        print("\n👋 Session terminated.")
+    
+    print("✅ Session ended.")

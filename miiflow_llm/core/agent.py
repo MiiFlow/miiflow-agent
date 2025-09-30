@@ -10,6 +10,14 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+# Import observability components
+try:
+    from .observability.context import TraceContext, get_current_trace_context
+    OBSERVABILITY_AVAILABLE = True
+except ImportError:
+    OBSERVABILITY_AVAILABLE = False
+    TraceContext = None
+
 from .client import LLMClient
 from .message import Message, MessageRole
 from .tools import FunctionTool, ToolRegistry
@@ -36,14 +44,33 @@ class RunResult(Generic[Result]):
             self.all_messages = self.messages
 
 
-@dataclass 
+@dataclass
 class RunContext(Generic[Deps]):
     """Context passed to tools and agent functions (stateless)."""
-    
+
     deps: Deps
     messages: List[Message] = field(default_factory=list)
     retry: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    trace_context: Optional[TraceContext] = None
+
+    def __post_init__(self):
+        """Initialize trace context if available."""
+        if OBSERVABILITY_AVAILABLE and self.trace_context is None:
+            # Get current trace context or create a new one
+            current_context = get_current_trace_context()
+            if current_context:
+                self.trace_context = current_context.child_context()
+
+    def with_trace_context(self, trace_context: Optional[TraceContext]) -> "RunContext[Deps]":
+        """Create a copy with a specific trace context."""
+        return RunContext(
+            deps=self.deps,
+            messages=self.messages.copy(),
+            retry=self.retry,
+            metadata=self.metadata.copy(),
+            trace_context=trace_context
+        )
     
     def last_user_message(self) -> Optional[Message]:
         """Get the last user message."""
@@ -128,18 +155,32 @@ class Agent(Generic[Deps, Result]):
         logger.debug(f"Added tool '{tool_instance.name}' to agent")
     
     async def run(
-        self, 
-        user_prompt: str, 
+        self,
+        user_prompt: str,
         *,
         deps: Optional[Deps] = None,
         message_history: Optional[List[Message]] = None
     ) -> RunResult[Result]:
         """Run the agent with dependency injection (stateless)."""
-        
+
+        # Get tracer for observability using standard OpenTelemetry
+        tracer = None
+        if OBSERVABILITY_AVAILABLE:
+            from .observability.context import set_trace_context
+            try:
+                from opentelemetry import trace
+                tracer = trace.get_tracer(__name__)
+            except ImportError:
+                tracer = None
+
         context = RunContext(
             deps=deps,
             messages=message_history or []
         )
+
+        # Set trace context if available
+        if tracer and context.trace_context:
+            set_trace_context(context.trace_context)
         
         # Add system prompt if provided
         if self.system_prompt:
@@ -154,24 +195,63 @@ class Agent(Generic[Deps, Result]):
         # Add user message
         user_msg = Message(role=MessageRole.USER, content=user_prompt)
         context.messages.append(user_msg)
-        
+        # Execute with observability
+        if tracer:
+            with tracer.start_as_current_span(
+                "agent.run",
+                attributes={
+                    "agent_type": self.agent_type.value,
+                    "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
+                    "message_history_count": len(message_history) if message_history else 0,
+                    "max_retries": self.retries,
+                    "tools_count": len(self._tools)
+                }
+            ) as span:
+                return await self._execute_with_retries(context, tracer, span)
+        else:
+            return await self._execute_with_retries(context, None, None)
+
+    async def _execute_with_retries(self, context: RunContext[Deps], tracer, span) -> RunResult[Result]:
+        """Execute agent with retries and observability."""
         # Execute with retries
         for attempt in range(self.retries):
             context.retry = attempt
             try:
+                if span:
+                    span.add_event(f"agent_attempt_{attempt + 1}", {
+                        "attempt": attempt + 1,
+                        "max_retries": self.retries
+                    })
+
                 result = await self._execute_with_context(context)
-                
+
+                if span:
+                    span.add_event("agent_execution_success", {
+                        "attempt": attempt + 1,
+                        "final_attempt": True
+                    })
+
                 return RunResult(
                     data=result,
                     messages=context.messages,
                     all_messages=context.messages.copy()
                 )
-                
+
             except Exception as e:
+                if span:
+                    span.add_event("agent_execution_error", {
+                        "attempt": attempt + 1,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "is_final_attempt": attempt == self.retries - 1
+                    })
+
                 if attempt == self.retries - 1:
+                    if span:
+                        span.attributes["error"] = True
+                        span.attributes["error_message"] = str(e)
                     raise MiiflowLLMError(f"Agent failed after {self.retries} retries: {e}", ErrorType.MODEL_ERROR)
                 continue
-        
         raise MiiflowLLMError("Agent execution failed", ErrorType.MODEL_ERROR)
     
     async def _execute_with_context(self, context: RunContext[Deps]) -> Result:

@@ -105,20 +105,10 @@ class AgentClient:
             messages=message_history or []
         )
         
-        try:
-            async for event in self.agent.stream_react(prompt, run_context, **kwargs):
-                yield event
-        except Exception as e:
-            # Emit error event with AgentClient context
-            yield {
-                "event": "error", 
-                "data": {
-                    "error": str(e), 
-                    "error_type": type(e).__name__,
-                    "context": "AgentClient.stream_react"
-                }
-            }
-            raise
+        # Just pass through events - don't interfere with the stream
+        # The core agent already handles errors properly with ReActEvent objects
+        async for event in self.agent.stream_react(prompt, run_context, **kwargs):
+            yield event
     
     async def stream_single_hop(
         self,

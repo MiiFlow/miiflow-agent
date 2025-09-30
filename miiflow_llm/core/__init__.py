@@ -1,5 +1,21 @@
 """Core components for Miiflow LLM."""
 
+# Initialize observability on module import
+try:
+    from .observability.auto_instrumentation import enable_phoenix_tracing
+    from .observability.config import ObservabilityConfig
+    
+    # Simple Phoenix setup if enabled via environment
+    config = ObservabilityConfig.from_env()
+    if config.phoenix_enabled:
+        enable_phoenix_tracing(config.phoenix_endpoint)
+except ImportError:
+    # Observability dependencies not available
+    _observability_setup = {"phoenix_enabled": False}
+except Exception:
+    # Observability setup failed, continue without it
+    _observability_setup = {"phoenix_enabled": False}
+
 from .client import LLMClient, ModelClient, ChatResponse, StreamChunk
 from .message import Message, MessageRole, ContentBlock, TextBlock, ImageBlock
 from .metrics import LLMMetrics, TokenCount, UsageData, MetricsCollector
@@ -41,6 +57,17 @@ from .agent import (
     AgentType,
 )
 
+# Observability exports (optional)
+try:
+    from .observability import (
+        ObservabilityConfig,
+        TraceContext,
+        get_current_trace_context,
+    )
+    _OBSERVABILITY_AVAILABLE = True
+except ImportError:
+    _OBSERVABILITY_AVAILABLE = False
+
 __all__ = [
     "LLMClient",
     "ModelClient",
@@ -69,7 +96,6 @@ __all__ = [
  
     "FunctionTool",
     "ToolRegistry",
-    "SimpleToolRegistry",  # Backward compatibility
     "FunctionOutput", 
     "ToolResult",
     "FunctionType",
@@ -83,7 +109,15 @@ __all__ = [
     
     # Core agent architecture - Stateless framework
     "Agent",
-    "RunContext", 
+    "RunContext",
     "RunResult",
     "AgentType",
 ]
+
+# Add observability exports if available
+if _OBSERVABILITY_AVAILABLE:
+    __all__.extend([
+        "ObservabilityConfig",
+        "TraceContext",
+        "get_current_trace_context",
+    ])

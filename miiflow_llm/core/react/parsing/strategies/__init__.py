@@ -1,11 +1,7 @@
-"""Healing strategies for ReAct response parsing."""
+"""Parsing strategies for ReAct responses - now deprecated.
 
-from .json_extractor import JsonBlockExtractor
-from .error_fixer import CommonErrorFixer
-from .regex_reconstructor import RegexReconstructor
+The strategies directory is kept for backward compatibility but is no longer used.
+XML parsing has replaced JSON-based parsing with healing strategies.
+"""
 
-__all__ = [
-    "JsonBlockExtractor",
-    "CommonErrorFixer",
-    "RegexReconstructor",
-]
+__all__ = []

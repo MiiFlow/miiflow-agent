@@ -82,7 +82,16 @@ class EventFactory:
             step_number=step_number,
             data={"thought": thought}
         )
-    
+
+    @staticmethod
+    def thinking_chunk(step_number: int, delta: str, content: str) -> ReActEvent:
+        """Create thinking chunk event for real-time streaming."""
+        return ReActEvent(
+            event_type=ReActEventType.THINKING_CHUNK,
+            step_number=step_number,
+            data={"delta": delta, "content": content}
+        )
+
     @staticmethod
     def action_planned(step_number: int, action: str, action_input: dict) -> ReActEvent:
         """Create action planned event."""
@@ -127,7 +136,16 @@ class EventFactory:
             step_number=step_number,
             data={"answer": answer}
         )
-    
+
+    @staticmethod
+    def final_answer_chunk(step_number: int, delta: str, content: str) -> ReActEvent:
+        """Create final answer chunk event for real-time streaming."""
+        return ReActEvent(
+            event_type=ReActEventType.FINAL_ANSWER_CHUNK,
+            step_number=step_number,
+            data={"delta": delta, "content": content}
+        )
+
     @staticmethod
     def error(step_number: int, error: str, error_type: str = "unknown") -> ReActEvent:
         """Create error event."""

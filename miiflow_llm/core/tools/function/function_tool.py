@@ -20,31 +20,41 @@ class FunctionTool:
     def __init__(self, fn: Callable, name: Optional[str] = None, description: Optional[str] = None):
         from ..schemas import ToolSchema, ParameterSchema
         from ..types import ToolType, ParameterType
-        
+
         self.fn = fn
         self.function_type = detect_function_type(fn)
         self.context_injection = analyze_context_pattern(fn)
-        schema_dict = get_fun_schema(fn)
-        parameters = {}
-        if 'parameters' in schema_dict and 'properties' in schema_dict['parameters']:
-            for param_name, param_info in schema_dict['parameters']['properties'].items():
-                # Convert string type to ParameterType enum
-                type_str = param_info.get('type', 'string')
-                param_type = ParameterType(type_str) if isinstance(type_str, str) else type_str
-                
-                parameters[param_name] = ParameterSchema(
-                    name=param_name,
-                    type=param_type,
-                    description=param_info.get('description', f'Parameter {param_name}'),
-                    required=param_name in schema_dict['parameters'].get('required', []),
-                    default=param_info.get('default')
-                )
-        self.definition = ToolSchema(
-            name=name or schema_dict.get('name', fn.__name__),
-            description=description or schema_dict.get('description', f'Function {fn.__name__}'),
-            tool_type=ToolType.FUNCTION,
-            parameters=parameters
-        )
+
+        # Check if explicit schema was set by decorator
+        if hasattr(fn, '_tool_schema'):
+            # Use explicit schema from decorator
+            self.definition = fn._tool_schema
+            logger.debug(f"Using explicit schema for FunctionTool '{self.definition.name}'")
+        else:
+            # Fall back to reflection-based schema generation
+            schema_dict = get_fun_schema(fn)
+            parameters = {}
+            if 'parameters' in schema_dict and 'properties' in schema_dict['parameters']:
+                for param_name, param_info in schema_dict['parameters']['properties'].items():
+                    # Convert string type to ParameterType enum
+                    type_str = param_info.get('type', 'string')
+                    param_type = ParameterType(type_str) if isinstance(type_str, str) else type_str
+
+                    parameters[param_name] = ParameterSchema(
+                        name=param_name,
+                        type=param_type,
+                        description=param_info.get('description', f'Parameter {param_name}'),
+                        required=param_name in schema_dict['parameters'].get('required', []),
+                        default=param_info.get('default')
+                    )
+            self.definition = ToolSchema(
+                name=name or schema_dict.get('name', fn.__name__),
+                description=description or schema_dict.get('description', f'Function {fn.__name__}'),
+                tool_type=ToolType.FUNCTION,
+                parameters=parameters
+            )
+            logger.debug(f"Generated schema via reflection for FunctionTool '{self.definition.name}'")
+
         self._filter_context_parameters()
     
     @property

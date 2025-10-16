@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "miiflow-llm"
-version = "0.1.0"
+version = "0.1.1"
 description = "A lightweight, unified interface for LLM providers with streaming, tool calling, and structured output support"
 authors = ["Debjyoti Ray <debjyotiray0104@gmail.com/ dev@miiflow.ai>", "Yaozhong Kang <yaozhong@miiflow.ai>"]
 readme = "README.md"

@@ -1,8 +1,11 @@
 """Clean tool executor adapter."""
 
+import logging
 from typing import List
 
 from ..tools import ToolResult
+
+logger = logging.getLogger(__name__)
 
 
 class AgentToolExecutor:
@@ -73,9 +76,15 @@ class AgentToolExecutor:
         descriptions = []
         for tool_name in sorted(self.list_tools()):
             schema = self.get_tool_schema(tool_name)
-            descriptions.append(self._format_tool_description(tool_name, schema))
+            tool_desc = self._format_tool_description(tool_name, schema)
+            descriptions.append(tool_desc)
 
-        return "\n".join(descriptions)
+            # DEBUG: Log each tool description
+            logger.info(f"[TOOL SCHEMA] {tool_desc}")
+
+        tools_text = "\n".join(descriptions)
+        logger.info(f"[TOOLS DESCRIPTION] Built tools description with {len(descriptions)} tools")
+        return tools_text
 
     def _save_tool_state(self) -> dict:
         return {
@@ -92,10 +101,28 @@ class AgentToolExecutor:
         self._client.tool_registry.http_tools = {}
 
     def _format_tool_description(self, tool_name: str, schema: dict) -> str:
+        """Format tool description for system prompt with detailed parameter information."""
         desc = schema.get("description", "No description available")
         params = schema.get("parameters", {}).get("properties", {})
 
-        if params:
-            param_names = list(params.keys())
-            return f"- {tool_name}({', '.join(param_names)}): {desc}"
-        return f"- {tool_name}(): {desc}"
+        if not params:
+            return f"- {tool_name}(): {desc}"
+
+        # Format parameters with type and enum information
+        param_descriptions = []
+        for param_name, param_schema in params.items():
+            param_type = param_schema.get("type", "any")
+
+            # If enum exists, show the allowed values
+            if "enum" in param_schema and param_schema["enum"]:
+                enum_values = param_schema["enum"]
+                if len(enum_values) <= 5:  # Show all values if reasonable
+                    enum_str = "|".join(f'"{v}"' for v in enum_values)
+                    param_descriptions.append(f'{param_name}: {param_type}({enum_str})')
+                else:  # Just indicate there are allowed values
+                    param_descriptions.append(f'{param_name}: {param_type}(allowed values defined)')
+            else:
+                param_descriptions.append(f'{param_name}: {param_type}')
+
+        params_str = ', '.join(param_descriptions)
+        return f"- {tool_name}({params_str}): {desc}"

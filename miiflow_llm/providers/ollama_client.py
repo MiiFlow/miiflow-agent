@@ -128,17 +128,20 @@ class OllamaClient(ModelClient):
                     
                     result = await response.json()
             
-            content = result.get("message", {}).get("content", "")
-            
+            message_data = result.get("message", {})
+            content = message_data.get("content", "")
+            tool_calls = message_data.get("tool_calls", None)
+
             usage = TokenCount(
                 input_tokens=sum(len(msg.get("content", "").split()) for msg in ollama_messages),
                 output_tokens=len(content.split()),
                 total_tokens=sum(len(msg.get("content", "").split()) for msg in ollama_messages) + len(content.split())
             )
-            
+
             response_message = Message(
                 role=MessageRole.ASSISTANT,
-                content=content
+                content=content,
+                tool_calls=tool_calls if tool_calls else None
             )
             
             from ..core.client import ChatResponse

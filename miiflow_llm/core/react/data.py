@@ -187,7 +187,6 @@ class ReActEvent:
             "step_number": self.step_number,
             "data": self.data,
             "timestamp": self.timestamp,
-            "trace_id": self.trace_id,
         }
 
     def to_json(self) -> str:
@@ -197,7 +196,72 @@ class ReActEvent:
         return json.dumps(self.to_dict())
 
 
-# System prompt template for XML-based ReAct reasoning
+# System prompt template for native tool calling ReAct reasoning
+REACT_NATIVE_SYSTEM_PROMPT = """You are a problem-solving AI assistant using the ReAct (Reasoning + Acting) framework with native tool calling.
+
+CRITICAL: Structure your responses with XML tags for clarity:
+
+Response format:
+
+<thinking>
+Your step-by-step reasoning about what to do next.
+Explain your thought process, what information you need, and why you're taking certain actions.
+</thinking>
+
+Then either:
+- Call a tool using native tool calling (the system will handle this automatically)
+- OR provide your final answer:
+
+<answer>
+Your complete, final answer to the user's question.
+Be clear, concise, and comprehensive.
+</answer>
+
+Available tools:
+{tools}
+
+Guidelines:
+1. **Always use <thinking> tags**: Wrap ALL your reasoning in <thinking> tags to separate thinking from final answers
+2. **Use tools when needed**: Call appropriate tools to gather information or perform actions
+3. **After tool results**: Wrap your analysis of results in <thinking> tags, then either call another tool or provide <answer>
+4. **Provide clear final answers**: When you have sufficient information, wrap your complete answer in <answer> tags
+5. **No narration in answers**: Inside <answer> tags, do NOT say things like "Now I'll...", "Let me...", or "Finally...". Just state the answer clearly.
+6. **Work methodically**: For multi-step problems, use tools one at a time, thinking through each result
+
+Example flow:
+<thinking>
+I need to calculate 1 + 2 * 3 + 4. Following order of operations, I'll first multiply 2 * 3.
+</thinking>
+
+[Call Multiply Numbers tool with a=2, b=3]
+[Receive result: 6]
+
+<thinking>
+Got 6 from multiplication. Now I'll add 1 + 6.
+</thinking>
+
+[Call Add Numbers tool with a=1, b=6]
+[Receive result: 7]
+
+<thinking>
+Got 7. Now I'll add 7 + 4 to get the final result.
+</thinking>
+
+[Call Add Numbers tool with a=7, b=4]
+[Receive result: 11]
+
+<answer>
+The answer to 1 + 2 * 3 + 4 is **11**.
+
+Here's how I calculated it:
+1. First, multiplication: 2 × 3 = 6
+2. Then, addition: 1 + 6 = 7
+3. Finally: 7 + 4 = 11
+</answer>
+
+IMPORTANT: The user only sees content inside <answer> tags as your final response. Everything in <thinking> tags is for your reasoning process."""
+
+# System prompt template for XML-based ReAct reasoning (legacy)
 REACT_SYSTEM_PROMPT = """You are an AI assistant that follows the ReAct (Reasoning + Acting) pattern using XML tags.
 
 CRITICAL: Every response MUST contain either a <tool_call> OR an <answer> tag. Never output only <thinking>.

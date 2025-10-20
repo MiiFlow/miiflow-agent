@@ -82,6 +82,7 @@ class Agent(Generic[Deps, Result]):
         max_iterations: int = 10,
         temperature: float = 0.7,
         tools: Optional[List[FunctionTool]] = None,
+        use_native_tool_calling: bool = True,
     ):
         self.client = client
         self.agent_type = agent_type
@@ -91,6 +92,7 @@ class Agent(Generic[Deps, Result]):
         self.retries = retries
         self.max_iterations = max_iterations
         self.temperature = temperature
+        self.use_native_tool_calling = use_native_tool_calling
 
         # Share the tool registry with LLMClient for consistency
         self.tool_registry = self.client.tool_registry
@@ -295,6 +297,7 @@ class Agent(Generic[Deps, Result]):
             max_steps=max_steps,
             max_budget=max_budget,
             max_time_seconds=max_time_seconds,
+            use_native_tools=self.use_native_tool_calling,
         )
 
         # Real-time streaming setup

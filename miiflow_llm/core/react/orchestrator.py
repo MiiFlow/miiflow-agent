@@ -24,11 +24,13 @@ class ReActOrchestrator:
         event_bus: EventBus,
         safety_manager: SafetyManager,
         parser: XMLReActParser,
+        use_native_tools: bool = False,
     ):
         self.tool_executor = tool_executor
         self.event_bus = event_bus
         self.safety_manager = safety_manager
         self.parser = parser
+        self.use_native_tools = use_native_tools
 
     async def execute(self, query: str, context: RunContext) -> ReActResult:
         execution_state = ExecutionState()
@@ -39,7 +41,13 @@ class ReActOrchestrator:
                 execution_state.current_step += 1
                 if await self._should_stop(execution_state):
                     break
-                step = await self._execute_reasoning_step(context, execution_state)
+
+                # Route to appropriate reasoning method based on configuration
+                if self.use_native_tools:
+                    step = await self._execute_reasoning_step_native(context, execution_state)
+                else:
+                    step = await self._execute_reasoning_step(context, execution_state)
+
                 execution_state.steps.append(step)
 
                 if step.is_final_step:
@@ -76,7 +84,14 @@ class ReActOrchestrator:
             context.messages = []
 
         tools_info = self.tool_executor.build_tools_description()
-        system_prompt = REACT_SYSTEM_PROMPT.format(tools=tools_info)
+
+        # Choose appropriate system prompt based on mode
+        if self.use_native_tools:
+            from .data import REACT_NATIVE_SYSTEM_PROMPT
+
+            system_prompt = REACT_NATIVE_SYSTEM_PROMPT.format(tools=tools_info)
+        else:
+            system_prompt = REACT_SYSTEM_PROMPT.format(tools=tools_info)
 
         messages = [Message(role=MessageRole.SYSTEM, content=system_prompt)]
         messages.extend(context.messages)
@@ -96,10 +111,240 @@ class ReActOrchestrator:
             return True
         return False
 
+    async def _execute_reasoning_step_native(
+        self, context: RunContext, state: "ExecutionState"
+    ) -> ReActStep:
+        """Execute a single reasoning step with native tool calling.
+
+        Native tool calling uses a single LLM call where the model:
+        1. Generates thinking/reasoning text in <thinking> tags
+        2. Decides whether to call tools (optional)
+        3. Provides final answer in <answer> tags when ready
+        """
+        step = ReActStep(step_number=state.current_step, thought="")
+        step_start_time = time.time()
+
+        try:
+            logger.debug(
+                f"Step {state.current_step} - Conversation context has {len(context.messages)} messages"
+            )
+
+            # Publish step start event
+            await self.event_bus.publish(EventFactory.step_started(state.current_step))
+
+            # Single-phase: Stream LLM response WITH tools enabled
+            buffer = ""
+            tokens_used = 0
+            cost = 0.0
+            tool_calls_detected = None
+
+            # Reset parser for new response
+            self.parser.reset()
+
+            logger.debug(f"Step {state.current_step} - Calling LLM with tools enabled")
+
+            async for chunk in self.tool_executor.stream_with_tools(messages=context.messages):
+                # Stream text as it arrives
+                if chunk.delta:
+                    buffer += chunk.delta
+
+                    # Parse XML incrementally to detect <thinking> and <answer> tags
+                    from .parsing.xml_parser import ParseEventType
+
+                    for parse_event in self.parser.parse_streaming(chunk.delta):
+                        if parse_event.event_type == ParseEventType.THINKING:
+                            # Thinking chunk detected - emit streaming chunk
+                            delta = parse_event.data["delta"]
+                            await self.event_bus.publish(
+                                EventFactory.thinking_chunk(state.current_step, delta, buffer)
+                            )
+
+                        elif parse_event.event_type == ParseEventType.THINKING_COMPLETE:
+                            # Complete thinking extracted
+                            step.thought = parse_event.data["thought"]
+                            # Publish complete thought event
+                            await self.event_bus.publish(
+                                EventFactory.thought(state.current_step, step.thought)
+                            )
+
+                        elif parse_event.event_type == ParseEventType.ANSWER_START:
+                            # <answer> tag detected - enter streaming answer mode
+                            state.ready_for_answer = True
+
+                        elif parse_event.event_type == ParseEventType.ANSWER_CHUNK:
+                            # Stream answer chunks in real-time
+                            delta = parse_event.data["delta"]
+                            if not hasattr(state, "accumulated_answer"):
+                                state.accumulated_answer = ""
+                            state.accumulated_answer += delta
+                            # Emit streaming chunk event
+                            await self.event_bus.publish(
+                                EventFactory.final_answer_chunk(
+                                    state.current_step, delta, state.accumulated_answer
+                                )
+                            )
+
+                        elif parse_event.event_type == ParseEventType.ANSWER_COMPLETE:
+                            # Answer complete
+                            step.answer = parse_event.data["answer"]
+
+                # Capture tool calls if present in chunk
+                if chunk.tool_calls:
+                    tool_calls_detected = chunk.tool_calls
+
+                # Accumulate metrics
+                if chunk.usage:
+                    tokens_used = chunk.usage.total_tokens
+                if hasattr(chunk, "cost"):
+                    cost += chunk.cost
+
+            step.tokens_used = tokens_used
+            step.cost = cost
+
+            logger.debug(
+                f"Step {state.current_step} - Response complete. Thought: {step.thought[:100] if step.thought else 'None'}... Answer: {bool(step.answer)}... Tool calls: {bool(tool_calls_detected)}"
+            )
+
+            # Reconstruct assistant message from buffer
+            # This preserves the complete response including XML tags for context
+            assistant_content = buffer.strip()
+
+            # Handle tool calls if present
+            if tool_calls_detected:
+                logger.debug(
+                    f"Step {state.current_step} - Tool calls detected: {len(tool_calls_detected)}"
+                )
+
+                # Take first tool call (ReAct is single-action per step)
+                tool_call = tool_calls_detected[0]
+
+                # Extract tool name, arguments, and ID
+                if hasattr(tool_call, "function"):
+                    step.action = tool_call.function.name
+                    tool_args = tool_call.function.arguments
+                    tool_call_id = getattr(tool_call, "id", None)
+                else:
+                    step.action = tool_call.get("function", {}).get("name")
+                    tool_args = tool_call.get("function", {}).get("arguments", {})
+                    tool_call_id = tool_call.get("id")
+
+                # Parse arguments if they're a JSON string
+                if isinstance(tool_args, str):
+                    import json
+
+                    try:
+                        step.action_input = json.loads(tool_args)
+                    except json.JSONDecodeError:
+                        step.action_input = {}
+                else:
+                    step.action_input = tool_args or {}
+
+                # Add assistant message with both text and tool calls to context
+                response_message = Message(
+                    role=MessageRole.ASSISTANT, content=assistant_content, tool_calls=tool_calls_detected
+                )
+                context.messages.append(response_message)
+
+                # Execute the tool
+                await self._handle_tool_action(step, context, state, tool_call_id=tool_call_id)
+
+            # No tool calls - this is a final answer (with XML tags parsed)
+            else:
+                logger.debug(
+                    f"Step {state.current_step} - No tool calls, final answer provided"
+                )
+
+                # Add assistant message to context
+                response_message = Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                context.messages.append(response_message)
+
+                # If we parsed an answer from <answer> tags, it's already set
+                # If not parsed but we have content, it might be a direct answer
+                if not step.answer and step.thought:
+                    # Check if this looks like a final answer
+                    if self._is_final_answer(step.thought):
+                        logger.debug(f"Step {state.current_step} - Detected final answer without <answer> tags")
+                        step.answer = step.thought
+
+        except Exception as e:
+            self._handle_step_error(step, e, state)
+
+        finally:
+            step.execution_time = time.time() - step_start_time
+            await self.event_bus.publish(EventFactory.step_complete(state.current_step, step))
+
+        # Add observation to context if present (from tool execution)
+        # NOTE: This is actually added in _handle_tool_action now with proper tool_call_id
+        return step
+
+    def _is_final_answer(self, thought: str) -> bool:
+        """Detect if the thought indicates a final answer using explicit indicators.
+
+        This method looks for explicit language patterns that indicate the LLM
+        is providing a final answer, rather than reasoning or planning.
+        """
+        if not thought or len(thought.strip()) == 0:
+            return False
+
+        thought_lower = thought.lower()
+
+        # Strong indicators that this is a final answer
+        final_answer_indicators = [
+            "the answer is",
+            "final answer",
+            "in conclusion",
+            "to summarize",
+            "in summary",
+            "therefore, the answer",
+            "so the answer",
+            "the result is",
+            "to answer your question",
+        ]
+
+        # Check for explicit final answer indicators
+        for indicator in final_answer_indicators:
+            if indicator in thought_lower:
+                return True
+
+        # Indicators that the LLM needs to do more work (NOT a final answer)
+        needs_more_work_indicators = [
+            "i need to",
+            "i should",
+            "let me",
+            "i'll",
+            "first, i",
+            "next, i",
+            "i will",
+            "should check",
+            "need to verify",
+            "let's",
+        ]
+
+        # If it clearly indicates more work is needed, it's not a final answer
+        for indicator in needs_more_work_indicators:
+            if indicator in thought_lower:
+                return False
+
+        # Check for declarative statements with numbers/data (suggests an answer)
+        # e.g., "You have 131 accounts", "There are 5 users", "The total is $1000"
+        declarative_patterns = [
+            r"\byou have\b",
+            r"\bthere (?:are|is)\b",
+            r"\bthe (?:total|count|number|result) (?:is|are)\b",
+            r"\b(?:has|have) \d+\b",  # "has 131", "have 5"
+        ]
+
+        import re
+        for pattern in declarative_patterns:
+            if re.search(pattern, thought_lower):
+                return True
+
+        return False
+
     async def _execute_reasoning_step(
         self, context: RunContext, state: "ExecutionState"
     ) -> ReActStep:
-        """Execute a single reasoning step with XML streaming parsing."""
+        """Execute a single reasoning step with XML streaming parsing (legacy)."""
         step = ReActStep(step_number=state.current_step, thought="")
 
         step_start_time = time.time()
@@ -300,7 +545,11 @@ class ReActOrchestrator:
             yield chunk
 
     async def _handle_tool_action(
-        self, step: ReActStep, context: RunContext, state: "ExecutionState"
+        self,
+        step: ReActStep,
+        context: RunContext,
+        state: "ExecutionState",
+        tool_call_id: Optional[str] = None,
     ):
         """Handle tool action execution."""
         # step.action and step.action_input are already set from parsed data
@@ -334,6 +583,16 @@ class ReActOrchestrator:
                     state.current_step, step.observation, step.action, result.success
                 )
             )
+
+            # Add tool result to context (required for native tool calling)
+            if tool_call_id:
+                observation_message = Message(
+                    role=MessageRole.USER, content=step.observation, tool_call_id=tool_call_id
+                )
+                context.messages.append(observation_message)
+                logger.debug(
+                    f"Step {state.current_step} - Added tool result to context with ID: {tool_call_id}"
+                )
 
         except Exception as e:
             step.error = f"Tool execution error: {str(e)}"

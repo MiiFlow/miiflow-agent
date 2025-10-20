@@ -196,43 +196,47 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
 
 class MistralStreamNormalizer(BaseStreamNormalizer):
     """Mistral streaming format normalizer."""
-    
+
     def normalize(self, chunk: Any) -> StreamChunk:
         """Handle Mistral's streaming format (OpenAI-compatible)."""
         content = ""
         delta = ""
         finish_reason = None
+        tool_calls = None
         usage = None
-        
+
         try:
             if hasattr(chunk, 'choices') and chunk.choices:
                 choice = chunk.choices[0]
-                
+
                 if hasattr(choice, 'delta') and choice.delta:
                     if hasattr(choice.delta, 'content'):
                         delta = choice.delta.content or ""
                         content = delta
-                
+                    # Extract tool calls from streaming delta
+                    if hasattr(choice.delta, 'tool_calls'):
+                        tool_calls = choice.delta.tool_calls
+
                 if hasattr(choice, 'finish_reason'):
                     finish_reason = choice.finish_reason
-            
+
             if hasattr(chunk, 'usage') and chunk.usage:
                 usage = TokenCount(
                     prompt_tokens=chunk.usage.prompt_tokens,
                     completion_tokens=chunk.usage.completion_tokens,
                     total_tokens=chunk.usage.total_tokens
                 )
-                
+
         except AttributeError:
             content = str(chunk) if chunk else ""
             delta = content
-        
+
         return StreamChunk(
             content=content,
             delta=delta,
             finish_reason=finish_reason,
             usage=usage,
-            tool_calls=None
+            tool_calls=tool_calls
         )
 
 

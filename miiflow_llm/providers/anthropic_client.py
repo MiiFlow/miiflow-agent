@@ -27,11 +27,33 @@ class AnthropicClient(ModelClient):
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
         self.provider_name = "anthropic"
         self.stream_normalizer = get_stream_normalizer("anthropic")
+        # Track sanitized -> original name mappings for tool calls
+        self._tool_name_mapping: Dict[str, str] = {}
     
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert universal schema to Anthropic format."""
+        """Convert universal schema to Anthropic format.
+
+        Note: Anthropic requires tool names to match ^[a-zA-Z0-9_-]{1,128}$
+        We sanitize names by replacing invalid characters with underscores.
+        """
+        import re
+
+        # Sanitize name: replace spaces and invalid chars with underscores
+        original_name = schema["name"]
+        sanitized_name = re.sub(r'[^a-zA-Z0-9_-]', '_', original_name)
+
+        # Remove consecutive underscores and trim
+        sanitized_name = re.sub(r'_+', '_', sanitized_name).strip('_')
+
+        # Truncate to 128 chars if needed
+        sanitized_name = sanitized_name[:128]
+
+        # Store mapping if name was changed (for reversing tool calls)
+        if sanitized_name != original_name:
+            self._tool_name_mapping[sanitized_name] = original_name
+
         return {
-            "name": schema["name"],
+            "name": sanitized_name,
             "description": schema["description"],
             "input_schema": schema["parameters"]
         }
@@ -39,9 +61,43 @@ class AnthropicClient(ModelClient):
     def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
         """Convert Message to Anthropic format."""
         from ..core.message import TextBlock, ImageBlock, DocumentBlock
-        
+
         anthropic_message = {"role": message.role.value}
-        
+
+        # Handle tool result messages (for sending tool outputs back)
+        if message.tool_call_id and message.role == MessageRole.USER:
+            # This is a tool result message
+            anthropic_message["content"] = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": message.tool_call_id,
+                    "content": message.content if isinstance(message.content, str) else str(message.content)
+                }
+            ]
+            return anthropic_message
+
+        # Handle assistant messages with tool calls
+        if message.tool_calls and message.role == MessageRole.ASSISTANT:
+            content_list = []
+
+            # Add text content if present
+            if message.content:
+                content_list.append({"type": "text", "text": message.content})
+
+            # Add tool use blocks
+            for tool_call in message.tool_calls:
+                import json
+                content_list.append({
+                    "type": "tool_use",
+                    "id": tool_call.get("id", ""),
+                    "name": tool_call.get("function", {}).get("name", ""),
+                    "input": tool_call.get("function", {}).get("arguments", {})
+                })
+
+            anthropic_message["content"] = content_list
+            return anthropic_message
+
+        # Handle regular messages
         if isinstance(message.content, str):
             anthropic_message["content"] = message.content
         else:
@@ -82,7 +138,7 @@ class AnthropicClient(ModelClient):
                         })
                     else:
                         content_list.append({
-                            "type": "document", 
+                            "type": "document",
                             "source": {
                                 "type": "url",
                                 "media_type": f"application/{block.document_type}",
@@ -90,7 +146,7 @@ class AnthropicClient(ModelClient):
                             }
                         })
             anthropic_message["content"] = content_list
-            
+
         return anthropic_message
     
     @staticmethod
@@ -156,22 +212,52 @@ class AnthropicClient(ModelClient):
                 request_params["system"] = system_content
             if tools:
                 request_params["tools"] = tools
-            
+
+                # Debug: Log tools being sent to Anthropic
+                import json
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.debug(f"Anthropic tools parameter:\n{json.dumps(tools, indent=2, default=str)}")
+
             response = await asyncio.wait_for(
                 self.client.messages.create(**request_params),
                 timeout=self.timeout
             )
-            
+
+            # Extract content and tool calls from response
             content = ""
+            tool_calls = []
+
             if response.content:
                 for block in response.content:
                     if hasattr(block, 'text'):
                         content += block.text
-            
+                    elif hasattr(block, 'type') and block.type == 'tool_use':
+                        # Convert Anthropic tool_use to OpenAI-compatible format
+                        # Restore original tool name if it was sanitized
+                        tool_name = block.name
+                        original_name = self._tool_name_mapping.get(tool_name, tool_name)
+
+                        logger.debug(f"Tool call extracted: {tool_name} -> {original_name}")
+                        logger.debug(f"Tool call input: {block.input}")
+                        logger.debug(f"Tool call input type: {type(block.input)}")
+
+                        tool_calls.append({
+                            "id": block.id,
+                            "type": "function",
+                            "function": {
+                                "name": original_name,
+                                "arguments": block.input
+                            }
+                        })
+
+            if tool_calls:
+                logger.debug(f"Returning {len(tool_calls)} tool calls to orchestrator")
+
             response_message = Message(
                 role=MessageRole.ASSISTANT,
                 content=content,
-                tool_calls=getattr(response, 'tool_calls', None)
+                tool_calls=tool_calls if tool_calls else None
             )
             
             usage = TokenCount(
@@ -209,6 +295,9 @@ class AnthropicClient(ModelClient):
         **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Send streaming chat completion request to Anthropic."""
+        import logging
+        logger = logging.getLogger(__name__)
+
         try:
             system_content, anthropic_messages = self._prepare_messages(messages)
             
@@ -231,16 +320,39 @@ class AnthropicClient(ModelClient):
             )
             
             accumulated_content = ""
+            tool_calls = []
+            current_tool_use = None
+            accumulated_tool_json = ""  # Accumulate partial JSON for tool arguments
             final_usage = None
-            
+
             async for event in stream:
                 if event.type == "content_block_start":
+                    # Check if this is a tool use block
+                    if hasattr(event, 'content_block') and hasattr(event.content_block, 'type'):
+                        if event.content_block.type == 'tool_use':
+                            # Restore original tool name if it was sanitized
+                            tool_name = event.content_block.name
+                            original_name = self._tool_name_mapping.get(tool_name, tool_name)
+
+                            logger.debug(f"Streaming tool call started: {tool_name} -> {original_name}")
+
+                            current_tool_use = {
+                                "id": event.content_block.id,
+                                "type": "function",
+                                "function": {
+                                    "name": original_name,
+                                    "arguments": {}
+                                }
+                            }
+                            accumulated_tool_json = ""  # Reset for new tool
                     continue
+
                 elif event.type == "content_block_delta":
                     if hasattr(event.delta, 'text'):
+                        # Text content
                         content_delta = event.delta.text
                         accumulated_content += content_delta
-                        
+
                         yield StreamChunk(
                             content=accumulated_content,
                             delta=content_delta,
@@ -248,8 +360,40 @@ class AnthropicClient(ModelClient):
                             usage=None,
                             tool_calls=None
                         )
+                    elif hasattr(event.delta, 'partial_json'):
+                        # Tool use input (streaming JSON)
+                        if current_tool_use:
+                            # Accumulate partial JSON chunks
+                            accumulated_tool_json += event.delta.partial_json
+
+                            # Try to parse accumulated JSON
+                            import json
+                            try:
+                                current_tool_use["function"]["arguments"] = json.loads(accumulated_tool_json)
+                                logger.debug(f"Parsed tool arguments: {current_tool_use['function']['arguments']}")
+                            except json.JSONDecodeError:
+                                # Still accumulating, not complete yet
+                                pass
+
                 elif event.type == "content_block_stop":
+                    # Finalize tool use if present
+                    if current_tool_use:
+                        # Final parse attempt with accumulated JSON
+                        if accumulated_tool_json:
+                            import json
+                            try:
+                                current_tool_use["function"]["arguments"] = json.loads(accumulated_tool_json)
+                                logger.debug(f"Final tool arguments: {current_tool_use['function']['arguments']}")
+                            except json.JSONDecodeError as e:
+                                logger.error(f"Failed to parse tool arguments: {e}. JSON: {accumulated_tool_json}")
+                                current_tool_use["function"]["arguments"] = {}
+
+                        tool_calls.append(current_tool_use)
+                        logger.debug(f"Tool call finalized: {current_tool_use['function']['name']}")
+                        current_tool_use = None
+                        accumulated_tool_json = ""
                     continue
+
                 elif event.type == "message_delta":
                     if hasattr(event.delta, 'stop_reason'):
                         yield StreamChunk(
@@ -257,7 +401,7 @@ class AnthropicClient(ModelClient):
                             delta="",
                             finish_reason=event.delta.stop_reason,
                             usage=None,
-                            tool_calls=None
+                            tool_calls=tool_calls if tool_calls else None
                         )
                 elif event.type == "message_stop":
                     break

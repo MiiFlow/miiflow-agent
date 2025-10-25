@@ -83,6 +83,7 @@ class Agent(Generic[Deps, Result]):
         temperature: float = 0.7,
         tools: Optional[List[FunctionTool]] = None,
         use_native_tool_calling: bool = True,
+        json_schema: Optional[Dict[str, Any]] = None,
     ):
         self.client = client
         self.agent_type = agent_type
@@ -93,6 +94,7 @@ class Agent(Generic[Deps, Result]):
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.use_native_tool_calling = use_native_tool_calling
+        self.json_schema = json_schema
 
         # Share the tool registry with LLMClient for consistency
         self.tool_registry = self.client.tool_registry
@@ -364,6 +366,7 @@ class Agent(Generic[Deps, Result]):
                 messages=context.messages,
                 tools=self._tools if self._tools else None,
                 temperature=self.temperature,
+                json_schema=self.json_schema,
             ):
                 if chunk.delta:
                     buffer += chunk.delta
@@ -382,6 +385,7 @@ class Agent(Generic[Deps, Result]):
                     messages=context.messages,
                     tools=self._tools if self._tools else None,
                     temperature=self.temperature,
+                    json_schema=self.json_schema,
                 )
                 final_tool_calls = response.message.tool_calls
 
@@ -398,7 +402,10 @@ class Agent(Generic[Deps, Result]):
 
                 yield {"event": "tools_complete", "data": {}}
                 final_response = await self.client.achat(
-                    messages=context.messages, tools=None, temperature=self.temperature
+                    messages=context.messages,
+                    tools=None,
+                    temperature=self.temperature,
+                    json_schema=self.json_schema,
                 )
                 context.messages.append(final_response.message)
                 result = final_response.message.content

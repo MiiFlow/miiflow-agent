@@ -136,7 +136,8 @@ class ReActOrchestrator:
             buffer = ""
             tokens_used = 0
             cost = 0.0
-            tool_calls_detected = None
+            # Accumulate tool calls during streaming
+            accumulated_tool_calls = {}  # index -> {id, function: {name, arguments}}
 
             # Reset parser for new response
             self.parser.reset()
@@ -188,9 +189,26 @@ class ReActOrchestrator:
                             # Answer complete
                             step.answer = parse_event.data["answer"]
 
-                # Capture tool calls if present in chunk
+                # Accumulate tool calls if present in chunk
+                # All providers now normalize to dict format via stream normalizers
                 if chunk.tool_calls:
-                    tool_calls_detected = chunk.tool_calls
+                    for tool_call_dict in chunk.tool_calls:
+                        # All tool calls are now dicts thanks to provider normalizers
+                        # Extract index (use 0 for first/only tool in ReAct single-action mode)
+                        idx = len(accumulated_tool_calls) if len(accumulated_tool_calls) == 0 else 0
+
+                        # Store or update the tool call
+                        accumulated_tool_calls[idx] = {
+                            "id": tool_call_dict.get("id"),
+                            "type": tool_call_dict.get("type", "function"),
+                            "function": {
+                                "name": tool_call_dict.get("function", {}).get("name"),
+                                "arguments": tool_call_dict.get("function", {}).get(
+                                    "arguments", {}
+                                ),
+                            },
+                        }
+                        logger.debug(f"Tool call accumulated: {accumulated_tool_calls[idx]}")
 
                 # Accumulate metrics
                 if chunk.usage:
@@ -201,58 +219,88 @@ class ReActOrchestrator:
             step.tokens_used = tokens_used
             step.cost = cost
 
-            logger.debug(
-                f"Step {state.current_step} - Response complete. Thought: {step.thought[:100] if step.thought else 'None'}... Answer: {bool(step.answer)}... Tool calls: {bool(tool_calls_detected)}"
+            logger.info(
+                f"Step {state.current_step} - Response complete. Buffer length: {len(buffer)}, Thought: {step.thought[:100] if step.thought else 'None'}... Answer: {bool(step.answer)}... Tool calls: {bool(accumulated_tool_calls)}"
             )
+            logger.info(f"Step {state.current_step} - Full buffer content: {buffer[:500]}...")
 
             # Reconstruct assistant message from buffer
             # This preserves the complete response including XML tags for context
             assistant_content = buffer.strip()
 
-            # Handle tool calls if present
-            if tool_calls_detected:
-                logger.debug(
-                    f"Step {state.current_step} - Tool calls detected: {len(tool_calls_detected)}"
+            # Handle accumulated tool calls
+            if accumulated_tool_calls:
+                logger.info(
+                    f"Step {state.current_step} - Accumulated tool calls: {len(accumulated_tool_calls)}"
                 )
 
                 # Take first tool call (ReAct is single-action per step)
-                tool_call = tool_calls_detected[0]
+                tool_call_data = accumulated_tool_calls.get(0)
+                if not tool_call_data:
+                    tool_call_data = list(accumulated_tool_calls.values())[0]
 
-                # Extract tool name, arguments, and ID
-                if hasattr(tool_call, "function"):
-                    step.action = tool_call.function.name
-                    tool_args = tool_call.function.arguments
-                    tool_call_id = getattr(tool_call, "id", None)
-                else:
-                    step.action = tool_call.get("function", {}).get("name")
-                    tool_args = tool_call.get("function", {}).get("arguments", {})
-                    tool_call_id = tool_call.get("id")
+                logger.info(
+                    f"Step {state.current_step} - Processing accumulated tool_call: {tool_call_data}"
+                )
 
-                # Parse arguments if they're a JSON string
+                # Extract tool name, arguments, and ID from accumulated data
+                step.action = tool_call_data["function"]["name"]
+                tool_args = tool_call_data["function"]["arguments"]
+                tool_call_id = tool_call_data["id"]
+                logger.info(
+                    f"Step {state.current_step} - Extracted action={step.action}, args={tool_args}, id={tool_call_id}"
+                )
+
+                # Parse arguments based on format:
+                # - OpenAI: string (JSON) that needs parsing
+                # - Anthropic: already a dict
                 if isinstance(tool_args, str):
                     import json
 
                     try:
                         step.action_input = json.loads(tool_args)
                     except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse tool arguments as JSON: {tool_args}")
                         step.action_input = {}
+                elif isinstance(tool_args, dict):
+                    # Already parsed (Anthropic format)
+                    step.action_input = tool_args
                 else:
-                    step.action_input = tool_args or {}
+                    logger.warning(f"Unexpected tool_args type: {type(tool_args)}")
+                    step.action_input = {}
 
-                # Add assistant message with both text and tool calls to context
-                response_message = Message(
-                    role=MessageRole.ASSISTANT, content=assistant_content, tool_calls=tool_calls_detected
-                )
-                context.messages.append(response_message)
+                # Validate tool name is not None or empty
+                if not step.action:
+                    logger.warning(
+                        f"Step {state.current_step} - Malformed tool call: function name is None or empty"
+                    )
+                    step.error = "Malformed tool call: function name is missing"
+                    # Add assistant message to context anyway for history
+                    response_message = Message(
+                        role=MessageRole.ASSISTANT,
+                        content=assistant_content,
+                        tool_calls=None,
+                    )
+                    context.messages.append(response_message)
+                    # Skip tool execution, continue to next step
+                else:
+                    # Add assistant message with both text and tool calls to context
+                    # Convert accumulated_tool_calls to list format for message
+                    tool_calls_list = list(accumulated_tool_calls.values())
 
-                # Execute the tool
-                await self._handle_tool_action(step, context, state, tool_call_id=tool_call_id)
+                    response_message = Message(
+                        role=MessageRole.ASSISTANT,
+                        content=assistant_content,
+                        tool_calls=tool_calls_list,  # Include tool calls for proper message history
+                    )
+                    context.messages.append(response_message)
+
+                    # Execute the tool
+                    await self._handle_tool_action(step, context, state, tool_call_id=tool_call_id)
 
             # No tool calls - this is a final answer (with XML tags parsed)
             else:
-                logger.debug(
-                    f"Step {state.current_step} - No tool calls, final answer provided"
-                )
+                logger.debug(f"Step {state.current_step} - No tool calls, final answer provided")
 
                 # Add assistant message to context
                 response_message = Message(role=MessageRole.ASSISTANT, content=assistant_content)
@@ -260,11 +308,29 @@ class ReActOrchestrator:
 
                 # If we parsed an answer from <answer> tags, it's already set
                 # If not parsed but we have content, it might be a direct answer
-                if not step.answer and step.thought:
-                    # Check if this looks like a final answer
-                    if self._is_final_answer(step.thought):
-                        logger.debug(f"Step {state.current_step} - Detected final answer without <answer> tags")
+                if not step.answer:
+                    # Check step.thought first (XML-parsed thinking)
+                    if step.thought and self._is_final_answer(step.thought):
+                        logger.debug(
+                            f"Step {state.current_step} - Detected final answer in thought without <answer> tags"
+                        )
                         step.answer = step.thought
+                    # If no thought but we have buffer content, check if it's a final answer
+                    elif not step.thought and assistant_content:
+                        logger.info(
+                            f"Step {state.current_step} - No XML tags found, checking buffer content for final answer"
+                        )
+                        if self._is_final_answer(assistant_content):
+                            logger.info(
+                                f"Step {state.current_step} - Treating buffer content as final answer"
+                            )
+                            step.answer = assistant_content
+                            # Emit final answer chunks
+                            await self.event_bus.publish(
+                                EventFactory.final_answer_chunk(
+                                    state.current_step, assistant_content, assistant_content
+                                )
+                            )
 
         except Exception as e:
             self._handle_step_error(step, e, state)
@@ -299,6 +365,10 @@ class ReActOrchestrator:
             "so the answer",
             "the result is",
             "to answer your question",
+            "the current",  # e.g., "The current stock price is..."
+            "the price is",
+            "the value is",
+            "based on the",  # e.g., "Based on the data..."
         ]
 
         # Check for explicit final answer indicators
@@ -335,6 +405,7 @@ class ReActOrchestrator:
         ]
 
         import re
+
         for pattern in declarative_patterns:
             if re.search(pattern, thought_lower):
                 return True
@@ -600,7 +671,7 @@ class ReActOrchestrator:
             # Add tool result to context (required for native tool calling)
             if tool_call_id:
                 observation_message = Message(
-                    role=MessageRole.USER, content=step.observation, tool_call_id=tool_call_id
+                    role=MessageRole.TOOL, content=step.observation, tool_call_id=tool_call_id
                 )
                 context.messages.append(observation_message)
                 logger.debug(
@@ -730,6 +801,10 @@ class ReActOrchestrator:
         Returns:
             Corrected tool name if a good match is found, None otherwise
         """
+        # Guard against None or empty names
+        if not requested_name:
+            return None
+
         available_tools = self.tool_executor.list_tools()
         requested_lower = requested_name.lower()
 

@@ -137,71 +137,19 @@ __all__ = [
 def create_registry(allowlist=None, enable_logging=True):
     """
     Convenience function to create a tool registry.
-    
+
     Args:
         allowlist: Optional list of allowed tool names
         enable_logging: Whether to enable logging
-        
+
     Returns:
         ToolRegistry instance
     """
     return ToolRegistry(allowlist=allowlist, enable_logging=enable_logging)
 
-def register_function(registry, func, name=None, description=None):
-    """
-    Convenience function to register a function as a tool.
-    
-    Args:
-        registry: ToolRegistry instance
-        func: Function to register
-        name: Optional tool name (defaults to function name)
-        description: Optional description (defaults to docstring)
-        
-    Returns:
-        The registered FunctionTool instance
-    """
-    # Generate schema dict
-    tool_name = name or func.__name__
-    schema_dict = get_fun_schema(func)
-    
-    # Convert dict schema to ParameterSchema objects
-    parameters = {}
-    if 'parameters' in schema_dict and 'properties' in schema_dict['parameters']:
-        for param_name, param_info in schema_dict['parameters']['properties'].items():
-            # Convert string type to ParameterType enum
-            type_str = param_info.get('type', 'string')
-            param_type = ParameterType(type_str)
-            
-            parameters[param_name] = ParameterSchema(
-                name=param_name,
-                type=param_type,
-                description=param_info.get('description', ''),
-                required=param_name in schema_dict['parameters'].get('required', []),
-                default=param_info.get('default')
-            )
-    
-    # Create ToolSchema object
-    tool_description = description or schema_dict.get('description', f"Function {tool_name}")
-    if not description and func.__doc__:
-        tool_description = func.__doc__.strip().split('\n')[0]
-    
-    schema = ToolSchema(
-        name=tool_name,
-        description=tool_description,
-        tool_type=ToolType.FUNCTION,
-        parameters=parameters
-    )
-    
-    # Create and register tool
-    function_tool = FunctionTool(func, schema)
-    registry.register(function_tool)
-    
-    return function_tool
-
 # Add convenience functions to __all__
 __all__.extend([
     "create_registry",
-    "register_function"
 ])
 
 # Package metadata for introspection

@@ -54,9 +54,7 @@ class AgentToolExecutor:
         # Call the underlying client directly (not the LLMClient wrapper)
         # to avoid re-registering already-formatted tools
         return await self._client.client.achat(
-            messages=messages,
-            tools=tools,
-            temperature=temperature or self.agent.temperature
+            messages=messages, tools=tools, temperature=temperature or self.agent.temperature
         )
 
     async def stream_with_tools(self, messages: List, temperature: float = None):
@@ -65,9 +63,7 @@ class AgentToolExecutor:
 
         # Call the underlying client directly (not the LLMClient wrapper)
         async for chunk in self._client.client.astream_chat(
-            messages=messages,
-            tools=tools,
-            temperature=temperature or self.agent.temperature
+            messages=messages, tools=tools, temperature=temperature or self.agent.temperature
         ):
             yield chunk
 
@@ -100,42 +96,50 @@ class AgentToolExecutor:
             provider_schema = self._client.client.convert_schema_to_provider_format(filtered_schema)
             native_schemas.append(provider_schema)
 
-        logger.debug(f"Built {len(native_schemas)} native tool schemas for provider {self._client.client.provider_name}")
+        logger.debug(
+            f"Built {len(native_schemas)} native tool schemas for provider {self._client.client.provider_name}"
+        )
 
         # Debug: Log the actual schemas being sent
         import json
-        logger.debug(f"Tool schemas being sent to provider:\n{json.dumps(native_schemas, indent=2, default=str)}")
+
+        logger.debug(
+            f"Tool schemas being sent to provider:\n{json.dumps(native_schemas, indent=2, default=str)}"
+        )
 
         return native_schemas
 
     def _filter_context_params(self, tool_name: str, schema: dict) -> dict:
         """Remove context parameters from schema (they're injected, not LLM-provided)."""
         tool = self._tool_registry.tools.get(tool_name)
-        if not tool or not hasattr(tool, 'context_injection'):
+        if not tool or not hasattr(tool, "context_injection"):
             return schema
 
-        context_pattern = tool.context_injection.get('pattern', 'none')
+        context_pattern = tool.context_injection.get("pattern", "none")
 
         # If tool has context injection, remove the context parameter from schema
-        if context_pattern == 'first_param':
+        if context_pattern == "first_param":
             # First param is context - already handled by FunctionTool schema generation
             # FunctionTool.schema already excludes first param if it's context
             return schema
 
-        elif context_pattern == 'keyword':
+        elif context_pattern == "keyword":
             # Remove 'context' or 'ctx' keyword parameter from properties
             filtered_schema = schema.copy()
-            if 'parameters' in filtered_schema and 'properties' in filtered_schema['parameters']:
-                properties = filtered_schema['parameters']['properties'].copy()
-                properties.pop('context', None)
-                properties.pop('ctx', None)
-                filtered_schema['parameters']['properties'] = properties
+            if "parameters" in filtered_schema and "properties" in filtered_schema["parameters"]:
+                properties = filtered_schema["parameters"]["properties"].copy()
+                properties.pop("context", None)
+                properties.pop("ctx", None)
+                filtered_schema["parameters"]["properties"] = properties
 
                 # Also remove from required list
-                if 'required' in filtered_schema['parameters']:
-                    required = [r for r in filtered_schema['parameters']['required']
-                               if r not in ('context', 'ctx')]
-                    filtered_schema['parameters']['required'] = required
+                if "required" in filtered_schema["parameters"]:
+                    required = [
+                        r
+                        for r in filtered_schema["parameters"]["required"]
+                        if r not in ("context", "ctx")
+                    ]
+                    filtered_schema["parameters"]["required"] = required
 
             return filtered_schema
 
@@ -157,9 +161,9 @@ class AgentToolExecutor:
         if not tool:
             return False
         # Check if tool has context_injection attribute and if pattern is not 'none'
-        if hasattr(tool, 'context_injection'):
-            pattern = tool.context_injection.get('pattern', 'none')
-            return pattern in ('first_param', 'keyword')
+        if hasattr(tool, "context_injection"):
+            pattern = tool.context_injection.get("pattern", "none")
+            return pattern in ("first_param", "keyword")
         return False
 
     def build_tools_description(self) -> str:
@@ -212,11 +216,11 @@ class AgentToolExecutor:
                 enum_values = param_schema["enum"]
                 if len(enum_values) <= 5:  # Show all values if reasonable
                     enum_str = "|".join(f'"{v}"' for v in enum_values)
-                    param_descriptions.append(f'{param_name}: {param_type}({enum_str})')
+                    param_descriptions.append(f"{param_name}: {param_type}({enum_str})")
                 else:  # Just indicate there are allowed values
-                    param_descriptions.append(f'{param_name}: {param_type}(allowed values defined)')
+                    param_descriptions.append(f"{param_name}: {param_type}(allowed values defined)")
             else:
-                param_descriptions.append(f'{param_name}: {param_type}')
+                param_descriptions.append(f"{param_name}: {param_type}")
 
-        params_str = ', '.join(param_descriptions)
+        params_str = ", ".join(param_descriptions)
         return f"- {tool_name}({params_str}): {desc}"

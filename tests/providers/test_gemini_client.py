@@ -116,10 +116,10 @@ class TestGeminiClient:
             Message.system("You are a helpful assistant specializing in math."),
             Message.user("What is 5 + 7?")
         ]
-        
+
         # Test that messages are converted properly
-        converted = client._convert_messages_to_gemini_format(messages)
-        
+        converted = await client._convert_messages_to_gemini_format(messages)
+
         # Gemini handles system messages differently
         # They might be prepended to user messages or handled specially
         assert len(converted) >= 1
@@ -130,15 +130,15 @@ class TestGeminiClient:
     async def test_multimodal_message_conversion(self, client):
         """Test multimodal message conversion for Gemini."""
         from miiflow_llm.core.message import TextBlock, ImageBlock
-        
+
         multimodal_message = Message.user([
             TextBlock(text="Describe this image"),
             ImageBlock(image_url="data:image/jpeg;base64,/9j/4AAQ...", detail="high")
         ])
-        
+
         # Test that multimodal conversion works
-        converted = client._convert_messages_to_gemini_format([multimodal_message])
-        
+        converted = await client._convert_messages_to_gemini_format([multimodal_message])
+
         # Basic validation - should not crash
         assert isinstance(converted, list)
         assert len(converted) >= 1

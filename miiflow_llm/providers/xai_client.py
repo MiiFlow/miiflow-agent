@@ -49,6 +49,7 @@ class XAIClient(ModelClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> ChatResponse:
         """Send chat completion request to xAI Grok."""
@@ -66,7 +67,18 @@ class XAIClient(ModelClient):
             if tools:
                 request_params["tools"] = tools
                 request_params["tool_choice"] = "auto"
-            
+
+            # Add JSON schema support (OpenAI-compatible)
+            if json_schema:
+                request_params["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response_schema",
+                        "strict": True,
+                        "schema": json_schema
+                    }
+                }
+
             response = await asyncio.wait_for(
                 self.client.chat.completions.create(**request_params),
                 timeout=self.timeout
@@ -114,6 +126,7 @@ class XAIClient(ModelClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Send streaming chat completion request to xAI Grok."""
@@ -132,7 +145,18 @@ class XAIClient(ModelClient):
             if tools:
                 request_params["tools"] = tools
                 request_params["tool_choice"] = "auto"
-            
+
+            # Add JSON schema support (OpenAI-compatible)
+            if json_schema:
+                request_params["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response_schema",
+                        "strict": True,
+                        "schema": json_schema
+                    }
+                }
+
             stream = await asyncio.wait_for(
                 self.client.chat.completions.create(**request_params),
                 timeout=self.timeout

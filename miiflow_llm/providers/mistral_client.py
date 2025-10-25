@@ -84,12 +84,13 @@ class MistralClient(ModelClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
         """Send chat completion request to Mistral."""
         try:
             mistral_messages = self._convert_messages_to_mistral_format(messages)
-            
+
             # Prepare request parameters
             request_params = {
                 "model": self.model,
@@ -97,13 +98,24 @@ class MistralClient(ModelClient):
                 "temperature": temperature,
                 **kwargs
             }
-            
+
             if max_tokens:
                 request_params["max_tokens"] = max_tokens
-            
+
             if tools:
                 request_params["tools"] = tools
                 request_params["tool_choice"] = "auto"
+
+            # Add JSON schema support (OpenAI-compatible)
+            if json_schema:
+                request_params["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response_schema",
+                        "strict": True,
+                        "schema": json_schema
+                    }
+                }
             
             # Make API call
             response = await self.client.chat.complete_async(**request_params)
@@ -145,12 +157,13 @@ class MistralClient(ModelClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> AsyncIterator:
         """Send streaming chat completion request to Mistral."""
         try:
             mistral_messages = self._convert_messages_to_mistral_format(messages)
-            
+
             # Prepare request parameters
             request_params = {
                 "model": self.model,
@@ -159,13 +172,24 @@ class MistralClient(ModelClient):
                 "stream": True,
                 **kwargs
             }
-            
+
             if max_tokens:
                 request_params["max_tokens"] = max_tokens
-            
+
             if tools:
                 request_params["tools"] = tools
                 request_params["tool_choice"] = "auto"
+
+            # Add JSON schema support (OpenAI-compatible)
+            if json_schema:
+                request_params["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response_schema",
+                        "strict": True,
+                        "schema": json_schema
+                    }
+                }
             
             # Stream response
             response_stream = await self.client.chat.stream_async(**request_params)

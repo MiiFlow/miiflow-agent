@@ -75,12 +75,13 @@ class TogetherClient(ModelClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
         """Send chat completion request to TogetherAI."""
         try:
             openai_messages = self._convert_messages_to_openai_format(messages)
-            
+
             request_params = {
                 "model": self.model,
                 "messages": openai_messages,
@@ -88,13 +89,23 @@ class TogetherClient(ModelClient):
                 "stream": False,
                 **kwargs
             }
-            
+
             if max_tokens:
                 request_params["max_tokens"] = max_tokens
-            
+
             if tools:
                 request_params["tools"] = tools
                 request_params["tool_choice"] = "auto"
+
+            # Add JSON schema support (OpenAI-compatible)
+            if json_schema:
+                request_params["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response_schema",
+                        "schema": json_schema
+                    }
+                }
             
             response = await self.client.chat.completions.create(**request_params)
             
@@ -132,12 +143,13 @@ class TogetherClient(ModelClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> AsyncIterator:
         """Send streaming chat completion request to TogetherAI."""
         try:
             openai_messages = self._convert_messages_to_openai_format(messages)
-            
+
             request_params = {
                 "model": self.model,
                 "messages": openai_messages,
@@ -145,13 +157,23 @@ class TogetherClient(ModelClient):
                 "stream": True,
                 **kwargs
             }
-            
+
             if max_tokens:
                 request_params["max_tokens"] = max_tokens
-            
+
             if tools:
                 request_params["tools"] = tools
                 request_params["tool_choice"] = "auto"
+
+            # Add JSON schema support (OpenAI-compatible)
+            if json_schema:
+                request_params["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response_schema",
+                        "schema": json_schema
+                    }
+                }
             
             response_stream = await self.client.chat.completions.create(**request_params)
             

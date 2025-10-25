@@ -92,12 +92,13 @@ class OllamaClient(ModelClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
         """Send chat completion request to Ollama."""
         try:
             ollama_messages = self._convert_messages_to_ollama_format(messages)
-            
+
             payload = {
                 "model": self.model,
                 "messages": ollama_messages,
@@ -106,11 +107,16 @@ class OllamaClient(ModelClient):
                     "temperature": temperature,
                 }
             }
-            
+
             if max_tokens:
                 payload["options"]["num_predict"] = max_tokens
-            
+
             payload["options"].update(kwargs)
+
+            # Add JSON schema support
+            if json_schema:
+                # Pass schema object to format parameter
+                payload["format"] = json_schema
             
             headers = {"Content-Type": "application/json"}
             if self.api_key:
@@ -128,20 +134,17 @@ class OllamaClient(ModelClient):
                     
                     result = await response.json()
             
-            message_data = result.get("message", {})
-            content = message_data.get("content", "")
-            tool_calls = message_data.get("tool_calls", None)
-
+            content = result.get("message", {}).get("content", "")
+            
             usage = TokenCount(
                 input_tokens=sum(len(msg.get("content", "").split()) for msg in ollama_messages),
                 output_tokens=len(content.split()),
                 total_tokens=sum(len(msg.get("content", "").split()) for msg in ollama_messages) + len(content.split())
             )
-
+            
             response_message = Message(
                 role=MessageRole.ASSISTANT,
-                content=content,
-                tool_calls=tool_calls if tool_calls else None
+                content=content
             )
             
             from ..core.client import ChatResponse
@@ -164,12 +167,13 @@ class OllamaClient(ModelClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> AsyncIterator:
         """Send streaming chat completion request to Ollama."""
         try:
             ollama_messages = self._convert_messages_to_ollama_format(messages)
-            
+
             payload = {
                 "model": self.model,
                 "messages": ollama_messages,
@@ -178,11 +182,16 @@ class OllamaClient(ModelClient):
                     "temperature": temperature,
                 }
             }
-            
+
             if max_tokens:
                 payload["options"]["num_predict"] = max_tokens
-            
+
             payload["options"].update(kwargs)
+
+            # Add JSON schema support
+            if json_schema:
+                # Pass schema object to format parameter
+                payload["format"] = json_schema
             
             headers = {"Content-Type": "application/json"}
             if self.api_key:

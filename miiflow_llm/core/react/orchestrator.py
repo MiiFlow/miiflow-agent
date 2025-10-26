@@ -125,10 +125,6 @@ class ReActOrchestrator:
         step_start_time = time.time()
 
         try:
-            logger.debug(
-                f"Step {state.current_step} - Conversation context has {len(context.messages)} messages"
-            )
-
             # Publish step start event
             await self.event_bus.publish(EventFactory.step_started(state.current_step))
 
@@ -152,11 +148,8 @@ class ReActOrchestrator:
                     # Parse XML incrementally to detect <thinking> and <answer> tags
                     from .parsing.xml_parser import ParseEventType
 
-                    # Track if this chunk was handled by XML parser
-                    chunk_was_parsed = False
-
                     for parse_event in self.parser.parse_streaming(chunk.delta):
-                        chunk_was_parsed = True
+
                         if parse_event.event_type == ParseEventType.THINKING:
                             # Thinking chunk detected - emit streaming chunk
                             delta = parse_event.data["delta"]
@@ -227,37 +220,21 @@ class ReActOrchestrator:
             step.tokens_used = tokens_used
             step.cost = cost
 
-            logger.info(
-                f"Step {state.current_step} - Response complete. Buffer length: {len(buffer)}, Thought: {step.thought[:100] if step.thought else 'None'}... Answer: {bool(step.answer)}... Tool calls: {bool(accumulated_tool_calls)}"
-            )
-            logger.info(f"Step {state.current_step} - Full buffer content: {buffer[:500]}...")
-
             # Reconstruct assistant message from buffer
             # This preserves the complete response including XML tags for context
             assistant_content = buffer.strip()
 
             # Handle accumulated tool calls
             if accumulated_tool_calls:
-                logger.info(
-                    f"Step {state.current_step} - Accumulated tool calls: {len(accumulated_tool_calls)}"
-                )
-
                 # Take first tool call (ReAct is single-action per step)
                 tool_call_data = accumulated_tool_calls.get(0)
                 if not tool_call_data:
                     tool_call_data = list(accumulated_tool_calls.values())[0]
 
-                logger.info(
-                    f"Step {state.current_step} - Processing accumulated tool_call: {tool_call_data}"
-                )
-
                 # Extract tool name, arguments, and ID from accumulated data
                 step.action = tool_call_data["function"]["name"]
                 tool_args = tool_call_data["function"]["arguments"]
                 tool_call_id = tool_call_data["id"]
-                logger.info(
-                    f"Step {state.current_step} - Extracted action={step.action}, args={tool_args}, id={tool_call_id}"
-                )
 
                 # Parse arguments based on format:
                 # - OpenAI: string (JSON) that needs parsing
@@ -319,19 +296,10 @@ class ReActOrchestrator:
                 if not step.answer:
                     # Check step.thought first (XML-parsed thinking)
                     if step.thought and await self._is_final_answer(step.thought):
-                        logger.debug(
-                            f"Step {state.current_step} - Detected final answer in thought without <answer> tags"
-                        )
                         step.answer = step.thought
                     # If no thought but we have buffer content, check if it's a final answer
                     elif not step.thought and assistant_content:
-                        logger.info(
-                            f"Step {state.current_step} - No XML tags found, checking buffer content for final answer"
-                        )
                         if await self._is_final_answer(assistant_content):
-                            logger.info(
-                                f"Step {state.current_step} - Treating buffer content as final answer"
-                            )
                             step.answer = assistant_content
                             # Note: Chunks were already emitted in real-time during streaming
                             # No need to emit again here
@@ -386,15 +354,11 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
 
         try:
             # Create a simple message for classification
-            messages = [
-                Message(role=MessageRole.USER, content=classification_prompt)
-            ]
+            messages = [Message(role=MessageRole.USER, content=classification_prompt)]
 
             # Use low temperature for deterministic classification
             response = await self.tool_executor._client.achat(
-                messages=messages,
-                temperature=0.0,
-                max_tokens=10  # Only need one word
+                messages=messages, temperature=0.0, max_tokens=10  # Only need one word
             )
 
             classification = response.message.content.strip().upper()
@@ -406,7 +370,9 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                 return "THINKING"
             else:
                 # Fallback to heuristic if LLM returns unexpected response
-                logger.warning(f"Unexpected classification response: {classification}, falling back to heuristic")
+                logger.warning(
+                    f"Unexpected classification response: {classification}, falling back to heuristic"
+                )
                 return "ANSWER" if self._heuristic_is_final_answer(content) else "THINKING"
 
         except Exception as e:
@@ -462,6 +428,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
 
         # Signal 3: Check for declarative statements with data
         import re
+
         declarative_patterns = [
             r"\byou have\b",
             r"\bthere (?:are|is)\b",
@@ -680,7 +647,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
             # Add retry prompt if needed
             if needs_retry:
                 # Track retry attempts to avoid infinite loops
-                if not hasattr(state, 'retry_count'):
+                if not hasattr(state, "retry_count"):
                     state.retry_count = 0
 
                 state.retry_count += 1
@@ -692,7 +659,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                         recovery_prompt = (
                             "Your previous response contained only <thinking> tags without an action. "
                             "You MUST follow <thinking> with either:\n"
-                            "1. <tool_call name=\"tool_name\">{...}</tool_call> to execute a tool, OR\n"
+                            '1. <tool_call name="tool_name">{...}</tool_call> to execute a tool, OR\n'
                             "2. <answer>Your final answer here</answer> to provide your final response.\n\n"
                             "NEVER end your response with only <thinking>. Please try again with a complete response."
                         )
@@ -701,13 +668,13 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                             "Your previous response did not use proper XML tags. "
                             "You MUST structure your response using XML tags:\n\n"
                             "<thinking>Your reasoning here</thinking>\n"
-                            "<tool_call name=\"tool_name\">{...}</tool_call> OR <answer>Your final answer</answer>\n\n"
+                            '<tool_call name="tool_name">{...}</tool_call> OR <answer>Your final answer</answer>\n\n'
                             "Please provide your response again with proper XML structure."
                         )
                     else:  # empty_response
                         recovery_prompt = (
                             "Your previous response was empty. Please provide a valid response using:\n"
-                            "1. <tool_call name=\"tool_name\">{...}</tool_call> to execute a tool, OR\n"
+                            '1. <tool_call name="tool_name">{...}</tool_call> to execute a tool, OR\n'
                             "2. <answer>Your final answer here</answer> to provide your final response.\n\n"
                             "Remember to use proper XML tags."
                         )

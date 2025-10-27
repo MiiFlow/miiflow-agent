@@ -219,6 +219,12 @@ class LLMClient:
         """Create client for specified provider."""
         from ..providers import get_provider_client
 
+        # Bedrock uses AWS credentials instead of API key
+        if provider.lower() == "bedrock":
+            # Skip API key check for Bedrock - it uses AWS credentials
+            client = get_provider_client(provider=provider, model=model, api_key=None, **kwargs)
+            return cls(client)
+
         if api_key is None:
             from ..utils.env import get_api_key, load_env_file
 

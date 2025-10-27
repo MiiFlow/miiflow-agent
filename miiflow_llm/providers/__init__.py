@@ -11,7 +11,7 @@ def get_provider_client(
     **kwargs
 ) -> ModelClient:
     """Get provider client instance."""
-    
+
     provider_map: Dict[str, Type[ModelClient]] = {
         "openai": lambda: _import_openai_client(),
         "anthropic": lambda: _import_anthropic_client(),
@@ -22,11 +22,25 @@ def get_provider_client(
         "openrouter": lambda: _import_openrouter_client(),
         "mistral": lambda: _import_mistral_client(),
         "ollama": lambda: _import_ollama_client(),
+        "bedrock": lambda: _import_bedrock_client(),
     }
-    
+
     if provider not in provider_map:
         raise ValueError(f"Unsupported provider: {provider}. Supported: {list(provider_map.keys())}")
-    
+
+    # Bedrock uses AWS credentials instead of api_key
+    if provider == "bedrock":
+        required_creds = ["aws_access_key_id", "aws_secret_access_key", "region_name"]
+        missing = [k for k in required_creds if k not in kwargs]
+        if missing:
+            raise ValueError(
+                f"Amazon Bedrock requires AWS credentials: {', '.join(missing)}. "
+                f"Pass them as keyword arguments: {', '.join(required_creds)}"
+            )
+        client_class = provider_map[provider]()
+        return client_class(model=model, **kwargs)
+
+    # Regular providers use api_key
     client_class = provider_map[provider]()
     return client_class(model=model, api_key=api_key, **kwargs)
 
@@ -83,3 +97,9 @@ def _import_ollama_client():
     """Lazy import Ollama client."""
     from .ollama_client import OllamaClient
     return OllamaClient
+
+
+def _import_bedrock_client():
+    """Lazy import Bedrock client."""
+    from .bedrock_client import BedrockClient
+    return BedrockClient

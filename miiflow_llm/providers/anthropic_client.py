@@ -1,7 +1,6 @@
 """Anthropic provider implementation."""
 
 import asyncio
-import json
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import anthropic
@@ -271,10 +270,6 @@ class AnthropicClient(ModelClient):
                             # Restore original tool name if it was sanitized
                             tool_name = block.name
                             original_name = self._tool_name_mapping.get(tool_name, tool_name)
-
-                            logger.debug(f"Tool call extracted: {tool_name} -> {original_name}")
-                            logger.debug(f"Tool call input: {block.input}")
-                            logger.debug(f"Tool call input type: {type(block.input)}")
 
                             tool_calls.append(
                                 {

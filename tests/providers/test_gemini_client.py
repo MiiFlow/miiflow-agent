@@ -31,11 +31,16 @@ class TestGeminiClient:
     async def test_chat_completion_success(self, client, sample_messages):
         """Test successful chat completion."""
         # Mock Gemini response format
+        mock_part = MagicMock()
+        mock_part.text = "Hello from Gemini!"
+        mock_part.function_call = None
+
+        mock_candidate = MagicMock()
+        mock_candidate.content.parts = [mock_part]
+        mock_candidate.finish_reason.name = "STOP"
+
         mock_response = MagicMock()
-        mock_response.candidates = [MagicMock()]
-        mock_response.candidates[0].content.parts = [MagicMock()]
-        mock_response.candidates[0].content.parts[0].text = "Hello from Gemini!"
-        mock_response.candidates[0].finish_reason.name = "STOP"
+        mock_response.candidates = [mock_candidate]
         mock_response.usage_metadata.prompt_token_count = 12
         mock_response.usage_metadata.candidates_token_count = 18
         mock_response.usage_metadata.total_token_count = 30

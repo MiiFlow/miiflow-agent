@@ -6,52 +6,171 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import anthropic
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from ..core.client import ChatResponse, ModelClient, StreamChunk
+from ..core.client import ChatResponse, ModelClient
 from ..core.exceptions import AuthenticationError, ModelError, ProviderError, RateLimitError
 from ..core.exceptions import TimeoutError as MiiflowTimeoutError
 from ..core.message import Message, MessageRole
 from ..core.metrics import TokenCount, UsageData
+from ..core.streaming import StreamChunk
 from ..utils.image import data_uri_to_base64_and_mimetype
-from .stream_normalizer import get_stream_normalizer
 
 
 class AnthropicClient(ModelClient):
     """Anthropic provider client."""
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
-        super().__init__(model=model, api_key=api_key, **kwargs)
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            **kwargs
+        )
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
         self.provider_name = "anthropic"
-        self.stream_normalizer = get_stream_normalizer("anthropic")
-        # Track sanitized -> original name mappings for tool calls
         self._tool_name_mapping: Dict[str, str] = {}
 
-    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert universal schema to Anthropic format.
+        # Streaming state
+        self._accumulated_content = ""
+        self._current_tool_use = None
+        self._accumulated_tool_json = ""
+        self._tool_calls = []
 
-        Note: Anthropic requires tool names to match ^[a-zA-Z0-9_-]{1,128}$
-        We sanitize names by replacing invalid characters with underscores.
-        """
+    def _reset_stream_state(self):
+        """Reset streaming state for a new streaming session."""
+        self._accumulated_content = ""
+        self._current_tool_use = None
+        self._accumulated_tool_json = ""
+        self._tool_calls = []
+
+    def _normalize_stream_chunk(self, chunk: Any) -> StreamChunk:
+        """Normalize Anthropic streaming format to unified StreamChunk."""
+        delta = ""
+        finish_reason = None
+        usage = None
+        tool_calls = None
+
+        try:
+            # Anthropic event types
+            if hasattr(chunk, 'type'):
+                if chunk.type == "content_block_start":
+                    # Check if this is a tool use block
+                    if hasattr(chunk, 'content_block') and hasattr(chunk.content_block, 'type'):
+                        if chunk.content_block.type == 'tool_use':
+                            # Restore original tool name if it was sanitized
+                            tool_name = chunk.content_block.name
+                            original_name = self._tool_name_mapping.get(tool_name, tool_name)
+
+                            self._current_tool_use = {
+                                "id": chunk.content_block.id,
+                                "type": "function",
+                                "function": {
+                                    "name": original_name,
+                                    "arguments": {}
+                                }
+                            }
+                            self._accumulated_tool_json = ""
+
+                            # Yield tool call immediately
+                            tool_calls = [self._current_tool_use]
+
+                elif chunk.type == "content_block_delta":
+                    if hasattr(chunk.delta, 'text'):
+                        # Text content
+                        delta = chunk.delta.text
+                        self._accumulated_content += delta
+
+                    elif hasattr(chunk.delta, 'partial_json'):
+                        # Tool use input (streaming JSON)
+                        if self._current_tool_use:
+                            self._accumulated_tool_json += chunk.delta.partial_json
+
+                            # Try to parse accumulated JSON
+                            import json
+                            try:
+                                self._current_tool_use["function"]["arguments"] = json.loads(self._accumulated_tool_json)
+                            except json.JSONDecodeError:
+                                # Still accumulating
+                                pass
+
+                elif chunk.type == "content_block_stop":
+                    # Finalize tool use if present
+                    if self._current_tool_use:
+                        if self._accumulated_tool_json:
+                            import json
+                            try:
+                                self._current_tool_use["function"]["arguments"] = json.loads(self._accumulated_tool_json)
+                            except json.JSONDecodeError:
+                                self._current_tool_use["function"]["arguments"] = {}
+
+                        self._tool_calls.append(self._current_tool_use)
+                        # Yield complete tool call
+                        tool_calls = [self._current_tool_use]
+
+                        self._current_tool_use = None
+                        self._accumulated_tool_json = ""
+
+                elif chunk.type == "message_delta":
+                    if hasattr(chunk.delta, 'stop_reason'):
+                        finish_reason = chunk.delta.stop_reason
+
+                elif chunk.type == "message_stop":
+                    finish_reason = "stop"
+
+            if hasattr(chunk, 'usage'):
+                usage = TokenCount(
+                    prompt_tokens=getattr(chunk.usage, 'input_tokens', 0),
+                    completion_tokens=getattr(chunk.usage, 'output_tokens', 0),
+                    total_tokens=getattr(chunk.usage, 'input_tokens', 0) + getattr(chunk.usage, 'output_tokens', 0)
+                )
+
+        except AttributeError:
+            delta = str(chunk) if chunk else ""
+            self._accumulated_content += delta
+
+        return StreamChunk(
+            content=self._accumulated_content,
+            delta=delta,
+            finish_reason=finish_reason,
+            usage=usage,
+            tool_calls=tool_calls
+        )
+
+    def _loosen_json_schema(self, obj: Any) -> Any:
+        """Remove strict schema constraints for better Anthropic model compliance."""
+        if not isinstance(obj, dict):
+            return obj
+
+        obj = obj.copy()
+
+        if obj.get("type") == "object" and "additionalProperties" in obj:
+            obj["additionalProperties"] = True
+
+        if "properties" in obj:
+            obj["properties"] = {k: self._loosen_json_schema(v) for k, v in obj["properties"].items()}
+
+        if "items" in obj:
+            obj["items"] = self._loosen_json_schema(obj["items"])
+
+        for key in ["allOf", "anyOf", "oneOf"]:
+            if key in obj:
+                obj[key] = [self._loosen_json_schema(item) for item in obj[key]]
+
+        return obj
+
+    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert universal schema to Anthropic format with loosened constraints."""
         import re
 
-        # Sanitize name: replace spaces and invalid chars with underscores
         original_name = schema["name"]
         sanitized_name = re.sub(r"[^a-zA-Z0-9_-]", "_", original_name)
+        sanitized_name = re.sub(r"_+", "_", sanitized_name).strip("_")[:128]
 
-        # Remove consecutive underscores and trim
-        sanitized_name = re.sub(r"_+", "_", sanitized_name).strip("_")
-
-        # Truncate to 128 chars if needed
-        sanitized_name = sanitized_name[:128]
-
-        # Store mapping if name was changed (for reversing tool calls)
         if sanitized_name != original_name:
             self._tool_name_mapping[sanitized_name] = original_name
 
         return {
             "name": sanitized_name,
             "description": schema["description"],
-            "input_schema": schema["parameters"],
+            "input_schema": self._loosen_json_schema(schema["parameters"]),
         }
 
     def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
@@ -379,13 +498,12 @@ class AnthropicClient(ModelClient):
                 self.client.messages.create(**request_params), timeout=self.timeout
             )
 
-            # Reset and configure the normalizer for this streaming session
-            self.stream_normalizer.reset()
-            self.stream_normalizer.set_tool_name_mapping(self._tool_name_mapping)
+            # Reset stream state for new streaming session
+            self._reset_stream_state()
 
             async for event in stream:
-                # Use the normalizer to convert Anthropic events to StreamChunk
-                normalized_chunk = self.stream_normalizer.normalize(event)
+                # Normalize Anthropic events to StreamChunk
+                normalized_chunk = self._normalize_stream_chunk(event)
 
                 # Only yield if there's actual content or metadata to send
                 if (

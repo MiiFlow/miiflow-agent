@@ -10,20 +10,20 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
 
 from ..core.client import ModelClient
-from ..core.message import Message, MessageRole, TextBlock, ImageBlock
+from ..core.exceptions import AuthenticationError, ModelError, ProviderError
+from ..core.message import ImageBlock, Message, MessageRole, TextBlock
 from ..core.metrics import TokenCount
-from ..core.exceptions import ProviderError, AuthenticationError, ModelError
-from .stream_normalizer import get_stream_normalizer
+from ..core.streaming import StreamChunk
 
 
 class OllamaClient(ModelClient):
     """Ollama client implementation for local models."""
-    
+
     def __init__(
         self,
         model: str,
         api_key: Optional[str] = None,
-        timeout: float = 120.0,  # Longer timeout for local inference
+        timeout: float = 120.0,
         max_retries: int = 3,
         base_url: str = "http://localhost:11434",
         **kwargs
@@ -32,14 +32,76 @@ class OllamaClient(ModelClient):
             raise ImportError(
                 "aiohttp is required for Ollama. Install with: pip install aiohttp"
             )
-        
-        super().__init__(model, api_key, timeout, max_retries, **kwargs)
-        
+
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+            **kwargs
+        )
         self.base_url = base_url.rstrip('/')
         self.provider_name = "ollama"
-        self.stream_normalizer = get_stream_normalizer("ollama")
-        
         self.api_key = api_key
+
+        # Streaming state
+        self._accumulated_content = ""
+
+    def _reset_stream_state(self):
+        """Reset streaming state for a new streaming session."""
+        self._accumulated_content = ""
+
+    def _normalize_stream_chunk(self, chunk: Any) -> StreamChunk:
+        """Normalize Ollama streaming format to unified StreamChunk."""
+        content = ""
+        delta = ""
+        finish_reason = None
+
+        try:
+            if isinstance(chunk, dict):
+                if "message" in chunk:
+                    delta = chunk["message"].get("content", "")
+                    content = delta
+                if chunk.get("done", False):
+                    finish_reason = "stop"
+            elif hasattr(chunk, 'message'):
+                delta = chunk.message.get("content", "")
+                content = delta
+                if hasattr(chunk, 'done') and chunk.done:
+                    finish_reason = "stop"
+            else:
+                content = str(chunk) if chunk else ""
+                delta = content
+
+        except (AttributeError, TypeError):
+            content = str(chunk) if chunk else ""
+            delta = content
+
+        return StreamChunk(
+            content=content,
+            delta=delta,
+            finish_reason=finish_reason,
+            usage=None,
+            tool_calls=None
+        )
+
+    async def _image_url_to_base64(self, image_url: str) -> str:
+        """Convert image URL to base64 data for Ollama."""
+        if image_url.startswith("data:"):
+            # Already base64 data URI - extract the base64 part
+            return image_url.split(",")[1]
+
+        # External URL - download and convert to base64
+        try:
+            import base64
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
+                    if response.status != 200:
+                        raise ProviderError(f"Failed to download image from {image_url}: {response.status}", provider="ollama")
+                    image_bytes = await response.read()
+                    return base64.b64encode(image_bytes).decode('utf-8')
+        except Exception as e:
+            raise ProviderError(f"Error converting image URL to base64: {e}", provider="ollama")
     
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to Ollama format (OpenAI compatible)."""
@@ -48,42 +110,45 @@ class OllamaClient(ModelClient):
             "function": schema
         }
     
-    def _convert_messages_to_ollama_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
-        """Convert messages to Ollama format."""
+    async def _convert_messages_to_ollama_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
+        """Convert messages to Ollama format with async image download."""
         ollama_messages = []
-        
+
         for message in messages:
             ollama_message = {
                 "role": message.role.value,
                 "content": ""
             }
-            
+
             if isinstance(message.content, str):
                 ollama_message["content"] = message.content
             elif isinstance(message.content, list):
                 content_parts = []
                 images = []
-                
+
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         content_parts.append(block.text)
                     elif isinstance(block, ImageBlock):
-                        if block.image_url.startswith("data:"):
-                            images.append(block.image_url.split(",")[1])
-                        else:
-                            content_parts.append(f"[Image: {block.image_url}]")
-                
+                        # Convert image URL to base64 (handles both data URIs and external URLs)
+                        try:
+                            base64_data = await self._image_url_to_base64(block.image_url)
+                            images.append(base64_data)
+                        except Exception as e:
+                            # If conversion fails, add as text placeholder
+                            content_parts.append(f"[Image failed to load: {block.image_url}]")
+
                 ollama_message["content"] = " ".join(content_parts)
                 if images:
                     ollama_message["images"] = images
             else:
                 ollama_message["content"] = str(message.content)
-            
+
             if message.tool_calls:
                 ollama_message["tool_calls"] = message.tool_calls
-            
+
             ollama_messages.append(ollama_message)
-        
+
         return ollama_messages
     
     async def achat(
@@ -97,7 +162,7 @@ class OllamaClient(ModelClient):
     ):
         """Send chat completion request to Ollama."""
         try:
-            ollama_messages = self._convert_messages_to_ollama_format(messages)
+            ollama_messages = await self._convert_messages_to_ollama_format(messages)
 
             payload = {
                 "model": self.model,
@@ -172,7 +237,7 @@ class OllamaClient(ModelClient):
     ) -> AsyncIterator:
         """Send streaming chat completion request to Ollama."""
         try:
-            ollama_messages = self._convert_messages_to_ollama_format(messages)
+            ollama_messages = await self._convert_messages_to_ollama_format(messages)
 
             payload = {
                 "model": self.model,
@@ -192,11 +257,11 @@ class OllamaClient(ModelClient):
             if json_schema:
                 # Pass schema object to format parameter
                 payload["format"] = json_schema
-            
+
             headers = {"Content-Type": "application/json"}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
-            
+
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
                 async with session.post(
                     f"{self.base_url}/api/chat",
@@ -206,26 +271,27 @@ class OllamaClient(ModelClient):
                     if response.status != 200:
                         error_text = await response.text()
                         raise ProviderError(f"Ollama API error {response.status}: {error_text}", provider="ollama")
-                    
-                    accumulated_content = ""
-                    
+
+                    # Reset stream state for new streaming session
+                    self._reset_stream_state()
+
                     async for line in response.content:
                         if line:
                             try:
                                 chunk_data = json.loads(line.decode('utf-8'))
-                                
-                                normalized_chunk = self.stream_normalizer.normalize(chunk_data)
-                                
+
+                                normalized_chunk = self._normalize_stream_chunk(chunk_data)
+
                                 if normalized_chunk.delta:
-                                    accumulated_content += normalized_chunk.delta
-                                
-                                normalized_chunk.content = accumulated_content
-                                
+                                    self._accumulated_content += normalized_chunk.delta
+
+                                normalized_chunk.content = self._accumulated_content
+
                                 yield normalized_chunk
-                                
+
                                 if normalized_chunk.finish_reason:
                                     break
-                                        
+
                             except json.JSONDecodeError:
                                 continue
             

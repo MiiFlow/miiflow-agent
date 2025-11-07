@@ -7,39 +7,43 @@ import groq
 from groq import AsyncGroq, Groq
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from ..core.client import ModelClient, ChatResponse, StreamChunk
-from ..core.message import Message, MessageRole
-from ..core.metrics import TokenCount, UsageData
+from ..core.client import ChatResponse, ModelClient
 from ..core.exceptions import (
     AuthenticationError,
-    RateLimitError,
     ModelError,
-    TimeoutError as MiiflowTimeoutError,
     ProviderError,
+    RateLimitError,
+    TimeoutError as MiiflowTimeoutError,
 )
-from .stream_normalizer import get_stream_normalizer
+from ..core.message import Message, MessageRole
+from ..core.metrics import TokenCount, UsageData
+from ..core.streaming import StreamChunk
+from .openai_client import OpenAIClient, OpenAIStreaming
 
 
-class GroqClient(ModelClient):
+class GroqClient(OpenAIStreaming, ModelClient):
     """Groq provider client."""
-    
+
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
-        super().__init__(model=model, api_key=api_key, **kwargs)
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            **kwargs
+        )
         self.client = AsyncGroq(api_key=api_key)
         self.provider_name = "groq"
-        self.stream_normalizer = get_stream_normalizer("groq")
+
+        # Initialize streaming state
+        self._accumulated_content = ""
+        self._accumulated_tool_calls = {}
     
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to Groq format (OpenAI compatible)."""
-        return {
-            "type": "function",
-            "function": schema
-        }
-    
+        return OpenAIClient.convert_schema_to_openai_format(schema)
+
     def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
-        """Convert Message to Groq format (reuse OpenAI logic since compatible)."""
-        from .openai_client import OpenAIClient
-        return OpenAIClient.convert_message_to_provider_format(OpenAIClient("", ""), message)
+        """Convert Message to Groq format (OpenAI compatible)."""
+        return OpenAIClient.convert_message_to_openai_format(message)
     
     @retry(
         stop=stop_after_attempt(3),
@@ -175,24 +179,24 @@ class GroqClient(ModelClient):
                 self.client.chat.completions.create(**request_params),
                 timeout=self.timeout
             )
-            
-            accumulated_content = ""
-            
+
+            # Reset stream state for new streaming session
+            self._reset_stream_state()
+
             async for chunk in stream:
                 if not chunk.choices:
                     continue
-                
-                # Use stream normalizer to convert Groq format to unified format
-                normalized_chunk = self.stream_normalizer.normalize(chunk)
-                
-                # Accumulate content
-                if normalized_chunk.delta:
-                    accumulated_content += normalized_chunk.delta
-                
-                # Update accumulated content in the chunk
-                normalized_chunk.content = accumulated_content
-                
-                yield normalized_chunk
+
+                # Use mixin to normalize Groq format to unified format
+                normalized_chunk = self._normalize_stream_chunk(chunk)
+
+                # Only yield if there's content or metadata
+                if (
+                    normalized_chunk.delta
+                    or normalized_chunk.tool_calls
+                    or normalized_chunk.finish_reason
+                ):
+                    yield normalized_chunk
             
         except groq.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)

@@ -9,30 +9,26 @@ from miiflow_llm.core.streaming import (
     UnifiedStreamingClient,
     EnhancedStreamChunk
 )
-from miiflow_llm.providers.stream_normalizer import get_stream_normalizer
+from miiflow_llm.providers.openai_client import OpenAIClient
+from miiflow_llm.providers.anthropic_client import AnthropicClient
 from miiflow_llm.core import Message, TokenCount, MessageRole
-from miiflow_llm.core.client import StreamChunk
+from miiflow_llm.core.streaming import StreamChunk
 
 
 class TestStreamNormalizers:
-    """Test suite for stream normalizers."""
-    
+    """Test suite for stream normalizers (now inline in clients)."""
+
     @pytest.fixture
-    def openai_normalizer(self):
-        """Create OpenAI normalizer instance."""
-        return get_stream_normalizer("openai")
-    
+    def openai_client(self):
+        """Create OpenAI client instance."""
+        return OpenAIClient(model="gpt-4", api_key="test_key")
+
     @pytest.fixture
-    def anthropic_normalizer(self):
-        """Create Anthropic normalizer instance."""
-        return get_stream_normalizer("anthropic")
-    
-    @pytest.fixture
-    def groq_normalizer(self):
-        """Create Groq normalizer instance."""
-        return get_stream_normalizer("groq")
-    
-    def test_openai_chunk_normalization(self, openai_normalizer):
+    def anthropic_client(self):
+        """Create Anthropic client instance."""
+        return AnthropicClient(model="claude-3-5-sonnet-20241022", api_key="test_key")
+
+    def test_openai_chunk_normalization(self, openai_client):
         """Test OpenAI chunk normalization."""
         chunk = MagicMock()
         chunk.choices = [MagicMock()]
@@ -40,15 +36,15 @@ class TestStreamNormalizers:
         chunk.choices[0].delta.content = "Hello world"
         chunk.choices[0].finish_reason = None
         chunk.usage = None
-        
-        result = openai_normalizer.normalize(chunk)
-        
+
+        result = openai_client._normalize_stream_chunk(chunk)
+
         assert isinstance(result, StreamChunk)
         assert result.content == "Hello world"
         assert result.delta == "Hello world"
         assert result.finish_reason is None
-    
-    def test_openai_final_chunk(self, openai_normalizer):
+
+    def test_openai_final_chunk(self, openai_client):
         """Test OpenAI final chunk with usage."""
         chunk = MagicMock()
         chunk.choices = [MagicMock()]
@@ -59,46 +55,46 @@ class TestStreamNormalizers:
         chunk.usage.prompt_tokens = 10
         chunk.usage.completion_tokens = 20
         chunk.usage.total_tokens = 30
-        
-        result = openai_normalizer.normalize(chunk)
-        
+
+        result = openai_client._normalize_stream_chunk(chunk)
+
         assert result.finish_reason == "stop"
         assert result.usage is not None
         assert result.usage.total_tokens == 30
-    
-    def test_anthropic_chunk_normalization(self, anthropic_normalizer):
+
+    def test_anthropic_chunk_normalization(self, anthropic_client):
         """Test Anthropic chunk normalization."""
         chunk = MagicMock()
         chunk.type = "content_block_delta"
         chunk.delta = MagicMock()
         chunk.delta.text = "Anthropic response"
-        
-        result = anthropic_normalizer.normalize(chunk)
-        
+
+        result = anthropic_client._normalize_stream_chunk(chunk)
+
         assert isinstance(result, StreamChunk)
         assert result.content == "Anthropic response"
         assert result.delta == "Anthropic response"
-    
-    def test_anthropic_stop_chunk(self, anthropic_normalizer):
+
+    def test_anthropic_stop_chunk(self, anthropic_client):
         """Test Anthropic stop chunk."""
         chunk = MagicMock()
         chunk.type = "message_stop"
-        
-        result = anthropic_normalizer.normalize(chunk)
-        
+
+        result = anthropic_client._normalize_stream_chunk(chunk)
+
         assert result.finish_reason == "stop"
-    
-    def test_groq_chunk_normalization(self, groq_normalizer):
-        """Test Groq chunk normalization (OpenAI-compatible)."""
+
+    def test_groq_chunk_normalization(self, openai_client):
+        """Test Groq chunk normalization (uses OpenAI mixin)."""
         chunk = MagicMock()
         chunk.choices = [MagicMock()]
         chunk.choices[0].delta = MagicMock()
         chunk.choices[0].delta.content = "Groq response"
         chunk.choices[0].finish_reason = None
         chunk.usage = None
-        
-        result = groq_normalizer.normalize(chunk)
-        
+
+        result = openai_client._normalize_stream_chunk(chunk)
+
         assert isinstance(result, StreamChunk)
         assert result.content == "Groq response"
         assert result.delta == "Groq response"

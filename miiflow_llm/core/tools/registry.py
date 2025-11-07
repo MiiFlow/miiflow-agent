@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from .exceptions import ToolPreparationError
 from .function import FunctionTool
 from .http import HTTPTool
-from .schemas import FunctionOutput, ToolResult, ToolSchema
+from .schemas import ToolResult, ToolSchema
 from .types import ToolType
 
 logger = logging.getLogger(__name__)
@@ -123,18 +123,6 @@ class ToolRegistry:
             return True
         except Exception:
             return False
-
-    async def execute(self, name: str, **kwargs) -> FunctionOutput:
-        """Execute a tool by name (legacy interface)."""
-        result = await self.execute_safe(name, **kwargs)
-
-        return FunctionOutput(
-            name=result.name,
-            input=result.input,
-            output=result.output,
-            error=result.error,
-            success=result.success,
-        )
 
     async def execute_safe(self, tool_name: str, **kwargs) -> ToolResult:
         """Execute a tool with comprehensive error handling and stats tracking."""

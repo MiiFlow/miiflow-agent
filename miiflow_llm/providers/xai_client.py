@@ -6,38 +6,47 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import openai
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from ..core.client import ModelClient, ChatResponse, StreamChunk
-from ..core.message import Message, MessageRole
-from ..core.metrics import TokenCount, UsageData
+from ..core.client import ChatResponse, ModelClient
 from ..core.exceptions import (
     AuthenticationError,
-    RateLimitError,
     ModelError,
-    TimeoutError as MiiflowTimeoutError,
     ProviderError,
+    RateLimitError,
+    TimeoutError as MiiflowTimeoutError,
 )
-from .stream_normalizer import get_stream_normalizer
+from ..core.message import Message, MessageRole
+from ..core.metrics import TokenCount, UsageData
+from ..core.streaming import StreamChunk
+from .openai_client import OpenAIClient, OpenAIStreaming
 
 
-class XAIClient(ModelClient):
+class XAIClient(OpenAIStreaming, ModelClient):
     """xAI provider client."""
-    
+
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
-        super().__init__(model=model, api_key=api_key, **kwargs)
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            **kwargs
+        )
         self.client = openai.AsyncOpenAI(
             api_key=api_key,
             base_url="https://api.x.ai/v1"
         )
         self.provider_name = "xai"
-        self.stream_normalizer = get_stream_normalizer("xai")
+
+        # Initialize streaming state
+        self._accumulated_content = ""
+        self._accumulated_tool_calls = {}
     
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to xAI format (OpenAI compatible)."""
-        return {
-            "type": "function",
-            "function": schema
-        }
-    
+        return OpenAIClient.convert_schema_to_openai_format(schema)
+
+    def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
+        """Convert Message to xAI format (OpenAI compatible)."""
+        return OpenAIClient.convert_message_to_openai_format(message)
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -54,7 +63,7 @@ class XAIClient(ModelClient):
     ) -> ChatResponse:
         """Send chat completion request to xAI Grok."""
         try:
-            openai_messages = [msg.to_openai_format() for msg in messages]
+            openai_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
             
             request_params = {
                 "model": self.model,
@@ -131,15 +140,15 @@ class XAIClient(ModelClient):
     ) -> AsyncIterator[StreamChunk]:
         """Send streaming chat completion request to xAI Grok."""
         try:
-            openai_messages = [msg.to_openai_format() for msg in messages]
-            
+            openai_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
+
             request_params = {
                 "model": self.model,
                 "messages": openai_messages,
                 "temperature": temperature,
                 "stream": True,
             }
-            
+
             if max_tokens:
                 request_params["max_tokens"] = max_tokens
             if tools:
@@ -161,21 +170,23 @@ class XAIClient(ModelClient):
                 self.client.chat.completions.create(**request_params),
                 timeout=self.timeout
             )
-            
-            accumulated_content = ""
-            
+
+            # Reset stream state for new streaming session
+            self._reset_stream_state()
+
             async for chunk in stream:
                 if not chunk.choices:
                     continue
-                
-                normalized_chunk = self.stream_normalizer.normalize(chunk)
-                
-                if normalized_chunk.delta:
-                    accumulated_content += normalized_chunk.delta
-                
-                normalized_chunk.content = accumulated_content
-                
-                yield normalized_chunk
+
+                normalized_chunk = self._normalize_stream_chunk(chunk)
+
+                # Only yield if there's content or metadata
+                if (
+                    normalized_chunk.delta
+                    or normalized_chunk.tool_calls
+                    or normalized_chunk.finish_reason
+                ):
+                    yield normalized_chunk
             
         except openai.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)

@@ -16,8 +16,8 @@ from ..core.client import ModelClient
 from ..core.exceptions import AuthenticationError, ModelError, ProviderError
 from ..core.message import ImageBlock, Message, MessageRole, TextBlock
 from ..core.metrics import TokenCount
+from ..core.streaming import StreamChunk
 from ..utils.image import image_url_to_bytes
-from .stream_normalizer import get_stream_normalizer
 
 
 class GeminiClient(ModelClient):
@@ -36,7 +36,13 @@ class GeminiClient(ModelClient):
                 "google-generativeai is required for Gemini. Install with: pip install google-generativeai"
             )
 
-        super().__init__(model, api_key, timeout, max_retries, **kwargs)
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+            **kwargs
+        )
 
         if not api_key:
             raise AuthenticationError("Gemini API key is required")
@@ -50,8 +56,6 @@ class GeminiClient(ModelClient):
         except Exception as e:
             raise ModelError(f"Failed to initialize Gemini model {model}: {e}")
 
-        self.stream_normalizer = get_stream_normalizer("gemini")
-
         self.safety_settings = {
             HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
             HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
@@ -60,6 +64,54 @@ class GeminiClient(ModelClient):
         }
 
         self.provider_name = "gemini"
+
+        # Streaming state
+        self._accumulated_content = ""
+
+    def _reset_stream_state(self):
+        """Reset streaming state for a new streaming session."""
+        self._accumulated_content = ""
+
+    def _normalize_stream_chunk(self, chunk: Any) -> StreamChunk:
+        """Normalize Gemini streaming format to unified StreamChunk."""
+        content = ""
+        delta = ""
+        finish_reason = None
+        usage = None
+
+        try:
+            if hasattr(chunk, 'candidates') and chunk.candidates:
+                candidate = chunk.candidates[0]
+
+                if hasattr(candidate, 'content') and candidate.content.parts:
+                    delta = candidate.content.parts[0].text
+                    content = delta
+
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                    finish_reason = candidate.finish_reason.name
+
+            if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
+                usage = TokenCount(
+                    prompt_tokens=getattr(chunk.usage_metadata, 'prompt_token_count', 0) or 0,
+                    completion_tokens=getattr(chunk.usage_metadata, 'candidates_token_count', 0) or 0,
+                    total_tokens=getattr(chunk.usage_metadata, 'total_token_count', 0) or 0
+                )
+
+        except AttributeError:
+            if hasattr(chunk, 'text'):
+                content = chunk.text
+                delta = content
+            else:
+                content = str(chunk) if chunk else ""
+                delta = content
+
+        return StreamChunk(
+            content=content,
+            delta=delta,
+            finish_reason=finish_reason,
+            usage=usage,
+            tool_calls=None
+        )
 
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to Gemini format."""
@@ -407,15 +459,16 @@ class GeminiClient(ModelClient):
                 stream=True,
             )
 
-            accumulated_content = ""
+            # Reset stream state for new streaming session
+            self._reset_stream_state()
 
             for chunk in response_stream:
-                normalized_chunk = self.stream_normalizer.normalize(chunk)
+                normalized_chunk = self._normalize_stream_chunk(chunk)
 
                 if normalized_chunk.delta:
-                    accumulated_content += normalized_chunk.delta
+                    self._accumulated_content += normalized_chunk.delta
 
-                normalized_chunk.content = accumulated_content
+                normalized_chunk.content = self._accumulated_content
 
                 yield normalized_chunk
 

@@ -30,6 +30,8 @@ class TestObservabilityConfig:
 
     def test_config_from_env_enabled(self, monkeypatch):
         """Test configuration when observability is enabled."""
+        monkeypatch.delenv("PHOENIX_COLLECTOR_ENDPOINT", raising=False)
+        monkeypatch.delenv("PHOENIX_API_KEY", raising=False)
         monkeypatch.setenv("PHOENIX_ENABLED", "true")
         monkeypatch.setenv("PHOENIX_ENDPOINT", "http://localhost:6006")
         monkeypatch.setenv("PHOENIX_PROJECT_NAME", "test-project")

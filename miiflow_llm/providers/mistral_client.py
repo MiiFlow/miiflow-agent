@@ -6,15 +6,15 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from mistralai import Mistral
 
 from ..core.client import ModelClient
-from ..core.message import Message, MessageRole, TextBlock, ImageBlock
+from ..core.exceptions import AuthenticationError, ModelError, ProviderError
+from ..core.message import ImageBlock, Message, MessageRole, TextBlock
 from ..core.metrics import TokenCount
-from ..core.exceptions import ProviderError, AuthenticationError, ModelError
-from .stream_normalizer import get_stream_normalizer
+from ..core.streaming import StreamChunk
 
 
 class MistralClient(ModelClient):
     """Mistral client implementation."""
-    
+
     def __init__(
         self,
         model: str,
@@ -23,17 +23,67 @@ class MistralClient(ModelClient):
         max_retries: int = 3,
         **kwargs
     ):
-        
-        super().__init__(model, api_key, timeout, max_retries, **kwargs)
-        
         if not api_key:
             raise AuthenticationError("Mistral API key is required", provider="mistral")
-        
-        # Initialize Mistral client
+
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+            **kwargs
+        )
+
         self.client = Mistral(api_key=api_key)
-        
         self.provider_name = "mistral"
-        self.stream_normalizer = get_stream_normalizer("mistral")
+
+        # Streaming state
+        self._accumulated_content = ""
+
+    def _reset_stream_state(self):
+        """Reset streaming state for a new streaming session."""
+        self._accumulated_content = ""
+
+    def _normalize_stream_chunk(self, chunk: Any) -> StreamChunk:
+        """Normalize Mistral streaming format to unified StreamChunk."""
+        content = ""
+        delta = ""
+        finish_reason = None
+        tool_calls = None
+        usage = None
+
+        try:
+            if hasattr(chunk, 'choices') and chunk.choices:
+                choice = chunk.choices[0]
+
+                if hasattr(choice, 'delta') and choice.delta:
+                    if hasattr(choice.delta, 'content'):
+                        delta = choice.delta.content or ""
+                        content = delta
+                    if hasattr(choice.delta, 'tool_calls'):
+                        tool_calls = choice.delta.tool_calls
+
+                if hasattr(choice, 'finish_reason'):
+                    finish_reason = choice.finish_reason
+
+            if hasattr(chunk, 'usage') and chunk.usage:
+                usage = TokenCount(
+                    prompt_tokens=chunk.usage.prompt_tokens,
+                    completion_tokens=chunk.usage.completion_tokens,
+                    total_tokens=chunk.usage.total_tokens
+                )
+
+        except AttributeError:
+            content = str(chunk) if chunk else ""
+            delta = content
+
+        return StreamChunk(
+            content=content,
+            delta=delta,
+            finish_reason=finish_reason,
+            usage=usage,
+            tool_calls=tool_calls
+        )
     
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to Mistral format (OpenAI compatible)."""
@@ -43,39 +93,42 @@ class MistralClient(ModelClient):
         }
     
     def _convert_messages_to_mistral_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
-        """Convert messages to Mistral format."""
+        """Convert messages to Mistral format (OpenAI-compatible multimodal)."""
         mistral_messages = []
-        
+
         for message in messages:
             role = message.role.value
-            
+
+            mistral_message = {"role": role}
+
             if isinstance(message.content, str):
-                content = message.content
+                mistral_message["content"] = message.content
             elif isinstance(message.content, list):
-                content_parts = []
+                # Build content array for multimodal (OpenAI-compatible format)
+                content_list = []
                 for block in message.content:
                     if isinstance(block, TextBlock):
-                        content_parts.append(block.text)
+                        content_list.append({"type": "text", "text": block.text})
                     elif isinstance(block, ImageBlock):
-                        content_parts.append(f"[Image: {block.image_url}]")
-                content = " ".join(content_parts)
+                        # Mistral uses OpenAI-compatible image format
+                        content_list.append({
+                            "type": "image_url",
+                            "image_url": {"url": block.image_url}
+                        })
+
+                mistral_message["content"] = content_list
             else:
-                content = str(message.content)
-            
-            mistral_message = {
-                "role": role,
-                "content": content,
-            }
-            
+                mistral_message["content"] = str(message.content)
+
             if message.name:
                 mistral_message["name"] = message.name
             if message.tool_calls:
                 mistral_message["tool_calls"] = message.tool_calls
             if message.tool_call_id:
                 mistral_message["tool_call_id"] = message.tool_call_id
-            
+
             mistral_messages.append(mistral_message)
-        
+
         return mistral_messages
     
     async def achat(
@@ -193,20 +246,21 @@ class MistralClient(ModelClient):
             
             # Stream response
             response_stream = await self.client.chat.stream_async(**request_params)
-            
-            accumulated_content = ""
-            
+
+            # Reset stream state for new streaming session
+            self._reset_stream_state()
+
             async for chunk in response_stream:
-                # Use stream normalizer to convert Mistral format to unified format
-                normalized_chunk = self.stream_normalizer.normalize(chunk)
-                
+                # Normalize Mistral format to unified format
+                normalized_chunk = self._normalize_stream_chunk(chunk)
+
                 # Accumulate content
                 if normalized_chunk.delta:
-                    accumulated_content += normalized_chunk.delta
-                
+                    self._accumulated_content += normalized_chunk.delta
+
                 # Update accumulated content in the chunk
-                normalized_chunk.content = accumulated_content
-                
+                normalized_chunk.content = self._accumulated_content
+
                 yield normalized_chunk
             
         except Exception as e:

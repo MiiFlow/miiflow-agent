@@ -10,7 +10,16 @@ from datetime import datetime
 from .message import Message
 from .metrics import TokenCount
 from .exceptions import ParsingError
-from .client import StreamChunk
+
+
+@dataclass
+class StreamChunk:
+    """Chunk from a streaming response."""
+    content: str
+    delta: str
+    finish_reason: Optional[str] = None
+    usage: Optional[TokenCount] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass

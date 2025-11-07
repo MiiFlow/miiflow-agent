@@ -35,7 +35,6 @@ from .schemas import (
     ParameterSchema,
     ToolResult,
     ToolSchema,
-    FunctionOutput,
     PreparedCall
 )
 from .types import ToolType, FunctionType, ParameterType
@@ -94,9 +93,8 @@ __all__ = [
     
     # Schemas and types
     "ParameterSchema",
-    "ToolResult", 
+    "ToolResult",
     "ToolSchema",
-    "FunctionOutput",
     "PreparedCall",
     "ToolType",
     "FunctionType",

@@ -16,6 +16,16 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict
+from pathlib import Path
+
+# Load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass  # dotenv not installed
 
 # Add package to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -100,9 +110,9 @@ def multiply_tool(a: float, b: float) -> float:
     return result
 
 
-async def test_react_streaming(prompt: str, max_steps: int = 10, show_inline_chunks: bool = True):
+async def run_react_streaming(prompt: str, max_steps: int = 10, show_inline_chunks: bool = True):
     """
-    Test ReAct orchestrator streaming with a given prompt.
+    Run ReAct orchestrator streaming with a given prompt.
 
     Args:
         prompt: The user query
@@ -110,12 +120,12 @@ async def test_react_streaming(prompt: str, max_steps: int = 10, show_inline_chu
         show_inline_chunks: If True, print chunks inline; otherwise print each chunk on new line
     """
     print_colored("=" * 80, Colors.HEADER)
-    print_colored("🚀 ReAct Orchestrator Streaming Test", Colors.BOLD + Colors.HEADER)
+    print_colored(" ReAct Orchestrator Streaming Test", Colors.BOLD + Colors.HEADER)
     print_colored("=" * 80, Colors.HEADER)
 
     # Check for API key
     if not os.getenv("OPENAI_API_KEY") and not os.getenv("ANTHROPIC_API_KEY"):
-        print_colored("\n❌ Error: No API key found!", Colors.RED)
+        print_colored("\n Error: No API key found!", Colors.RED)
         print("Please set OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable")
         return
 
@@ -268,7 +278,7 @@ async def test_react_streaming(prompt: str, max_steps: int = 10, show_inline_chu
 async def main():
     """Run test scenarios."""
     # Test 1: Simple arithmetic
-    await test_react_streaming(
+    await run_react_streaming(
         prompt="What is 15 + 27?",
         max_steps=5,
         show_inline_chunks=True,  # Show chunks inline for realistic UX
@@ -277,7 +287,7 @@ async def main():
     print("\n\n")
 
     # Test 2: Multi-step reasoning
-    await test_react_streaming(
+    await run_react_streaming(
         prompt="Calculate (12 + 8) * 5 + 10 * 20 + 30. Show me the steps.",
         max_steps=10,
         show_inline_chunks=True,

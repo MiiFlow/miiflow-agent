@@ -1,28 +1,41 @@
 """Environment variable utilities."""
 
 import os
-from pathlib import Path
 from typing import Optional
+
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
 
 
 def load_env_file(env_path: Optional[str] = None) -> None:
-    """Load environment variables from .env file."""
-    if env_path is None:
-        env_path = Path.cwd() / ".env"
+    """Load environment variables from .env file using python-dotenv.
+
+    Falls back to basic parsing if python-dotenv is not installed.
+    """
+    if DOTENV_AVAILABLE:
+        load_dotenv(env_path)
     else:
-        env_path = Path(env_path)
-    
-    if not env_path.exists():
-        return
-    
-    with open(env_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                os.environ[key] = value
+        # Fallback: basic parsing (does not handle edge cases)
+        from pathlib import Path
+        if env_path is None:
+            env_path = Path.cwd() / ".env"
+        else:
+            env_path = Path(env_path)
+
+        if not env_path.exists():
+            return
+
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    os.environ[key] = value
 
 
 def get_api_key(provider: str) -> Optional[str]:

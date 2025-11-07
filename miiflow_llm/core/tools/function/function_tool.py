@@ -5,7 +5,7 @@ import time
 import logging
 from typing import Any, Callable, Dict, Optional
 
-from ..schemas import ToolResult, FunctionOutput
+from ..schemas import ToolResult
 from ..types import FunctionType
 from ..exceptions import ToolExecutionError
 from ..schema_utils import detect_function_type, get_fun_schema
@@ -94,18 +94,7 @@ class FunctionTool:
                 validated[param_name] = value
         
         return validated
-    
-    async def call(self, **kwargs) -> FunctionOutput:
-        """Legacy interface for executing the function."""
-        result = await self.acall(**kwargs)
-        return FunctionOutput(
-            name=result.name,
-            input=result.input,
-            output=result.output,
-            error=result.error,
-            success=result.success
-        )
-    
+
     async def acall(self, **kwargs) -> ToolResult:
         """Async execute the function with safe error handling."""
         start_time = time.time()

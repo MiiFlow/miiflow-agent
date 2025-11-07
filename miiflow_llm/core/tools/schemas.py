@@ -144,16 +144,6 @@ class ToolSchema:
             return universal
 
 
-@dataclass  
-class FunctionOutput:
-    """Legacy result from tool execution - for backward compatibility."""
-    name: str
-    input: Dict[str, Any]
-    output: Any
-    error: Optional[str] = None
-    success: bool = True
-
-
 @dataclass
 class PreparedCall(Generic[ResultType]):
     """Prepared tool call with validated context and inputs."""

@@ -20,30 +20,19 @@ from typing import (
 from .exceptions import MiiflowLLMError, TimeoutError
 from .message import Message, MessageRole
 from .metrics import MetricsCollector, TokenCount, UsageData
+from .streaming import StreamChunk
 from .tools import FunctionTool, ToolRegistry
 
 
 @dataclass
 class ChatResponse:
-    """Response from LLM chat completion."""
-
+    """Response from a chat completion request."""
     message: Message
     usage: TokenCount
     model: str
     provider: str
     finish_reason: Optional[str] = None
     metadata: Dict[str, Any] = None
-
-
-@dataclass
-class StreamChunk:
-    """Streaming response chunk."""
-
-    content: str
-    delta: str
-    finish_reason: Optional[str] = None
-    usage: Optional[TokenCount] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
 
 
 @runtime_checkable

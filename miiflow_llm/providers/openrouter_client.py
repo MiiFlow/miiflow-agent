@@ -10,16 +10,15 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 from ..core.client import ModelClient
+from ..core.exceptions import AuthenticationError, ModelError, ProviderError
 from ..core.message import Message, MessageRole
 from ..core.metrics import TokenCount
-from ..core.exceptions import ProviderError, AuthenticationError, ModelError
-
-from .stream_normalizer import get_stream_normalizer
+from .openai_client import OpenAIClient, OpenAIStreaming
 
 
-class OpenRouterClient(ModelClient):
+class OpenRouterClient(OpenAIStreaming, ModelClient):
     """OpenRouter client implementation using OpenAI-compatible API."""
-    
+
     def __init__(
         self,
         model: str,
@@ -34,18 +33,23 @@ class OpenRouterClient(ModelClient):
             raise ImportError(
                 "openai is required for OpenRouter. Install with: pip install openai"
             )
-        
-        super().__init__(model, api_key, timeout, max_retries, **kwargs)
-        
+
         if not api_key:
             raise AuthenticationError("OpenRouter API key is required", provider="openrouter")
-        
-        # Prepare headers for OpenRouter
+
         headers = {}
         if app_name:
             headers["HTTP-Referer"] = app_url or "https://localhost"
             headers["X-Title"] = app_name
-        
+
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+            **kwargs
+        )
+
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url="https://openrouter.ai/api/v1",
@@ -53,25 +57,28 @@ class OpenRouterClient(ModelClient):
             max_retries=max_retries,
             default_headers=headers
         )
-        
         self.provider_name = "openrouter"
-        self.stream_normalizer = get_stream_normalizer("openrouter")
+
+        # Initialize streaming state
+        self._accumulated_content = ""
+        self._accumulated_tool_calls = {}
     
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to OpenRouter format (OpenAI compatible)."""
-        return {
-            "type": "function",
-            "function": schema
-        }
-    
+        return OpenAIClient.convert_schema_to_openai_format(schema)
+
+    def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
+        """Convert Message to OpenRouter format (OpenAI compatible)."""
+        return OpenAIClient.convert_message_to_openai_format(message)
+
     def _convert_messages_to_openai_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """Convert messages to OpenAI format."""
         openai_messages = []
-        
+
         for message in messages:
-            openai_message = message.to_openai_format()
+            openai_message = self.convert_message_to_provider_format(message)
             openai_messages.append(openai_message)
-        
+
         return openai_messages
     
     async def achat(
@@ -181,18 +188,20 @@ class OpenRouterClient(ModelClient):
                 }
             
             response_stream = await self.client.chat.completions.create(**request_params)
-            
-            accumulated_content = ""
-            
+
+            # Reset stream state for new streaming session
+            self._reset_stream_state()
+
             async for chunk in response_stream:
-                normalized_chunk = self.stream_normalizer.normalize(chunk)
-                
-                if normalized_chunk.delta:
-                    accumulated_content += normalized_chunk.delta
-                
-                normalized_chunk.content = accumulated_content
-                
-                yield normalized_chunk
+                normalized_chunk = self._normalize_stream_chunk(chunk)
+
+                # Only yield if there's content or metadata
+                if (
+                    normalized_chunk.delta
+                    or normalized_chunk.tool_calls
+                    or normalized_chunk.finish_reason
+                ):
+                    yield normalized_chunk
             
         except Exception as e:
             raise ProviderError(f"OpenRouter streaming error: {e}", provider="openrouter")

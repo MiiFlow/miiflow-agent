@@ -6,7 +6,6 @@ from anthropic import AsyncAnthropicBedrock
 
 from ..core.client import ModelClient
 from .anthropic_client import AnthropicClient
-from .stream_normalizer import get_stream_normalizer
 
 
 class BedrockClient(AnthropicClient):
@@ -41,10 +40,13 @@ class BedrockClient(AnthropicClient):
             aws_session_token: Optional AWS session token for temporary credentials
             **kwargs: Additional arguments passed to parent ModelClient
         """
-        # Initialize ModelClient base (not AnthropicClient.__init__, to avoid api_key requirement)
-        ModelClient.__init__(self, model=model, api_key=None, **kwargs)
+        ModelClient.__init__(
+            self,
+            model=model,
+            api_key=None,
+            **kwargs
+        )
 
-        # Initialize Anthropic's Bedrock client instead of regular Anthropic client
         self.client = AsyncAnthropicBedrock(
             aws_access_key=aws_access_key_id,
             aws_secret_key=aws_secret_access_key,
@@ -53,11 +55,6 @@ class BedrockClient(AnthropicClient):
         )
 
         self.provider_name = "bedrock"
-
-        # Use Anthropic's stream normalizer since Bedrock uses same streaming format
-        self.stream_normalizer = get_stream_normalizer("anthropic")
-
-        # Track sanitized -> original name mappings for tool calls
         self._tool_name_mapping = {}
 
     # All other methods (achat, astream_chat, convert_schema_to_provider_format,

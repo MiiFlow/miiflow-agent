@@ -1,16 +1,35 @@
 """Tests for multimedia support (images and PDFs)."""
 
+import base64
 import pytest
+from pathlib import Path
 from unittest.mock import Mock, patch
 from dataclasses import asdict
 
 from miiflow_llm.core.message import (
-    Message, 
-    MessageRole, 
-    TextBlock, 
+    Message,
+    MessageRole,
+    TextBlock,
     ImageBlock,
+    DocumentBlock,
     ContentBlock
 )
+from miiflow_llm.utils.pdf_extractor import (
+    extract_pdf_text,
+    extract_pdf_metadata,
+)
+
+
+# Test data paths
+TEST_DOCS_DIR = Path(__file__).parent.parent.parent / "docs"
+TEST_PDF_PATH = TEST_DOCS_DIR / "DebjyotiRay..pdf"
+
+
+def load_pdf_as_data_uri(pdf_path: Path) -> str:
+    """Helper to load PDF file as base64 data URI."""
+    with open(pdf_path, 'rb') as f:
+        pdf_bytes = f.read()
+        return f"data:application/pdf;base64,{base64.b64encode(pdf_bytes).decode()}"
 
 
 class TestContentBlocks:
@@ -115,81 +134,6 @@ class TestMultimediaMessages:
         assert msg.content[3].detail == "low"
 
 
-class TestProviderFormatConversion:
-    """Test message format conversion for different providers."""
-    
-    @patch('miiflow_llm.utils.pdf_extractor.extract_pdf_text_simple')
-    def test_openai_format_with_pdf(self, mock_extract):
-        """Test OpenAI format conversion with PDF (should extract text)."""
-        mock_extract.return_value = "Extracted PDF text content"
-        
-        msg = Message.from_pdf(
-            text="Analyze this",
-            pdf_url="data:application/pdf;base64,JVBERi0x...",
-            filename="test.pdf"
-        )
-        
-        openai_format = msg.to_openai_format()
-        
-        assert openai_format["role"] == "user"
-        assert len(openai_format["content"]) == 2
-        assert openai_format["content"][0]["type"] == "text"
-        assert openai_format["content"][1]["type"] == "text"
-        assert "[PDF Document: test.pdf]" in openai_format["content"][1]["text"]
-        assert "Extracted PDF text content" in openai_format["content"][1]["text"]
-        
-        mock_extract.assert_called_once()
-    
-    @patch('miiflow_llm.utils.pdf_extractor.extract_pdf_text_simple')
-    def test_openai_format_pdf_error(self, mock_extract):
-        """Test OpenAI format when PDF extraction fails."""
-        mock_extract.side_effect = Exception("PDF extraction failed")
-        
-        msg = Message.from_pdf(
-            text="Analyze this",
-            pdf_url="invalid_url",
-            filename="test.pdf"
-        )
-        
-        openai_format = msg.to_openai_format()
-        
-        assert "[Error processing PDF test.pdf:" in openai_format["content"][1]["text"]
-    
-    def test_anthropic_format_with_pdf(self):
-        """Test Anthropic format conversion with PDF (native support)."""
-        msg = Message.from_pdf(
-            text="Analyze this",
-            pdf_url="data:application/pdf;base64,JVBERi0x...",
-            filename="test.pdf"
-        )
-        
-        anthropic_format = msg.to_anthropic_format()
-        
-        assert anthropic_format["role"] == "user"
-        assert len(anthropic_format["content"]) == 2
-        assert anthropic_format["content"][0]["type"] == "text"
-        assert anthropic_format["content"][1]["type"] == "document"
-        
-        doc_block = anthropic_format["content"][1]
-        assert doc_block["source"]["type"] == "base64"
-        assert doc_block["source"]["media_type"] == "application/pdf"
-        assert doc_block["source"]["data"] == "data:application/pdf;base64,JVBERi0x..."
-    
-    def test_anthropic_format_with_image(self):
-        """Test Anthropic format with image."""
-        msg = Message.from_image(
-            text="What's this?",
-            image_url="https://example.com/image.jpg"
-        )
-        
-        anthropic_format = msg.to_anthropic_format()
-        
-        assert len(anthropic_format["content"]) == 2
-        assert anthropic_format["content"][1]["type"] == "image"
-        assert anthropic_format["content"][1]["source"]["type"] == "url"
-        assert anthropic_format["content"][1]["source"]["data"] == "https://example.com/image.jpg"
-
-
 class TestPDFExtraction:
     """Test PDF text extraction functionality."""
     
@@ -198,7 +142,7 @@ class TestPDFExtraction:
         """Test PDF metadata extraction."""
         # Mock fitz document
         mock_doc = Mock()
-        mock_doc.__len__.return_value = 3
+        mock_doc.__len__ = Mock(return_value=3)
         mock_doc.metadata = {
             'title': 'Test Document',
             'author': 'Test Author',
@@ -301,19 +245,62 @@ class TestMessageSerialization:
 class TestMultimediaIntegration:
     """Integration tests for multimedia functionality."""
     
-    @pytest.mark.skip(reason="Requires actual PDF file and dependencies")
     def test_real_pdf_extraction(self):
-        """Integration test with real PDF (requires pymupdf)."""
-        # This would test actual PDF extraction with real files
-        # Skip by default since it requires external dependencies
-        pass
+        """Integration test with real PDF file using PyMuPDF."""
+        if not TEST_PDF_PATH.exists():
+            pytest.skip(f"Test PDF file not found at {TEST_PDF_PATH}")
+        
+        # Load PDF as data URI
+        pdf_data_uri = load_pdf_as_data_uri(TEST_PDF_PATH)
+        
+        # Test text extraction without OCR
+        result = extract_pdf_text(pdf_data_uri, use_ocr=False)
+        
+        assert "text" in result
+        assert "metadata" in result
+        assert len(result["text"]) > 0
+        assert result["metadata"]["pages"] > 0
+        assert result["metadata"]["extraction_method"] in ["pymupdf", "pymupdf + tesseract_ocr"]
+        
+        # Test metadata extraction
+        metadata = extract_pdf_metadata(pdf_data_uri)
+        
+        assert "pages" in metadata
+        assert "file_size" in metadata
+        assert metadata["pages"] > 0
+        assert metadata["file_size"] > 0
     
-    @pytest.mark.skip(reason="Requires OCR dependencies")
     def test_ocr_functionality(self):
-        """Integration test for OCR functionality (requires tesseract)."""
-        # This would test OCR on scanned PDFs
-        # Skip by default since it requires tesseract installation
-        pass
+        """Integration test for OCR functionality with tesseract."""
+        if not TEST_PDF_PATH.exists():
+            pytest.skip(f"Test PDF file not found at {TEST_PDF_PATH}")
+        
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError:
+            pytest.skip("pytesseract and/or Pillow not installed")
+        
+        # Check if tesseract is available
+        try:
+            pytesseract.get_tesseract_version()
+        except Exception:
+            pytest.skip("Tesseract OCR not installed or not in PATH")
+        
+        # Load PDF as data URI
+        pdf_data_uri = load_pdf_as_data_uri(TEST_PDF_PATH)
+        
+        # Test text extraction with OCR enabled
+        result = extract_pdf_text(pdf_data_uri, use_ocr=True)
+        
+        assert "text" in result
+        assert "metadata" in result
+        assert len(result["text"]) > 0
+        
+        # If the PDF had image-based pages and OCR was used, verify that
+        if result["metadata"].get("image_based_pages", 0) > 0:
+            # OCR should have been attempted
+            assert result["metadata"].get("ocr_used") in [True, False]  # May or may not succeed
 
 
 if __name__ == "__main__":

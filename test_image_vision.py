@@ -31,7 +31,7 @@ def get_image_path() -> str:
     return None
 
 
-async def test_image_vision_workflow(image_path: str):
+async def run_image_vision_workflow(image_path: str):
     if not Path(image_path).exists():
         print(f"Image not found: {image_path}")
         return
@@ -113,7 +113,7 @@ async def test_image_vision_workflow(image_path: str):
         
         
 
-async def test_multimodal_combination(image_path: str):
+async def run_multimodal_combination(image_path: str):
     try:
         agent = create_agent(AgentConfig(
             provider="openai",  # OpenAI supports both vision and documents
@@ -175,10 +175,10 @@ async def main():
     print(f"Using image: {image_path}")
     
     # Test image vision across providers
-    await test_image_vision_workflow(image_path)
+    await run_image_vision_workflow(image_path)
     
     # Test multimodal combination with the same image
-    await test_multimodal_combination(image_path)
+    await run_multimodal_combination(image_path)
 
 
 if __name__ == "__main__":

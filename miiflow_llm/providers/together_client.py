@@ -10,15 +10,15 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 from ..core.client import ModelClient
+from ..core.exceptions import AuthenticationError, ModelError, ProviderError
 from ..core.message import Message, MessageRole
 from ..core.metrics import TokenCount
-from ..core.exceptions import ProviderError, AuthenticationError, ModelError
-from .stream_normalizer import get_stream_normalizer
+from .openai_client import OpenAIClient, OpenAIStreaming
 
 
-class TogetherClient(ModelClient):
+class TogetherClient(OpenAIStreaming, ModelClient):
     """TogetherAI client implementation using OpenAI-compatible API."""
-    
+
     def __init__(
         self,
         model: str,
@@ -31,33 +31,37 @@ class TogetherClient(ModelClient):
             raise ImportError(
                 "openai is required for TogetherAI. Install with: pip install openai"
             )
-        
-        super().__init__(model, api_key, timeout, max_retries, **kwargs)
-        
+
         if not api_key:
             raise AuthenticationError("TogetherAI API key is required", provider="together")
-        
+
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+            **kwargs
+        )
+
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url="https://api.together.xyz/v1",
             timeout=timeout,
             max_retries=max_retries
         )
-        
         self.provider_name = "together"
-        self.stream_normalizer = get_stream_normalizer("together")
+
+        # Initialize streaming state
+        self._accumulated_content = ""
+        self._accumulated_tool_calls = {}
     
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to Together format (OpenAI compatible)."""
-        return {
-            "type": "function",
-            "function": schema
-        }
-    
+        return OpenAIClient.convert_schema_to_openai_format(schema)
+
     def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
-        """Convert Message to Together format (reuse OpenAI logic since compatible)."""
-        from .openai_client import OpenAIClient
-        return OpenAIClient.convert_message_to_provider_format(OpenAIClient("", ""), message)
+        """Convert Message to Together format (OpenAI compatible)."""
+        return OpenAIClient.convert_message_to_openai_format(message)
     
     def _convert_messages_to_openai_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """Convert messages to OpenAI format."""
@@ -176,18 +180,20 @@ class TogetherClient(ModelClient):
                 }
             
             response_stream = await self.client.chat.completions.create(**request_params)
-            
-            accumulated_content = ""
-            
+
+            # Reset stream state for new streaming session
+            self._reset_stream_state()
+
             async for chunk in response_stream:
-                normalized_chunk = self.stream_normalizer.normalize(chunk)
-                
-                if normalized_chunk.delta:
-                    accumulated_content += normalized_chunk.delta
-                
-                normalized_chunk.content = accumulated_content
-                
-                yield normalized_chunk
+                normalized_chunk = self._normalize_stream_chunk(chunk)
+
+                # Only yield if there's content or metadata
+                if (
+                    normalized_chunk.delta
+                    or normalized_chunk.tool_calls
+                    or normalized_chunk.finish_reason
+                ):
+                    yield normalized_chunk
             
         except Exception as e:
             raise ProviderError(f"TogetherAI streaming error: {e}", provider="together")

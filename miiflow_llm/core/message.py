@@ -143,7 +143,7 @@ class Message:
         return cls(role=MessageRole.USER, content=content, **kwargs)
     
     @classmethod
-    def from_attatchments(cls, text: str, attachments: List[Union[str, Dict[str, Any]]], **kwargs) -> "Message":
+    def from_attachments(cls, text: str, attachments: List[Union[str, Dict[str, Any]]], **kwargs) -> "Message":
         """Create a user message with multiple attachments."""
         content = [TextBlock(text=text)]
         
@@ -162,7 +162,7 @@ class Message:
                         image_url=attachment["url"],
                         detail=attachment.get("detail", "auto")
                     ))
-        
+
         return cls(role=MessageRole.USER, content=content, **kwargs)
     
     

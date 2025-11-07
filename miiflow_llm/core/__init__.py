@@ -32,7 +32,6 @@ from .tools import (
     # Production-grade modular tools
     FunctionTool,
     ToolRegistry,
-    FunctionOutput,
     ToolResult,
     FunctionType,
     ParameterType,
@@ -90,7 +89,6 @@ __all__ = [
  
     "FunctionTool",
     "ToolRegistry",
-    "FunctionOutput", 
     "ToolResult",
     "FunctionType",
     "ParameterType",

@@ -25,23 +25,26 @@ def _sanitize_error_message(error_msg: str) -> str:
         return "Unknown error occurred"
 
     # Split by common stack trace indicators
-    lines = error_msg.split('\n')
+    lines = error_msg.split("\n")
     sanitized_lines = []
 
     for line in lines:
         # Skip lines that look like stack traces
-        if any(indicator in line for indicator in [
-            'Traceback (most recent call last)',
-            'File "',
-            'line ',
-            '  at ',
-            'Stack trace:',
-            '^',  # Often used to point to error location
-        ]):
+        if any(
+            indicator in line
+            for indicator in [
+                "Traceback (most recent call last)",
+                'File "',
+                "line ",
+                "  at ",
+                "Stack trace:",
+                "^",  # Often used to point to error location
+            ]
+        ):
             continue
 
         # Skip lines with only whitespace or technical markers
-        if not line.strip() or line.strip() in ['---', '===']:
+        if not line.strip() or line.strip() in ["---", "==="]:
             continue
 
         sanitized_lines.append(line.strip())
@@ -51,7 +54,7 @@ def _sanitize_error_message(error_msg: str) -> str:
         return lines[0] if lines else "Unknown error occurred"
 
     # Join and limit length
-    result = ' '.join(sanitized_lines)
+    result = " ".join(sanitized_lines)
     if len(result) > 500:
         result = result[:500] + "..."
 
@@ -138,8 +141,36 @@ class ReActOrchestrator:
         else:
             system_prompt = REACT_SYSTEM_PROMPT.format(tools=tools_info)
 
-        messages = [Message(role=MessageRole.SYSTEM, content=system_prompt)]
-        messages.extend(context.messages)
+        # DEBUG: Check for existing system prompt in context
+        existing_system_prompts = [
+            msg for msg in context.messages if msg.role == MessageRole.SYSTEM
+        ]
+        if existing_system_prompts:
+            logger.warning(
+                f"[STREAMING ISSUE] Found {len(existing_system_prompts)} existing system prompt(s) in context.messages! "
+                f"This may override ReAct XML tag instructions. "
+                f"First system prompt preview: {existing_system_prompts[0].content[:200]}..."
+            )
+            # FFIX: Merge assistant's system prompt with ReAct prompt instead of having two separate ones
+            assistant_prompt = existing_system_prompts[0].content
+            merged_prompt = f"""{assistant_prompt}
+
+---
+
+{system_prompt}"""
+            logger.info(
+                f"[STREAMING FIX] Merging assistant system prompt with ReAct prompt to avoid conflicts"
+            )
+            # Remove existing system prompts from context
+            context_messages_without_system = [
+                msg for msg in context.messages if msg.role != MessageRole.SYSTEM
+            ]
+            messages = [Message(role=MessageRole.SYSTEM, content=merged_prompt)]
+            messages.extend(context_messages_without_system)
+        else:
+            messages = [Message(role=MessageRole.SYSTEM, content=system_prompt)]
+            messages.extend(context.messages)
+
         messages.append(Message(role=MessageRole.USER, content=query))
         context.messages = messages
 
@@ -266,7 +297,9 @@ class ReActOrchestrator:
                         # Update function name if present
                         function_data = tool_call_dict.get("function", {})
                         if function_data.get("name") is not None:
-                            accumulated_tool_calls[idx]["function"]["name"] = function_data.get("name")
+                            accumulated_tool_calls[idx]["function"]["name"] = function_data.get(
+                                "name"
+                            )
 
                         # Handle arguments based on format:
                         # - OpenAI: sends progressively longer strings in each chunk
@@ -288,7 +321,9 @@ class ReActOrchestrator:
                                     current_args.update(new_args)
                             else:
                                 # Unexpected format, log and store as-is
-                                logger.warning(f"Unexpected arguments type in chunk: {type(new_args)}")
+                                logger.warning(
+                                    f"Unexpected arguments type in chunk: {type(new_args)}"
+                                )
                                 accumulated_tool_calls[idx]["function"]["arguments"] = new_args
 
                         logger.debug(f"Tool call accumulated: {accumulated_tool_calls[idx]}")
@@ -354,7 +389,9 @@ class ReActOrchestrator:
                         f"Step {state.current_step} - Unexpected tool_args type: {type(tool_args)}, "
                         f"value: {tool_args}"
                     )
-                    step.error = f"Malformed tool call: arguments type is {type(tool_args).__name__}"
+                    step.error = (
+                        f"Malformed tool call: arguments type is {type(tool_args).__name__}"
+                    )
                     step.action_input = {}
 
                 # Validate tool name is not None or empty
@@ -380,8 +417,7 @@ class ReActOrchestrator:
                     # Check if any required parameters are missing
                     if required_params:
                         missing_params = [
-                            param for param in required_params
-                            if param not in step.action_input
+                            param for param in required_params if param not in step.action_input
                         ]
 
                         if missing_params:
@@ -414,7 +450,9 @@ class ReActOrchestrator:
                             context.messages.append(response_message)
 
                             # Execute the tool
-                            await self._handle_tool_action(step, context, state, tool_call_id=tool_call_id)
+                            await self._handle_tool_action(
+                                step, context, state, tool_call_id=tool_call_id
+                            )
                     else:
                         # No required parameters, safe to execute
                         # Add assistant message with both text and tool calls to context
@@ -428,7 +466,9 @@ class ReActOrchestrator:
                         context.messages.append(response_message)
 
                         # Execute the tool
-                        await self._handle_tool_action(step, context, state, tool_call_id=tool_call_id)
+                        await self._handle_tool_action(
+                            step, context, state, tool_call_id=tool_call_id
+                        )
                 else:
                     # action_input is None (shouldn't happen, but defensive)
                     logger.error(

@@ -1,6 +1,8 @@
 """Anthropic provider implementation."""
 
 import asyncio
+import json
+import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import anthropic
@@ -14,16 +16,27 @@ from ..core.metrics import TokenCount, UsageData
 from ..core.streaming import StreamChunk
 from ..utils.image import data_uri_to_base64_and_mimetype
 
+logger = logging.getLogger(__name__)
+
 
 class AnthropicClient(ModelClient):
     """Anthropic provider client."""
 
+    # Models that support native structured outputs with output_format parameter
+    # Currently only Claude Sonnet 4.5 and Opus 4.1 support structured outputs (as of the beta release)
+    STRUCTURED_OUTPUT_MODELS = [
+        # Claude 4.5 Sonnet - SUPPORTED
+        "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4.5",
+        "claude-sonnet-4-5",
+        # Claude 4.1 Opus - SUPPORTED
+        "claude-opus-4-1-20250805",
+        "claude-opus-4.1",
+        "claude-opus-4-1",
+    ]
+
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
-        super().__init__(
-            model=model,
-            api_key=api_key,
-            **kwargs
-        )
+        super().__init__(model=model, api_key=api_key, **kwargs)
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
         self.provider_name = "anthropic"
         self._tool_name_mapping: Dict[str, str] = {}
@@ -41,6 +54,12 @@ class AnthropicClient(ModelClient):
         self._accumulated_tool_json = ""
         self._tool_calls = []
 
+    def _supports_structured_outputs(self) -> bool:
+        """Check if the current model supports native structured outputs."""
+        return any(
+            supported_model in self.model for supported_model in self.STRUCTURED_OUTPUT_MODELS
+        )
+
     def _normalize_stream_chunk(self, chunk: Any) -> StreamChunk:
         """Normalize Anthropic streaming format to unified StreamChunk."""
         delta = ""
@@ -50,11 +69,11 @@ class AnthropicClient(ModelClient):
 
         try:
             # Anthropic event types
-            if hasattr(chunk, 'type'):
+            if hasattr(chunk, "type"):
                 if chunk.type == "content_block_start":
                     # Check if this is a tool use block
-                    if hasattr(chunk, 'content_block') and hasattr(chunk.content_block, 'type'):
-                        if chunk.content_block.type == 'tool_use':
+                    if hasattr(chunk, "content_block") and hasattr(chunk.content_block, "type"):
+                        if chunk.content_block.type == "tool_use":
                             # Restore original tool name if it was sanitized
                             tool_name = chunk.content_block.name
                             original_name = self._tool_name_mapping.get(tool_name, tool_name)
@@ -62,10 +81,7 @@ class AnthropicClient(ModelClient):
                             self._current_tool_use = {
                                 "id": chunk.content_block.id,
                                 "type": "function",
-                                "function": {
-                                    "name": original_name,
-                                    "arguments": {}
-                                }
+                                "function": {"name": original_name, "arguments": {}},
                             }
                             self._accumulated_tool_json = ""
 
@@ -73,20 +89,23 @@ class AnthropicClient(ModelClient):
                             tool_calls = [self._current_tool_use]
 
                 elif chunk.type == "content_block_delta":
-                    if hasattr(chunk.delta, 'text'):
+                    if hasattr(chunk.delta, "text"):
                         # Text content
                         delta = chunk.delta.text
                         self._accumulated_content += delta
 
-                    elif hasattr(chunk.delta, 'partial_json'):
+                    elif hasattr(chunk.delta, "partial_json"):
                         # Tool use input (streaming JSON)
                         if self._current_tool_use:
                             self._accumulated_tool_json += chunk.delta.partial_json
 
                             # Try to parse accumulated JSON
                             import json
+
                             try:
-                                self._current_tool_use["function"]["arguments"] = json.loads(self._accumulated_tool_json)
+                                self._current_tool_use["function"]["arguments"] = json.loads(
+                                    self._accumulated_tool_json
+                                )
                             except json.JSONDecodeError:
                                 # Still accumulating
                                 pass
@@ -96,8 +115,11 @@ class AnthropicClient(ModelClient):
                     if self._current_tool_use:
                         if self._accumulated_tool_json:
                             import json
+
                             try:
-                                self._current_tool_use["function"]["arguments"] = json.loads(self._accumulated_tool_json)
+                                self._current_tool_use["function"]["arguments"] = json.loads(
+                                    self._accumulated_tool_json
+                                )
                             except json.JSONDecodeError:
                                 self._current_tool_use["function"]["arguments"] = {}
 
@@ -109,17 +131,18 @@ class AnthropicClient(ModelClient):
                         self._accumulated_tool_json = ""
 
                 elif chunk.type == "message_delta":
-                    if hasattr(chunk.delta, 'stop_reason'):
+                    if hasattr(chunk.delta, "stop_reason"):
                         finish_reason = chunk.delta.stop_reason
 
                 elif chunk.type == "message_stop":
                     finish_reason = "stop"
 
-            if hasattr(chunk, 'usage'):
+            if hasattr(chunk, "usage"):
                 usage = TokenCount(
-                    prompt_tokens=getattr(chunk.usage, 'input_tokens', 0),
-                    completion_tokens=getattr(chunk.usage, 'output_tokens', 0),
-                    total_tokens=getattr(chunk.usage, 'input_tokens', 0) + getattr(chunk.usage, 'output_tokens', 0)
+                    prompt_tokens=getattr(chunk.usage, "input_tokens", 0),
+                    completion_tokens=getattr(chunk.usage, "output_tokens", 0),
+                    total_tokens=getattr(chunk.usage, "input_tokens", 0)
+                    + getattr(chunk.usage, "output_tokens", 0),
                 )
 
         except AttributeError:
@@ -131,7 +154,7 @@ class AnthropicClient(ModelClient):
             delta=delta,
             finish_reason=finish_reason,
             usage=usage,
-            tool_calls=tool_calls
+            tool_calls=tool_calls,
         )
 
     def _loosen_json_schema(self, obj: Any) -> Any:
@@ -145,7 +168,9 @@ class AnthropicClient(ModelClient):
             obj["additionalProperties"] = True
 
         if "properties" in obj:
-            obj["properties"] = {k: self._loosen_json_schema(v) for k, v in obj["properties"].items()}
+            obj["properties"] = {
+                k: self._loosen_json_schema(v) for k, v in obj["properties"].items()
+            }
 
         if "items" in obj:
             obj["items"] = self._loosen_json_schema(obj["items"])
@@ -156,8 +181,46 @@ class AnthropicClient(ModelClient):
 
         return obj
 
+    def _prepare_json_schema_for_structured_output(self, obj: Any) -> Any:
+        """Prepare JSON schema for native structured output API.
+
+        Anthropic requires 'additionalProperties: false' on all object types.
+        """
+        if not isinstance(obj, dict):
+            return obj
+
+        obj = obj.copy()
+
+        # For object types, ensure additionalProperties is explicitly set to false
+        if obj.get("type") == "object":
+            obj["additionalProperties"] = False
+
+        # Recursively process nested schemas
+        if "properties" in obj:
+            obj["properties"] = {
+                k: self._prepare_json_schema_for_structured_output(v)
+                for k, v in obj["properties"].items()
+            }
+
+        if "items" in obj:
+            obj["items"] = self._prepare_json_schema_for_structured_output(obj["items"])
+
+        for key in ["allOf", "anyOf", "oneOf"]:
+            if key in obj:
+                obj[key] = [
+                    self._prepare_json_schema_for_structured_output(item) for item in obj[key]
+                ]
+
+        return obj
+
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert universal schema to Anthropic format with loosened constraints."""
+        """Convert universal schema to Anthropic format with loosened constraints.
+
+        Supports strict mode for models that support structured outputs:
+        - If model supports structured outputs and schema has 'strict': True,
+          use native strict mode without loosening schema
+        - Otherwise, loosen schema for better compatibility
+        """
         import re
 
         original_name = schema["name"]
@@ -167,11 +230,26 @@ class AnthropicClient(ModelClient):
         if sanitized_name != original_name:
             self._tool_name_mapping[sanitized_name] = original_name
 
-        return {
+        # Check if strict mode is requested and supported
+        # Check both top-level 'strict' and metadata['strict']
+        strict_flag = schema.get("strict", False) or schema.get("metadata", {}).get("strict", False)
+        use_strict = strict_flag and self._supports_structured_outputs()
+
+        tool_definition = {
             "name": sanitized_name,
             "description": schema["description"],
-            "input_schema": self._loosen_json_schema(schema["parameters"]),
+            "input_schema": (
+                schema["parameters"]
+                if use_strict
+                else self._loosen_json_schema(schema["parameters"])
+            ),
         }
+
+        # Add strict flag if using strict mode
+        if use_strict:
+            tool_definition["strict"] = True
+
+        return tool_definition
 
     def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
         """Convert Message to Anthropic format."""
@@ -325,52 +403,94 @@ class AnthropicClient(ModelClient):
         json_schema: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> ChatResponse:
-        """Send chat completion request to Anthropic."""
+        """Send chat completion request to Anthropic.
+
+        Supports two modes for JSON schema:
+        1. Native structured outputs (for supported models like Claude Sonnet 4.5):
+           Uses output_format parameter with guaranteed schema compliance
+        2. Tool-based workaround (for older models):
+           Uses a synthetic tool to force JSON output
+        """
         try:
+
             system_content, anthropic_messages = self._prepare_messages(messages)
 
-            # Handle JSON schema using Anthropic's native tool-based structured output
+            # Handle JSON schema
             json_tool_name = None
+            use_native_structured_output = json_schema and self._supports_structured_outputs()
+
             if json_schema:
-                json_tool_name = "json_tool"
-                json_tool = {
-                    "name": json_tool_name,
-                    "description": "Respond with structured JSON matching the specified schema",
-                    "input_schema": json_schema,
-                }
+                if use_native_structured_output:
+                    # Use native structured output API (beta feature)
+                    # Prepare schema by ensuring additionalProperties is set
+                    prepared_schema = self._prepare_json_schema_for_structured_output(json_schema)
 
-                if tools:
-                    tools = list(tools) + [json_tool]
+                    request_params = {
+                        "model": self.model,
+                        "messages": anthropic_messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens or 2048,
+                        "betas": ["structured-outputs-2025-11-13"],
+                        "output_format": {
+                            "type": "json_schema",
+                            "schema": prepared_schema,
+                        },
+                        **kwargs,
+                    }
+
+                    logger.debug(f"Using native structured output API for model {self.model}")
                 else:
-                    tools = [json_tool]
+                    # Fall back to tool-based approach for older models
+                    json_tool_name = "json_tool"
+                    json_tool = {
+                        "name": json_tool_name,
+                        "description": "Respond with structured JSON matching the specified schema",
+                        "input_schema": json_schema,
+                    }
 
-                kwargs["tool_choice"] = {"type": "tool", "name": json_tool_name}
+                    if tools:
+                        tools = list(tools) + [json_tool]
+                    else:
+                        tools = [json_tool]
 
-            request_params = {
-                "model": self.model,
-                "messages": anthropic_messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens or 1024,
-                **kwargs,
-            }
+                    kwargs["tool_choice"] = {"type": "tool", "name": json_tool_name}
+
+                    request_params = {
+                        "model": self.model,
+                        "messages": anthropic_messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens or 2048,
+                        **kwargs,
+                    }
+
+                    logger.debug(f"Using tool-based JSON output for model {self.model}")
+            else:
+                # Regular request without JSON schema
+                request_params = {
+                    "model": self.model,
+                    "messages": anthropic_messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens or 2048,
+                    **kwargs,
+                }
 
             if system_content:
                 request_params["system"] = system_content
             if tools:
                 request_params["tools"] = tools
-
-                # Debug: Log tools being sent to Anthropic
-                import json
-                import logging
-
-                logger = logging.getLogger(__name__)
                 logger.debug(
                     f"Anthropic tools parameter:\n{json.dumps(tools, indent=2, default=str)}"
                 )
 
-            response = await asyncio.wait_for(
-                self.client.messages.create(**request_params), timeout=self.timeout
-            )
+            # Use beta client for structured outputs, regular client otherwise
+            if use_native_structured_output:
+                response = await asyncio.wait_for(
+                    self.client.beta.messages.create(**request_params), timeout=self.timeout
+                )
+            else:
+                response = await asyncio.wait_for(
+                    self.client.messages.create(**request_params), timeout=self.timeout
+                )
 
             # Extract content and tool calls from response
             content = ""
@@ -382,7 +502,7 @@ class AnthropicClient(ModelClient):
                         content += block.text
                     elif hasattr(block, "type") and block.type == "tool_use":
                         if json_tool_name and block.name == json_tool_name:
-                            # Extract JSON from tool response
+                            # Extract JSON from tool response (fallback mode)
                             content = json.dumps(block.input)
                         else:
                             # Convert Anthropic tool_use to OpenAI-compatible format
@@ -444,16 +564,21 @@ class AnthropicClient(ModelClient):
         json_schema: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> AsyncIterator[StreamChunk]:
-        """Send streaming chat completion request to Anthropic."""
+        """Send streaming chat completion request to Anthropic.
+
+        Supports two modes for JSON schema:
+        1. Native structured outputs (for supported models like Claude Sonnet 4.5):
+           Uses output_format parameter with guaranteed schema compliance (streaming supported!)
+        2. Tool-based workaround (for older models):
+           Uses a synthetic tool to force JSON output
+        """
+        import json
         import logging
 
         logger = logging.getLogger(__name__)
 
         try:
             system_content, anthropic_messages = self._prepare_messages(messages)
-
-            # Debug: Log the messages being sent
-            import json
 
             logger.debug(f"Streaming request to Anthropic with {len(anthropic_messages)} messages:")
             for idx, msg in enumerate(anthropic_messages):
@@ -464,39 +589,86 @@ class AnthropicClient(ModelClient):
                     f"    Content preview: {json.dumps(msg.get('content'), default=str)[:200]}"
                 )
 
+            # Handle JSON schema
             json_tool_name = None
+            use_native_structured_output = json_schema and self._supports_structured_outputs()
+
             if json_schema:
-                json_tool_name = "json_tool"
-                json_tool = {
-                    "name": json_tool_name,
-                    "description": "Respond with structured JSON matching the specified schema",
-                    "input_schema": json_schema,
-                }
+                if use_native_structured_output:
+                    # Use native structured output API (beta feature) - streaming supported!
+                    # Prepare schema by ensuring additionalProperties is set
+                    prepared_schema = self._prepare_json_schema_for_structured_output(json_schema)
 
-                if tools:
-                    tools = list(tools) + [json_tool]
+                    request_params = {
+                        "model": self.model,
+                        "messages": anthropic_messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens or 1024,
+                        "stream": True,
+                        "betas": ["structured-outputs-2025-11-13"],
+                        "output_format": {
+                            "type": "json_schema",
+                            "schema": prepared_schema,
+                        },
+                        **kwargs,
+                    }
+
+                    logger.debug(
+                        f"Using native structured output API with streaming for model {self.model}"
+                    )
                 else:
-                    tools = [json_tool]
+                    # Fall back to tool-based approach for older models
+                    json_tool_name = "json_tool"
+                    json_tool = {
+                        "name": json_tool_name,
+                        "description": "Respond with structured JSON matching the specified schema",
+                        "input_schema": json_schema,
+                    }
 
-                kwargs["tool_choice"] = {"type": "tool", "name": json_tool_name}
+                    if tools:
+                        tools = list(tools) + [json_tool]
+                    else:
+                        tools = [json_tool]
 
-            request_params = {
-                "model": self.model,
-                "messages": anthropic_messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens or 1024,
-                "stream": True,
-                **kwargs,
-            }
+                    kwargs["tool_choice"] = {"type": "tool", "name": json_tool_name}
+
+                    request_params = {
+                        "model": self.model,
+                        "messages": anthropic_messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens or 1024,
+                        "stream": True,
+                        **kwargs,
+                    }
+
+                    logger.debug(
+                        f"Using tool-based JSON output with streaming for model {self.model}"
+                    )
+            else:
+                # Regular streaming without JSON schema
+                request_params = {
+                    "model": self.model,
+                    "messages": anthropic_messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens or 1024,
+                    "stream": True,
+                    **kwargs,
+                }
 
             if system_content:
                 request_params["system"] = system_content
             if tools:
                 request_params["tools"] = tools
 
-            stream = await asyncio.wait_for(
-                self.client.messages.create(**request_params), timeout=self.timeout
-            )
+            # Use beta client for structured outputs, regular client otherwise
+            if use_native_structured_output:
+                stream = await asyncio.wait_for(
+                    self.client.beta.messages.create(**request_params), timeout=self.timeout
+                )
+            else:
+                stream = await asyncio.wait_for(
+                    self.client.messages.create(**request_params), timeout=self.timeout
+                )
 
             # Reset stream state for new streaming session
             self._reset_stream_state()

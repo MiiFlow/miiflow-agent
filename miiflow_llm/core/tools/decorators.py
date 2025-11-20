@@ -20,7 +20,8 @@ def tool(
     function_type: FunctionType = FunctionType.SYNC,
     tags: Optional[List[str]] = None,
     parameters: Optional[Dict[str, ParameterSchema]] = None,
-    return_schema: Optional[Dict[str, Any]] = None
+    return_schema: Optional[Dict[str, Any]] = None,
+    strict: bool = False
 ) -> Callable[[F], F]:
     """
     Decorator to mark a function as a tool with optional explicit schema.
@@ -32,6 +33,7 @@ def tool(
         tags: Tags for categorization
         parameters: Explicit parameter schemas (overrides reflection)
         return_schema: Explicit return type schema
+        strict: Enable strict mode for type-safe function calling (for supported models)
 
     Example with automatic reflection:
         @tool(description="Add two numbers")
@@ -119,6 +121,10 @@ def tool(
 
         if tags:
             schema.metadata['tags'] = tags
+
+        # Add strict mode flag
+        if strict:
+            schema.metadata['strict'] = True
 
         # Attach schema to function BEFORE creating FunctionTool
         # so FunctionTool can use the explicit schema

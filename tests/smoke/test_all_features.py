@@ -59,6 +59,13 @@ PROVIDERS_JSON_MODE = [
     {"provider": "gemini", "model": "gemini-2.5-flash", "api_key_env": "GOOGLE_API_KEY"},
 ]
 
+# Provider configurations with native structured output support
+# Note: Only Claude Sonnet 4.5 and Opus 4.1 currently support structured outputs
+PROVIDERS_STRUCTURED_OUTPUT = [
+    {"provider": "openai", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY"},
+    {"provider": "anthropic", "model": "claude-sonnet-4-5-20250929", "api_key_env": "ANTHROPIC_API_KEY"},
+]
+
 PROVIDERS_STREAMING = [
     {"provider": "openai", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY"},
     {"provider": "anthropic", "model": "claude-3-5-haiku-20241022", "api_key_env": "ANTHROPIC_API_KEY"},
@@ -266,6 +273,127 @@ class TestJSONMode:
 
 
 # ============================================================================
+# Structured Output Tests (Native API)
+# ============================================================================
+
+@pytest.mark.smoke
+class TestStructuredOutputs:
+    """Test native structured outputs for supported models (Claude Sonnet 4.5, GPT-4o, etc.)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("config", PROVIDERS_STRUCTURED_OUTPUT)
+    async def test_structured_output_guaranteed_compliance(self, config):
+        """Test that structured outputs guarantee schema compliance."""
+        api_key = os.getenv(config["api_key_env"])
+        if not api_key or "your-" in api_key:
+            pytest.skip(f"{config['api_key_env']} not configured")
+
+        client = LLMClient.create(
+            provider=config["provider"],
+            model=config["model"],
+            api_key=api_key
+        )
+
+        # Complex schema with strict requirements
+        schema = {
+            "type": "object",
+            "properties": {
+                "sentiment": {
+                    "type": "string",
+                    "enum": ["positive", "negative", "neutral"]
+                },
+                "score": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                },
+                "keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1
+                }
+            },
+            "required": ["sentiment", "score", "keywords"],
+            "additionalProperties": False
+        }
+
+        response = await client.achat(
+            messages=[{
+                "role": "user",
+                "content": "Analyze sentiment: 'This product exceeded my expectations!'"
+            }],
+            json_schema=schema
+        )
+
+        data = json.loads(response.message.content)
+
+        # Verify strict compliance
+        assert "sentiment" in data
+        assert data["sentiment"] in ["positive", "negative", "neutral"]
+        assert "score" in data
+        assert isinstance(data["score"], (int, float))
+        assert 0 <= data["score"] <= 1
+        assert "keywords" in data
+        assert isinstance(data["keywords"], list)
+        assert len(data["keywords"]) >= 1
+        # Verify no additional properties
+        assert set(data.keys()) == {"sentiment", "score", "keywords"}
+
+        print(f"✅ {config['provider']}: Structured output compliance verified")
+        print(f"   Data: {data}")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("config", PROVIDERS_STRUCTURED_OUTPUT)
+    async def test_structured_output_with_streaming(self, config):
+        """Test that structured outputs work with streaming."""
+        api_key = os.getenv(config["api_key_env"])
+        if not api_key or "your-" in api_key:
+            pytest.skip(f"{config['api_key_env']} not configured")
+
+        client = LLMClient.create(
+            provider=config["provider"],
+            model=config["model"],
+            api_key=api_key
+        )
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "word_count": {"type": "integer"}
+            },
+            "required": ["summary", "word_count"]
+        }
+
+        accumulated_content = ""
+        chunks = []
+
+        async for chunk in client.astream_chat(
+            messages=[{
+                "role": "user",
+                "content": "Summarize in 10 words: 'Machine learning is transforming industries worldwide.'"
+            }],
+            json_schema=schema
+        ):
+            chunks.append(chunk)
+            if chunk.delta:
+                accumulated_content += chunk.delta
+
+        # Verify streaming worked
+        assert len(chunks) > 0
+        assert accumulated_content
+
+        # Verify final content is valid JSON matching schema
+        data = json.loads(accumulated_content)
+        assert "summary" in data
+        assert "word_count" in data
+        assert isinstance(data["word_count"], int)
+
+        print(f"✅ {config['provider']}: Structured output with streaming passed")
+        print(f"   Chunks: {len(chunks)}, Data: {data}")
+
+
+# ============================================================================
 # Streaming Tests
 # ============================================================================
 
@@ -321,7 +449,8 @@ class TestStreaming:
             pytest.skip(f"{config['api_key_env']} not configured")
 
         # Skip providers that don't support streaming + JSON schema
-        if config["provider"] in ["anthropic", "groq"]:
+        # Note: Anthropic now supports streaming with structured outputs for new models
+        if config["provider"] in ["groq"]:
             pytest.skip(f"{config['provider']} doesn't support streaming with JSON schema")
 
         client = LLMClient.create(
@@ -566,6 +695,66 @@ class TestAgentMode:
 
         except Exception as e:
             print(f"⚠️  {config['provider']}: Tool choice not supported - {str(e)[:100]}")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("config", PROVIDERS_STRUCTURED_OUTPUT)
+    async def test_strict_tool_use(self, config):
+        """Test strict tool use mode for type-safe function calling."""
+        api_key = os.getenv(config["api_key_env"])
+        if not api_key or "your-" in api_key:
+            pytest.skip(f"{config['api_key_env']} not configured")
+
+        # Define a strict tool with exact schema requirements
+        @tool(
+            name="get_weather",
+            description="Get weather information for a city",
+            parameters={
+                "city": ParameterSchema(
+                    name="city",
+                    type=ParameterType.STRING,
+                    description="The city name",
+                    required=True
+                ),
+                "units": ParameterSchema(
+                    name="units",
+                    type=ParameterType.STRING,
+                    description="Temperature units (celsius or fahrenheit)",
+                    required=True
+                )
+            },
+            strict=True  # Enable strict mode for guaranteed type safety
+        )
+        def get_weather(ctx, city: str, units: str) -> str:
+            return f"Weather in {city}: 72°{units[0].upper()}"
+
+        client = LLMClient.create(
+            provider=config["provider"],
+            model=config["model"],
+            api_key=api_key
+        )
+
+        response = await client.achat(
+            messages=[{
+                "role": "user",
+                "content": "What's the weather in Tokyo in celsius?"
+            }],
+            tools=[get_weather]
+        )
+
+        # Verify tool was called with correct types
+        assert response.message.tool_calls is not None and len(response.message.tool_calls) > 0
+
+        tool_name, tool_args = extract_tool_call_info(response.message.tool_calls[0])
+
+        assert tool_name == "get_weather"
+        assert "city" in tool_args
+        assert "units" in tool_args
+        assert isinstance(tool_args["city"], str)
+        assert isinstance(tool_args["units"], str)
+
+        print(f"✅ {config['provider']}: Strict tool use passed")
+        print(f"   Tool: {tool_name}")
+        print(f"   Arguments (type-safe): {tool_args}")
 
 
 # ============================================================================

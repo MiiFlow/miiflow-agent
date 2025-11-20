@@ -1,5 +1,6 @@
 """Plan and Execute orchestrator for complex multi-step tasks."""
 
+import asyncio
 import json
 import logging
 import time
@@ -14,6 +15,7 @@ from .data import (
     PlanExecuteEvent,
     PlanExecuteEventType,
     PlanExecuteResult,
+    ReActEventType,
     StopReason,
     SubTask,
 )
@@ -64,12 +66,16 @@ class PlanAndExecuteOrchestrator:
         self.max_replans = max_replans
         self.use_react_for_subtasks = use_react_for_subtasks
 
-    async def execute(self, query: str, context: RunContext) -> PlanExecuteResult:
+    async def execute(
+        self, query: str, context: RunContext, existing_plan: Optional[Plan] = None
+    ) -> PlanExecuteResult:
         """Execute Plan and Execute workflow.
 
         Args:
             query: User's goal/query
             context: Run context with messages and state
+            existing_plan: Optional pre-generated plan from combined routing step.
+                          If provided, skips plan generation (saves ~2-5s)
 
         Returns:
             PlanExecuteResult with plan, results, and final answer
@@ -78,8 +84,63 @@ class PlanAndExecuteOrchestrator:
         replans = 0
 
         try:
-            # Phase 1: Initial Planning
-            plan = await self._generate_plan(query, context)
+            # Phase 1: Initial Planning (or use existing plan)
+            if existing_plan:
+                plan = existing_plan
+                logger.info(f"Using pre-generated plan with {len(plan.subtasks)} subtasks")
+
+                # Still emit planning events for UI consistency
+                await self._publish_event(PlanExecuteEventType.PLANNING_START, {"goal": query})
+                await self._publish_event(
+                    PlanExecuteEventType.PLANNING_COMPLETE,
+                    {"plan": plan.to_dict(), "subtask_count": len(plan.subtasks)},
+                )
+            else:
+                # Generate new plan (fallback for non-tool-calling providers)
+                plan = await self._generate_plan(query, context)
+
+            # Check if LLM returned empty plan (simple query that doesn't need planning)
+            if len(plan.subtasks) == 0:
+                logger.info(
+                    "Empty plan detected - generating direct response without subtask execution"
+                )
+
+                try:
+                    final_answer = await self._generate_direct_response(query, context)
+                    logger.info(
+                        f"Direct response successful: '{final_answer[:100]}...' ({len(final_answer)} chars)"
+                    )
+                except Exception as e:
+                    logger.error(f"Error generating direct response: {e}", exc_info=True)
+                    final_answer = "Hello! How can I help you today?"
+
+                # Ensure we have a valid answer
+                if not final_answer or len(final_answer.strip()) == 0:
+                    logger.warning("Empty final answer detected, using fallback")
+                    final_answer = "Hello! How can I help you today?"
+
+                # Emit final answer event to ensure it's accumulated
+                logger.info(f"Emitting FINAL_ANSWER event with {len(final_answer)} chars")
+                await self._publish_event(
+                    PlanExecuteEventType.FINAL_ANSWER, {"answer": final_answer}
+                )
+
+                # Small delay to ensure event is processed
+                await asyncio.sleep(0.05)
+
+                # Return early with direct answer
+                logger.info(
+                    f"Returning PlanExecuteResult with final_answer: {final_answer[:100]}..."
+                )
+                return PlanExecuteResult(
+                    plan=plan,
+                    final_answer=final_answer,
+                    stop_reason=StopReason.ANSWER_COMPLETE,
+                    replans=0,
+                    total_cost=0.0,
+                    total_execution_time=time.time() - start_time,
+                    total_tokens=0,
+                )
 
             # Phase 2: Execute plan with re-planning on failures
             while replans <= self.max_replans:
@@ -142,7 +203,12 @@ class PlanAndExecuteOrchestrator:
             )
 
     async def _generate_plan(self, query: str, context: RunContext) -> Plan:
-        """Generate initial plan for the query.
+        """Generate initial plan for the query using tool-based planning.
+
+        Uses function tool calling to create structured plans. This approach:
+        - Hides raw JSON from users (no PLANNING_THINKING_CHUNK events)
+        - More reliable than JSON schema (LLMs trained on tool calling)
+        - Broader provider support (all major LLM providers support tools)
 
         Args:
             query: User's goal
@@ -151,32 +217,238 @@ class PlanAndExecuteOrchestrator:
         Returns:
             Plan with subtasks
         """
+        from miiflow_llm.core.agent import Agent, AgentType
+
+        from .data import PLAN_AND_EXECUTE_PLANNING_PROMPT, create_plan_tool
+
         await self._publish_event(PlanExecuteEventType.PLANNING_START, {"goal": query})
 
-        # Build planning prompt
-        tools_info = self.tool_executor.build_tools_description()
-        planning_prompt = PLAN_AND_EXECUTE_PLANNING_PROMPT.format(tools=tools_info)
+        # Emit a "Creating plan..." message so frontend shows planning mode
+        # (Tool-based planning doesn't stream, so we need this placeholder)
+        await self._publish_event(
+            PlanExecuteEventType.PLANNING_THINKING_CHUNK,
+            {"delta": "", "accumulated": "Analyzing task and creating execution plan..."},
+        )
 
-        # Create planning messages
-        messages = [
-            Message(role=MessageRole.SYSTEM, content=planning_prompt),
-            Message(role=MessageRole.USER, content=f"Task to plan: {query}"),
-        ]
+        try:
+            # Create planning tool
+            planning_tool = create_plan_tool()
 
-        # Call LLM to generate plan
-        response = await self.tool_executor._client.achat(messages=messages, temperature=0.3)
+            # Build simplified planning prompt for tool-based approach
+            # (The tool schema handles structure, so we just need guidance on WHAT makes a good plan)
+            tools_info = self.tool_executor.build_tools_description()
+            planning_prompt = f"""You are a planning assistant. Your job is to analyze the user's task and create an execution plan using the create_plan tool.
 
-        # Parse JSON plan
-        plan = self._parse_plan_json(response.message.content, query)
+Available tools for execution:
+{tools_info}
+
+Task Complexity Guidelines:
+- **Simple tasks** (direct lookup/single action): 1 subtask
+- **Straightforward tasks** (single source): 2-3 subtasks
+- **Moderate tasks** (multiple sources): 3-5 subtasks
+- **Complex tasks** (research + synthesis): 5-8 subtasks
+
+Planning Principles:
+1. Match subtask count to actual complexity (don't over-plan simple tasks!)
+2. Each subtask should be independently executable
+3. Use dependencies to order subtasks correctly
+4. Specify required tools for each subtask
+5. Define clear success criteria
+
+Call the create_plan tool with your reasoning and list of subtasks."""
+
+            # Create a SINGLE_HOP agent with just the planning tool
+            # This will call the tool in one shot (no visible JSON streaming)
+            planning_agent = Agent(
+                client=self.tool_executor._client,
+                agent_type=AgentType.SINGLE_HOP,
+                system_prompt=planning_prompt,
+                tools=[planning_tool],
+                use_native_tool_calling=True,
+                temperature=0.6,
+            )
+
+            logger.info("Generating plan using tool-based approach (hidden from user)")
+
+            # Run the planning agent - it will call the create_plan tool
+            result = await planning_agent.run(
+                user_prompt=f"Task to plan: {query}", deps=context.deps, message_history=[]
+            )
+
+            # Debug: Log all messages received
+            logger.info(f"Planning agent returned {len(result.messages)} messages:")
+            for i, msg in enumerate(result.messages):
+                logger.info(
+                    f"  Message {i}: role={msg.role}, has_tool_calls={bool(msg.tool_calls)}, content_length={len(msg.content) if msg.content else 0}"
+                )
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        if hasattr(tc, "function"):
+                            logger.info(f"    Tool call: {tc.function.name}")
+
+            # Extract tool call arguments (more reliable than parsing tool result strings)
+            import json
+
+            plan_data = None
+
+            # First, check tool call arguments (contains the actual structured data)
+            for msg in result.messages:
+                if msg.tool_calls:
+                    for tool_call in msg.tool_calls:
+                        if (
+                            hasattr(tool_call, "function")
+                            and tool_call.function.name == "create_plan"
+                        ):
+                            args = tool_call.function.arguments
+                            if isinstance(args, str):
+                                plan_data = json.loads(args)
+                            else:
+                                plan_data = args
+                            logger.info(
+                                f"Extracted plan from tool call arguments: {len(plan_data.get('subtasks', []))} subtasks"
+                            )
+                            break
+                    if plan_data:
+                        break
+
+            # Fallback: try parsing TOOL message (less reliable due to str() conversion)
+            if not plan_data:
+                for msg in result.messages:
+                    if msg.role == MessageRole.TOOL:
+                        try:
+                            # Try JSON parsing first
+                            tool_result = (
+                                json.loads(msg.content)
+                                if isinstance(msg.content, str)
+                                else msg.content
+                            )
+                            if isinstance(tool_result, dict) and "subtasks" in tool_result:
+                                plan_data = tool_result
+                                logger.info(f"Extracted plan from TOOL message (JSON)")
+                                break
+                        except json.JSONDecodeError:
+                            # Fallback: try Python literal eval (for str(dict) format)
+                            try:
+                                import ast
+
+                                tool_result = ast.literal_eval(msg.content)
+                                if isinstance(tool_result, dict) and "subtasks" in tool_result:
+                                    plan_data = tool_result
+                                    logger.info(f"Extracted plan from TOOL message (literal_eval)")
+                                    break
+                            except:
+                                pass
+
+            if not plan_data:
+                logger.error(
+                    f"Planning tool extraction failed. Messages: {[msg.role for msg in result.messages]}"
+                )
+                raise ValueError("Planning tool was not called or returned invalid data")
+
+            # Convert to Plan object
+            subtasks = []
+            for st_data in plan_data.get("subtasks", []):
+                subtask = SubTask(
+                    id=st_data.get("id"),
+                    description=st_data.get("description", ""),
+                    required_tools=st_data.get("required_tools", []),
+                    dependencies=st_data.get("dependencies", []),
+                    success_criteria=st_data.get("success_criteria", ""),
+                )
+                subtasks.append(subtask)
+
+            plan = Plan(
+                goal=query,
+                reasoning=plan_data.get("reasoning", "Plan created"),
+                subtasks=subtasks,
+            )
+
+            logger.info(f"Generated plan with {len(plan.subtasks)} subtasks using tool calling")
+
+        except Exception as e:
+            logger.error(f"Error generating plan with tool calling: {e}", exc_info=True)
+            # Return minimal fallback plan on error
+            plan = Plan(
+                goal=query,
+                reasoning=f"Plan creation failed: {str(e)}, creating fallback single-step plan",
+                subtasks=[
+                    SubTask(
+                        id=1,
+                        description=f"Execute task: {query}",
+                        required_tools=[],
+                        dependencies=[],
+                        success_criteria="Task completed successfully",
+                    )
+                ],
+            )
 
         await self._publish_event(
             PlanExecuteEventType.PLANNING_COMPLETE,
             {"plan": plan.to_dict(), "subtask_count": len(plan.subtasks)},
         )
 
-        logger.info(f"Generated plan with {len(plan.subtasks)} subtasks: {plan.reasoning}")
+        logger.info(f"Plan complete: {len(plan.subtasks)} subtasks, reasoning: {plan.reasoning}")
 
         return plan
+
+    async def _generate_direct_response(self, query: str, context: RunContext) -> str:
+        """Generate direct response for simple queries that don't need planning.
+
+        Used when LLM returns empty plan (0 subtasks), indicating the query is simple
+        enough to answer directly without multi-step execution.
+
+        Args:
+            query: User's original query
+            context: Run context with conversation history
+
+        Returns:
+            Direct response string
+        """
+        logger.info(f"Generating direct response for query: {query}")
+
+        # Build messages - use existing context messages as base
+        messages = []
+
+        # Copy existing conversation context (includes system prompt, previous messages)
+        if context.messages:
+            messages = [msg for msg in context.messages]
+            logger.info(f"Using {len(messages)} context messages")
+
+        # Ensure query is in messages (it should be from enhanced_response_generator)
+        # Check if last user message matches the query
+        has_query = False
+        for msg in reversed(messages):
+            if msg.role == MessageRole.USER and msg.content == query:
+                has_query = True
+                break
+
+        if not has_query:
+            logger.info(f"Adding query to messages: {query}")
+            messages.append(Message(role=MessageRole.USER, content=query))
+
+        logger.info(f"Calling LLM with {len(messages)} total messages")
+
+        # Stream LLM response for real-time feedback (without tools)
+        final_answer = ""
+        async for chunk in self.tool_executor.stream_without_tools(
+            messages=messages, temperature=0.7
+        ):
+            delta = chunk.delta
+            if delta:
+                final_answer += delta
+                # Emit FINAL_ANSWER_CHUNK event for real-time streaming
+                await self._publish_event(
+                    PlanExecuteEventType.FINAL_ANSWER_CHUNK,
+                    {"delta": delta, "content": final_answer},
+                )
+
+        if not final_answer or len(final_answer.strip()) == 0:
+            logger.warning("LLM returned empty response, using fallback")
+            final_answer = "Hello! How can I help you today?"
+
+        logger.info(f"Direct response generated: {len(final_answer)} chars")
+
+        return final_answer
 
     async def _replan(self, current_plan: Plan, context: RunContext) -> Plan:
         """Re-generate plan after failure.
@@ -209,8 +481,8 @@ class PlanAndExecuteOrchestrator:
         # Create replanning messages
         messages = [Message(role=MessageRole.USER, content=replan_prompt)]
 
-        # Call LLM to replan
-        response = await self.tool_executor._client.achat(messages=messages, temperature=0.3)
+        # Call LLM to replan (higher temperature for diverse plan sizes)
+        response = await self.tool_executor._client.achat(messages=messages, temperature=0.6)
 
         # Parse new plan
         new_plan = self._parse_plan_json(response.message.content, current_plan.goal)
@@ -249,8 +521,10 @@ class PlanAndExecuteOrchestrator:
                 subtask.error = "Dependencies not satisfied"
                 continue
 
-            # Execute subtask
-            success = await self._execute_subtask(subtask, context)
+            # Execute subtask (pass total count to conditionally show subtask headers)
+            success = await self._execute_subtask(
+                subtask, context, total_subtasks=len(plan.subtasks)
+            )
 
             if success:
                 completed_subtask_ids.add(subtask.id)
@@ -271,12 +545,15 @@ class PlanAndExecuteOrchestrator:
 
         return True
 
-    async def _execute_subtask(self, subtask: SubTask, context: RunContext) -> bool:
+    async def _execute_subtask(
+        self, subtask: SubTask, context: RunContext, total_subtasks: int = 1
+    ) -> bool:
         """Execute a single subtask.
 
         Args:
             subtask: Subtask to execute
             context: Run context
+            total_subtasks: Total number of subtasks in the plan (for conditional rendering)
 
         Returns:
             True if successful, False otherwise
@@ -284,21 +561,101 @@ class PlanAndExecuteOrchestrator:
         subtask.status = "running"
         start_time = time.time()
 
-        await self._publish_event(
-            PlanExecuteEventType.SUBTASK_START,
-            {"subtask": subtask.to_dict(), "description": subtask.description},
-        )
+        # Emit SUBTASK_START for all subtasks (including single-subtask plans)
+        # The frontend handles single vs multi-subtask display differently
+        if total_subtasks >= 1:
+            await self._publish_event(
+                PlanExecuteEventType.SUBTASK_START,
+                {"subtask": subtask.to_dict(), "description": subtask.description},
+            )
 
         try:
             if self.use_react_for_subtasks and self.subtask_orchestrator:
-                # Use ReAct orchestrator for complex subtasks
+                # Use ReAct orchestrator for complex subtasks with event streaming
                 logger.info(f"Executing subtask {subtask.id} with ReAct: {subtask.description}")
-                result = await self.subtask_orchestrator.execute(subtask.description, context)
 
-                subtask.result = result.final_answer
-                subtask.cost = result.total_cost
-                subtask.tokens_used = result.total_tokens
-                subtask.status = "completed"
+                # Create event forwarder to bubble up ReAct events as PlanExecute events
+                def forward_react_event(react_event):
+                    """Forward ReAct events from subtask as PlanExecute subtask events."""
+                    try:
+                        # Convert ReActEvent to PlanExecuteEvent with subtask context
+                        import asyncio
+
+                        if react_event.event_type == ReActEventType.THINKING_CHUNK:
+                            # Create subtask thinking chunk event
+                            asyncio.create_task(
+                                self._publish_event(
+                                    PlanExecuteEventType.SUBTASK_THINKING_CHUNK,
+                                    {
+                                        "subtask_id": subtask.id,
+                                        "delta": react_event.data.get("delta", ""),
+                                        "thought": react_event.data.get("content", ""),
+                                    },
+                                )
+                            )
+                        elif react_event.event_type == ReActEventType.ACTION_PLANNED:
+                            # Tool is about to be called
+                            tool_name = react_event.data.get("action", "unknown")
+                            asyncio.create_task(
+                                self._publish_event(
+                                    PlanExecuteEventType.SUBTASK_THINKING_CHUNK,
+                                    {
+                                        "subtask_id": subtask.id,
+                                        "delta": "",
+                                        "is_tool": True,
+                                        "is_tool_planned": True,
+                                        "tool_name": tool_name,
+                                    },
+                                )
+                            )
+                        elif react_event.event_type == ReActEventType.ACTION_EXECUTING:
+                            # Tool is currently executing
+                            tool_name = react_event.data.get("action", "unknown")
+                            asyncio.create_task(
+                                self._publish_event(
+                                    PlanExecuteEventType.SUBTASK_THINKING_CHUNK,
+                                    {
+                                        "subtask_id": subtask.id,
+                                        "delta": "",
+                                        "is_tool": True,
+                                        "is_tool_executing": True,
+                                        "tool_name": tool_name,
+                                    },
+                                )
+                            )
+                        elif react_event.event_type == ReActEventType.OBSERVATION:
+                            # Tool execution result
+                            observation = str(react_event.data.get("observation", ""))
+                            tool_name = react_event.data.get("action", "unknown")
+                            asyncio.create_task(
+                                self._publish_event(
+                                    PlanExecuteEventType.SUBTASK_THINKING_CHUNK,
+                                    {
+                                        "subtask_id": subtask.id,
+                                        "delta": observation,
+                                        "is_observation": True,
+                                        "tool_name": tool_name,
+                                        "success": react_event.data.get("success", True),
+                                    },
+                                )
+                            )
+                    except Exception as e:
+                        logger.error(f"Error forwarding ReAct event: {e}")
+
+                # Subscribe to subtask orchestrator's events
+                self.subtask_orchestrator.event_bus.subscribe(forward_react_event)
+
+                try:
+                    # Execute subtask - events will be forwarded automatically
+                    result = await self.subtask_orchestrator.execute(subtask.description, context)
+
+                    subtask.result = result.final_answer
+                    subtask.cost = result.total_cost
+                    subtask.tokens_used = result.total_tokens
+                    subtask.status = "completed"
+                finally:
+                    # Unsubscribe to avoid memory leaks
+                    self.subtask_orchestrator.event_bus.unsubscribe(forward_react_event)
 
             else:
                 # Direct tool execution (simpler, faster)
@@ -335,18 +692,16 @@ class PlanAndExecuteOrchestrator:
 
             subtask.execution_time = time.time() - start_time
 
-            await self._publish_event(
-                PlanExecuteEventType.SUBTASK_COMPLETE,
-                {
-                    "subtask": subtask.to_dict(),
-                    "result": subtask.result,
-                    "execution_time": subtask.execution_time,
-                },
-            )
-
-            logger.info(
-                f"Subtask {subtask.id} completed in {subtask.execution_time:.2f}s: {subtask.result[:100]}..."
-            )
+            # Emit SUBTASK_COMPLETE for all plans with subtasks (including single-subtask)
+            if total_subtasks >= 1:
+                await self._publish_event(
+                    PlanExecuteEventType.SUBTASK_COMPLETE,
+                    {
+                        "subtask": subtask.to_dict(),
+                        "result": subtask.result,
+                        "execution_time": subtask.execution_time,
+                    },
+                )
 
             return True
 
@@ -355,9 +710,12 @@ class PlanAndExecuteOrchestrator:
             subtask.error = str(e)
             subtask.execution_time = time.time() - start_time
 
-            await self._publish_event(
-                PlanExecuteEventType.SUBTASK_FAILED, {"subtask": subtask.to_dict(), "error": str(e)}
-            )
+            # Emit SUBTASK_FAILED for all subtasks (including single-subtask plans)
+            if total_subtasks >= 1:
+                await self._publish_event(
+                    PlanExecuteEventType.SUBTASK_FAILED,
+                    {"subtask": subtask.to_dict(), "error": str(e)},
+                )
 
             logger.error(f"Subtask {subtask.id} failed: {e}", exc_info=True)
 
@@ -383,7 +741,7 @@ class PlanAndExecuteOrchestrator:
         if not results:
             return "No subtasks completed successfully. Unable to provide an answer."
 
-        # Use LLM to synthesize final answer
+        # Use LLM to synthesize final answer with streaming
         synthesis_prompt = f"""Based on the following subtask results, provide a comprehensive answer to the user's question.
 
 Original Question: {query}
@@ -394,55 +752,69 @@ Subtask Results:
 Provide a clear, well-formatted final answer that directly addresses the user's question:"""
 
         messages = [Message(role=MessageRole.USER, content=synthesis_prompt)]
-        response = await self.tool_executor._client.achat(messages=messages, temperature=0.5)
 
-        return response.message.content
+        # Stream the final answer token by token (without tools)
+        final_answer = ""
+        async for chunk in self.tool_executor.stream_without_tools(
+            messages=messages, temperature=0.5
+        ):
+            delta = chunk.delta
+            if delta:
+                final_answer += delta
+                # Emit FINAL_ANSWER_CHUNK event for real-time streaming
+                await self._publish_event(
+                    PlanExecuteEventType.FINAL_ANSWER_CHUNK,
+                    {"delta": delta, "content": final_answer},
+                )
 
-    def _parse_plan_json(self, json_str: str, goal: str) -> Plan:
-        """Parse JSON plan from LLM response.
+        return final_answer
+
+    def _parse_plan_json_dict(self, json_str: str) -> dict:
+        """Parse JSON plan from LLM response (fallback for providers without JSON schema).
 
         Args:
-            json_str: JSON string from LLM
-            goal: User's goal
+            json_str: JSON string from LLM (may include markdown, thinking text, etc.)
 
         Returns:
-            Parsed Plan object
+            Parsed plan data as dict with 'reasoning' and 'subtasks' keys
         """
         try:
-            # Extract JSON from response (might have markdown code blocks)
+            # Extract JSON from response (might have markdown code blocks or thinking text)
             json_str = json_str.strip()
+
+            # Try to extract from markdown code blocks first
             if "```json" in json_str:
                 json_str = json_str.split("```json")[1].split("```")[0]
             elif "```" in json_str:
                 json_str = json_str.split("```")[1].split("```")[0]
+            else:
+                # Try to find JSON object in the text (look for opening brace)
+                brace_idx = json_str.find("{")
+                if brace_idx != -1:
+                    json_str = json_str[brace_idx:]
+                    # Find matching closing brace by counting braces
+                    brace_count = 0
+                    for i, char in enumerate(json_str):
+                        if char == "{":
+                            brace_count += 1
+                        elif char == "}":
+                            brace_count -= 1
+                            if brace_count == 0:
+                                json_str = json_str[: i + 1]
+                                break
+
+            json_str = json_str.strip()
+            if not json_str:
+                raise ValueError("No JSON content found in response")
 
             plan_data = json.loads(json_str)
+            return plan_data
 
-            # Parse subtasks
-            subtasks = []
-            for st_data in plan_data.get("subtasks", []):
-                subtask = SubTask(
-                    id=st_data["id"],
-                    description=st_data["description"],
-                    required_tools=st_data.get("required_tools", []),
-                    dependencies=st_data.get("dependencies", []),
-                    success_criteria=st_data.get("success_criteria"),
-                )
-                subtasks.append(subtask)
-
-            plan = Plan(
-                subtasks=subtasks,
-                goal=goal,
-                reasoning=plan_data.get("reasoning", "No reasoning provided"),
-            )
-
-            return plan
-
-        except (json.JSONDecodeError, KeyError) as e:
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
             logger.error(f"Failed to parse plan JSON: {e}")
-            logger.debug(f"JSON string was: {json_str}")
-            # Return empty plan on parse failure
-            return Plan(subtasks=[], goal=goal, reasoning=f"Failed to parse plan: {str(e)}")
+            logger.debug(f"JSON string was: {json_str[:500]}...")
+            # Return empty plan data on parse failure
+            return {"reasoning": f"Failed to parse plan: {str(e)}", "subtasks": []}
 
     def _dependencies_met(self, subtask: SubTask, completed_ids: set) -> bool:
         """Check if subtask dependencies are satisfied.

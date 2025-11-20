@@ -591,17 +591,20 @@ class PlanExecuteEventType(Enum):
     """Types of events emitted during Plan and Execute."""
 
     PLANNING_START = "planning_start"
+    PLANNING_THINKING_CHUNK = "planning_thinking_chunk"  # LLM reasoning during planning
     PLANNING_COMPLETE = "planning_complete"
     REPLANNING_START = "replanning_start"
     REPLANNING_COMPLETE = "replanning_complete"
 
     SUBTASK_START = "subtask_start"
+    SUBTASK_THINKING_CHUNK = "subtask_thinking_chunk"  # ReAct reasoning during subtask execution
     SUBTASK_PROGRESS = "subtask_progress"
     SUBTASK_COMPLETE = "subtask_complete"
     SUBTASK_FAILED = "subtask_failed"
 
     PLAN_PROGRESS = "plan_progress"  # Overall plan progress update
     FINAL_ANSWER = "final_answer"
+    FINAL_ANSWER_CHUNK = "final_answer_chunk"  # Streaming chunks for final answer
     ERROR = "error"
 
 
@@ -653,41 +656,159 @@ CRITICAL: Respond with a JSON plan in this EXACT format:
 Available tools:
 {tools}
 
-Planning Guidelines:
-1. **Break down complexity**: Decompose the task into 3-10 clear subtasks
-2. **Order matters**: Arrange subtasks in logical execution order
-3. **Specify dependencies**: Use "dependencies" to indicate which subtasks must complete first
-4. **Be specific**: Each subtask should have a clear, actionable description
-5. **Use available tools**: Only reference tools from the available tools list
-6. **Define success**: Specify concrete success criteria for each subtask
-7. **Keep it simple**: Each subtask should be independently executable
+Task Complexity Analysis - Match plan size to task complexity:
+- **Simple tasks** (direct lookup/single action): **1 subtask** ← IMPORTANT: Use 1 subtask for simple queries!
+- **Straightforward tasks** (single source, simple processing): 2-3 subtasks
+- **Moderate tasks** (multiple sources or calculations): 3-5 subtasks
+- **Complex tasks** (research + synthesis across sources): 5-8 subtasks
+- **Very complex tasks** (multi-stage analysis + synthesis): 7-10 subtasks
 
-Example Plan:
-User: "Analyze sales data and create a report"
+CRITICAL: First analyze the task complexity, then create an appropriately-sized plan.
+- For simple, single-action tasks → Create a 1-subtask plan (NOT 2!)
+- DO NOT default to 5 subtasks - vary the number based on actual complexity!
+
+Planning Guidelines:
+1. **Analyze first**: Determine task complexity before planning
+2. **Break down appropriately**: Match subtask count to complexity (1-10 subtasks)
+3. **Order matters**: Arrange subtasks in logical execution order
+4. **Specify dependencies**: Use "dependencies" to indicate which subtasks must complete first
+5. **Be specific**: Each subtask should have a clear, actionable description
+6. **Use available tools**: Only reference tools from the available tools list
+7. **Define success**: Specify concrete success criteria for each subtask
+8. **Keep it simple**: Each subtask should be independently executable
+
+Example Plans (showing different complexities):
+
+Example 1 - Simple task (1 subtask):
+User: "Find the account for Acme Corp"
 
 {{
-  "reasoning": "First gather data, then analyze it, finally format results into a report",
+  "reasoning": "Direct database lookup - single action required",
   "subtasks": [
     {{
       "id": 1,
-      "description": "Fetch sales data from the database for the last quarter",
-      "required_tools": ["query_database"],
+      "description": "Search accounts database for 'Acme Corp'",
+      "required_tools": ["search_accounts"],
       "dependencies": [],
-      "success_criteria": "Data retrieved with at least 1000 records"
+      "success_criteria": "Account found and details retrieved"
+    }}
+  ]
+}}
+
+Example 2 - Simple task with extraction (2 subtasks):
+User: "What's the current temperature in San Francisco?"
+
+{{
+  "reasoning": "Simple lookup task - just need to get weather data and extract temperature",
+  "subtasks": [
+    {{
+      "id": 1,
+      "description": "Get current weather data for San Francisco",
+      "required_tools": ["get_weather"],
+      "dependencies": [],
+      "success_criteria": "Weather data retrieved with temperature"
     }},
     {{
       "id": 2,
-      "description": "Calculate key metrics: total sales, average order value, growth rate",
-      "required_tools": ["calculate"],
+      "description": "Extract and format temperature value",
+      "required_tools": [],
       "dependencies": [1],
-      "success_criteria": "All metrics calculated successfully"
+      "success_criteria": "Temperature value extracted"
+    }}
+  ]
+}}
+
+Example 3 - Moderate task (4 subtasks):
+User: "Compare our sales performance this quarter vs last quarter"
+
+{{
+  "reasoning": "Need to fetch two datasets, analyze each, then compare - moderate complexity",
+  "subtasks": [
+    {{
+      "id": 1,
+      "description": "Fetch sales data for current quarter (Q4 2024)",
+      "required_tools": ["query_database"],
+      "dependencies": [],
+      "success_criteria": "Q4 sales data retrieved"
+    }},
+    {{
+      "id": 2,
+      "description": "Fetch sales data for previous quarter (Q3 2024)",
+      "required_tools": ["query_database"],
+      "dependencies": [],
+      "success_criteria": "Q3 sales data retrieved"
     }},
     {{
       "id": 3,
-      "description": "Generate formatted report with charts and insights",
-      "required_tools": ["create_document"],
+      "description": "Calculate key metrics for both quarters",
+      "required_tools": ["calculate"],
+      "dependencies": [1, 2],
+      "success_criteria": "Metrics calculated for both periods"
+    }},
+    {{
+      "id": 4,
+      "description": "Generate comparison analysis with insights",
+      "required_tools": ["analyze"],
+      "dependencies": [3],
+      "success_criteria": "Comparison complete with trends identified"
+    }}
+  ]
+}}
+
+Example 4 - Complex task (7 subtasks):
+User: "Research our competitors' pricing strategies and recommend changes to our pricing"
+
+{{
+  "reasoning": "Multi-stage research and analysis task requiring data gathering, competitive analysis, and strategic recommendations",
+  "subtasks": [
+    {{
+      "id": 1,
+      "description": "Identify top 5 competitors in our market",
+      "required_tools": ["search_competitors"],
+      "dependencies": [],
+      "success_criteria": "List of 5 main competitors identified"
+    }},
+    {{
+      "id": 2,
+      "description": "Gather pricing data for each competitor's products",
+      "required_tools": ["web_search", "scrape_data"],
+      "dependencies": [1],
+      "success_criteria": "Pricing data collected for all competitors"
+    }},
+    {{
+      "id": 3,
+      "description": "Retrieve our current pricing structure",
+      "required_tools": ["query_database"],
+      "dependencies": [],
+      "success_criteria": "Our pricing data retrieved"
+    }},
+    {{
+      "id": 4,
+      "description": "Analyze competitor pricing patterns and strategies",
+      "required_tools": ["analyze"],
       "dependencies": [2],
-      "success_criteria": "Report created with all sections complete"
+      "success_criteria": "Pricing patterns identified"
+    }},
+    {{
+      "id": 5,
+      "description": "Compare our pricing to competitor averages",
+      "required_tools": ["calculate", "compare"],
+      "dependencies": [3, 4],
+      "success_criteria": "Price comparison complete"
+    }},
+    {{
+      "id": 6,
+      "description": "Identify pricing gaps and opportunities",
+      "required_tools": ["analyze"],
+      "dependencies": [5],
+      "success_criteria": "Opportunities identified"
+    }},
+    {{
+      "id": 7,
+      "description": "Generate pricing recommendations with rationale",
+      "required_tools": ["generate_report"],
+      "dependencies": [6],
+      "success_criteria": "Recommendations documented with justification"
     }}
   ]
 }}
@@ -725,3 +846,127 @@ Guidelines for replanning:
 5. **Add validation**: Include verification subtasks if data issues occurred
 
 Respond with ONLY the revised JSON plan."""
+
+
+# JSON Schema for Plan Structure (used for tool-based planning)
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reasoning": {
+            "type": "string",
+            "description": "Brief explanation of the planning strategy and approach"
+        },
+        "subtasks": {
+            "type": "array",
+            "description": "List of subtasks to execute in order",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "Unique subtask identifier (1, 2, 3, ...)"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Clear, specific description of what to do"
+                    },
+                    "required_tools": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of tools needed for this subtask"
+                    },
+                    "dependencies": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "IDs of subtasks that must complete before this one"
+                    },
+                    "success_criteria": {
+                        "type": "string",
+                        "description": "How to know this subtask succeeded"
+                    }
+                },
+                "required": ["id", "description"],
+                "additionalProperties": False
+            }
+        }
+    },
+    "required": ["reasoning", "subtasks"],
+    "additionalProperties": False
+}
+
+
+def create_plan_tool():
+    """Create structured planning tool for combined routing + planning.
+
+    This tool allows the LLM to create a detailed execution plan in a single call,
+    combining routing and planning into one step for better performance.
+
+    Returns:
+        FunctionTool: Tool that accepts plan parameters and returns plan confirmation
+    """
+    from miiflow_llm.core.tools import FunctionTool, tool
+    from miiflow_llm.core.tools.schemas import ToolSchema, ParameterSchema
+    from miiflow_llm.core.tools.types import ParameterType, ToolType
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # Define explicit schema for the tool to ensure proper parameter types
+    explicit_schema = ToolSchema(
+        name="create_plan",
+        description="""Create execution plan by breaking tasks into subtasks.
+
+ALWAYS call this tool. Match plan complexity to the task:
+- **Simple queries** (greetings, thanks, clarifications, simple questions): Return empty subtasks []
+- **Direct answers** (single lookup, one tool call): 1 subtask
+- **Moderate tasks** (2-3 data sources): 2-5 subtasks
+- **Complex tasks** (research + analysis + synthesis): 5-8 subtasks
+
+IMPORTANT: Return [] (empty array) for queries that don't need planning, multi-step execution, or tool usage.
+
+Examples:
+- "Hello" → {"reasoning": "Simple greeting", "subtasks": []}
+- "Thanks" → {"reasoning": "Acknowledgment", "subtasks": []}
+- "Find Acme Corp" → {"reasoning": "Single lookup", "subtasks": [{"id": 1, "description": "Search for Acme Corp", ...}]}""",
+        tool_type=ToolType.FUNCTION,  # Required field
+        parameters={
+            "reasoning": ParameterSchema(
+                name="reasoning",
+                type=ParameterType.STRING,
+                description="Brief explanation of your planning strategy and why this approach is needed",
+                required=True
+            ),
+            "subtasks": ParameterSchema(
+                name="subtasks",
+                type=ParameterType.ARRAY,
+                description="""List of subtasks to execute. Can be empty array [] for simple queries that don't need planning.
+
+For non-empty plans, each subtask should have:
+- id (int): Unique identifier (1, 2, 3, ...)
+- description (str): Clear, specific description of what to do
+- required_tools (array of strings): Tools needed for this subtask
+- dependencies (array of ints): IDs of subtasks that must complete first
+- success_criteria (str): How to verify this subtask succeeded
+
+Return [] for greetings, acknowledgments, and simple conversational queries.""",
+                required=True
+            )
+        }
+    )
+
+    def create_plan(reasoning: str, subtasks: list) -> dict:
+        """Internal function for plan creation."""
+        logger.info(f"create_plan tool called! Reasoning: {reasoning[:100]}..., Subtask count: {len(subtasks)}")
+        return {
+            "plan_created": True,
+            "reasoning": reasoning,
+            "subtasks": subtasks,
+            "subtask_count": len(subtasks)
+        }
+
+    # Create tool with explicit schema
+    tool = FunctionTool(create_plan)
+    tool.definition = explicit_schema  # Override with explicit schema
+
+    logger.info(f"Created planning tool with schema: {explicit_schema.name}")
+    return tool

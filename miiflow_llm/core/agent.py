@@ -355,8 +355,17 @@ class Agent(Generic[Deps, Result]):
         query: str,
         context: RunContext,
         max_replans: int = 2,
+        existing_plan = None,  # NEW: Optional pre-generated plan from combined routing
     ):
-        """Run agent in Plan and Execute mode with streaming events."""
+        """Run agent in Plan and Execute mode with streaming events.
+
+        Args:
+            query: User's query/goal
+            context: Run context with messages and deps
+            max_replans: Maximum number of replanning attempts
+            existing_plan: Optional pre-generated Plan object from combined routing step.
+                          If provided, skips initial plan generation (saves ~2-5s)
+        """
         from .react.plan_execute_orchestrator import PlanAndExecuteOrchestrator
         from .react import ReActFactory
         from .react.events import EventBus
@@ -396,7 +405,10 @@ class Agent(Generic[Deps, Result]):
                 logger.warning("Event queue full, dropping event")
 
         event_bus.subscribe(real_time_stream)
-        execution_task = asyncio.create_task(orchestrator.execute(query, context))
+        # NEW: Pass existing_plan if provided (saves ~2-5s by skipping plan generation)
+        execution_task = asyncio.create_task(
+            orchestrator.execute(query, context, existing_plan=existing_plan)
+        )
 
         try:
             while not execution_task.done():

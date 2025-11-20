@@ -31,55 +31,65 @@ class OpenAIStreaming:
         usage = None
 
         try:
-            if hasattr(chunk, 'choices') and chunk.choices:
+            if hasattr(chunk, "choices") and chunk.choices:
                 choice = chunk.choices[0]
 
-                if hasattr(choice, 'delta') and choice.delta:
+                if hasattr(choice, "delta") and choice.delta:
                     # Handle text content
-                    if hasattr(choice.delta, 'content') and choice.delta.content:
+                    if hasattr(choice.delta, "content") and choice.delta.content:
                         delta = choice.delta.content
                         self._accumulated_content += delta
 
                     # Handle tool call deltas - convert to standard dict format
-                    if hasattr(choice.delta, 'tool_calls') and choice.delta.tool_calls:
+                    if hasattr(choice.delta, "tool_calls") and choice.delta.tool_calls:
                         normalized_tool_calls = []
 
                         for tool_call_delta in choice.delta.tool_calls:
-                            idx = tool_call_delta.index if hasattr(tool_call_delta, 'index') else 0
+                            idx = tool_call_delta.index if hasattr(tool_call_delta, "index") else 0
 
                             # Initialize accumulator for this index
                             if idx not in self._accumulated_tool_calls:
                                 self._accumulated_tool_calls[idx] = {
-                                    'id': None,
-                                    'type': 'function',
-                                    'function': {'name': None, 'arguments': ''}
+                                    "id": None,
+                                    "type": "function",
+                                    "function": {"name": None, "arguments": ""},
                                 }
 
                             # Update ID if present
-                            if hasattr(tool_call_delta, 'id') and tool_call_delta.id:
-                                self._accumulated_tool_calls[idx]['id'] = tool_call_delta.id
+                            if hasattr(tool_call_delta, "id") and tool_call_delta.id:
+                                self._accumulated_tool_calls[idx]["id"] = tool_call_delta.id
 
                             # Update function name and arguments
-                            if hasattr(tool_call_delta, 'function') and tool_call_delta.function:
-                                if hasattr(tool_call_delta.function, 'name') and tool_call_delta.function.name:
-                                    self._accumulated_tool_calls[idx]['function']['name'] = tool_call_delta.function.name
+                            if hasattr(tool_call_delta, "function") and tool_call_delta.function:
+                                if (
+                                    hasattr(tool_call_delta.function, "name")
+                                    and tool_call_delta.function.name
+                                ):
+                                    self._accumulated_tool_calls[idx]["function"][
+                                        "name"
+                                    ] = tool_call_delta.function.name
 
-                                if hasattr(tool_call_delta.function, 'arguments') and tool_call_delta.function.arguments:
-                                    self._accumulated_tool_calls[idx]['function']['arguments'] += tool_call_delta.function.arguments
+                                if (
+                                    hasattr(tool_call_delta.function, "arguments")
+                                    and tool_call_delta.function.arguments
+                                ):
+                                    self._accumulated_tool_calls[idx]["function"][
+                                        "arguments"
+                                    ] += tool_call_delta.function.arguments
 
                             # Emit the current state as a dict
                             normalized_tool_calls.append(self._accumulated_tool_calls[idx].copy())
 
                         tool_calls = normalized_tool_calls
 
-                if hasattr(choice, 'finish_reason'):
+                if hasattr(choice, "finish_reason"):
                     finish_reason = choice.finish_reason
 
-            if hasattr(chunk, 'usage') and chunk.usage:
+            if hasattr(chunk, "usage") and chunk.usage:
                 usage = TokenCount(
                     prompt_tokens=chunk.usage.prompt_tokens,
                     completion_tokens=chunk.usage.completion_tokens,
-                    total_tokens=chunk.usage.total_tokens
+                    total_tokens=chunk.usage.total_tokens,
                 )
 
         except AttributeError:
@@ -91,7 +101,7 @@ class OpenAIStreaming:
             delta=delta,
             finish_reason=finish_reason,
             usage=usage,
-            tool_calls=tool_calls
+            tool_calls=tool_calls,
         )
 
 
@@ -99,11 +109,7 @@ class OpenAIClient(OpenAIStreaming, ModelClient):
     """OpenAI provider client."""
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
-        super().__init__(
-            model=model,
-            api_key=api_key,
-            **kwargs
-        )
+        super().__init__(model=model, api_key=api_key, **kwargs)
         self.client = openai.AsyncOpenAI(api_key=api_key)
         self.provider_name = "openai"
 

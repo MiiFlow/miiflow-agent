@@ -177,11 +177,8 @@ class AgentToolExecutor:
             tool_desc = self._format_tool_description(tool_name, schema)
             descriptions.append(tool_desc)
 
-            # DEBUG: Log each tool description
-            logger.info(f"[TOOL SCHEMA] {tool_desc}")
-
         tools_text = "\n".join(descriptions)
-        logger.info(f"[TOOLS DESCRIPTION] Built tools description with {len(descriptions)} tools")
+
         return tools_text
 
     def _save_tool_state(self) -> dict:

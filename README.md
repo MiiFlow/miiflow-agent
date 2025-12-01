@@ -93,8 +93,7 @@ async for chunk in client.astream_chat([Message.user("Tell me a story")]):
 ### ReAct Agent with Tools
 
 ```python
-from miiflow_llm import Agent, AgentType
-from miiflow_llm.core.tools import tool
+from miiflow_llm import Agent, AgentType, LLMClient, tool
 
 @tool("calculate", "Evaluate mathematical expressions")
 def calculate(expression: str) -> str:
@@ -273,21 +272,25 @@ result = await orchestrator.execute(
 
 ## Event Streaming
 
-Subscribe to real-time events during agent execution:
+Stream real-time events during agent execution:
 
 ```python
-from miiflow_llm.core.react import EventBus, ReActEventType
+from miiflow_llm import Agent, AgentType, RunContext
+from miiflow_llm.core.react import ReActEventType
 
-def on_event(event):
+agent = Agent(client, agent_type=AgentType.REACT)
+context = RunContext(deps=None)
+
+async for event in agent.stream_react("What is 2+2?", context):
     match event.event_type:
         case ReActEventType.THINKING_CHUNK:
-            print(f"Thinking: {event.data['delta']}", end="")
+            print(event.data.get("delta", ""), end="")
         case ReActEventType.TOOL_START:
             print(f"\nCalling: {event.data['tool_name']}")
         case ReActEventType.OBSERVATION:
             print(f"Result: {event.data['observation']}")
-
-agent.event_bus.subscribe(on_event)
+        case ReActEventType.FINAL_ANSWER:
+            print(f"\nAnswer: {event.data['answer']}")
 ```
 
 ## Observability

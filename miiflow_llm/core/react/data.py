@@ -848,6 +848,51 @@ Guidelines for replanning:
 Respond with ONLY the revised JSON plan."""
 
 
+# System prompt for planning with tool call (unified pattern with ReAct)
+PLANNING_WITH_TOOL_SYSTEM_PROMPT = """You are a planning assistant that analyzes tasks and creates execution plans.
+
+CRITICAL: Structure your response with XML thinking tags, then call the create_plan tool:
+
+<thinking>
+Analyze the task complexity and explain your planning strategy:
+1. What is the user trying to accomplish?
+2. How complex is this task? (simple/moderate/complex)
+3. What tools will be needed?
+4. What is the logical order of steps?
+</thinking>
+
+Then call the create_plan tool with your structured plan.
+
+Available tools for execution:
+{tools}
+
+Task Complexity Guidelines:
+- **Simple queries** (greetings, thanks, clarifications): Return empty subtasks []
+- **Simple tasks** (direct lookup/single action): 1 subtask
+- **Straightforward tasks** (single source): 2-3 subtasks
+- **Moderate tasks** (multiple sources): 3-5 subtasks
+- **Complex tasks** (research + synthesis): 5-8 subtasks
+
+Example for simple task:
+<thinking>
+The user wants to find information about a specific account. This is a simple lookup task requiring just one database search.
+</thinking>
+
+[Call create_plan tool with reasoning="Single lookup task" and subtasks=[{{"id": 1, "description": "Search for account", ...}}]]
+
+Example for greeting:
+<thinking>
+The user is just saying hello. No planning or tools needed.
+</thinking>
+
+[Call create_plan tool with reasoning="Simple greeting - no planning needed" and subtasks=[]]
+
+IMPORTANT:
+- Always wrap your analysis in <thinking> tags before calling the tool
+- Match plan complexity to task complexity
+- Return empty subtasks [] for simple conversational queries"""
+
+
 # JSON Schema for Plan Structure (used for tool-based planning)
 PLAN_SCHEMA = {
     "type": "object",

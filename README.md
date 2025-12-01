@@ -329,7 +329,7 @@ except ProviderError as e:
     print(f"{e.provider} error: {e.message}")
 ```
 
-## Documentation
+## Error Handling
 
 - [Quickstart Guide](docs/quickstart.md) — Get started in 5 minutes
 - [API Reference](docs/api.md) — Complete API documentation

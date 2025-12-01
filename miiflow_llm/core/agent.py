@@ -2,11 +2,9 @@
 
 import asyncio
 import logging
-import time
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncIterator, Callable, Dict, Generic, List, Optional, Type, TypeVar, Union
+from typing import Any, AsyncIterator, Callable, Dict, Generic, List, Optional, TypeVar, Union
 
 logger = logging.getLogger(__name__)
 
@@ -76,27 +74,21 @@ class Agent(Generic[Deps, Result]):
         client: LLMClient,
         *,
         agent_type: AgentType = AgentType.SINGLE_HOP,
-        deps_type: Optional[Type[Deps]] = None,
-        result_type: Optional[Type[Result]] = None,
         system_prompt: Optional[Union[str, Callable[[RunContext[Deps]], str]]] = None,
         retries: int = 1,
         max_iterations: int = 10,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[FunctionTool]] = None,
-        use_native_tool_calling: bool = True,
         json_schema: Optional[Dict[str, Any]] = None,
     ):
         self.client = client
         self.agent_type = agent_type
-        self.deps_type = deps_type
-        self.result_type = result_type or str
         self.system_prompt = system_prompt
         self.retries = retries
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.use_native_tool_calling = use_native_tool_calling
         self.json_schema = json_schema
 
         # Share the tool registry with LLMClient for consistency
@@ -177,7 +169,7 @@ class Agent(Generic[Deps, Result]):
 
         raise MiiflowLLMError("Agent execution failed", ErrorType.MODEL_ERROR)
 
-    async def _execute_with_context(self, context: RunContext[Deps]) -> Result:
+    async def _execute_with_context(self, context: RunContext[Deps]) -> str:
         """Route to appropriate execution based on agent type."""
         # Extract user prompt from context messages
         user_prompt = ""
@@ -186,48 +178,34 @@ class Agent(Generic[Deps, Result]):
                 user_prompt = msg.content
                 break
 
+        final_answer = None
+
         if self.agent_type == AgentType.SINGLE_HOP:
-            final_answer = None
-            async for event in self.stream_single_hop(user_prompt, context=context):
+            async for event in self._stream_single_hop(user_prompt, context=context):
                 if isinstance(event, dict) and event.get("event") == "execution_complete":
                     final_answer = event.get("data", {}).get("result", "")
                     break
 
-            if self.result_type == str:
-                return final_answer or "No final answer received"
-            else:
-                return final_answer or "No final answer received"
-
         elif self.agent_type == AgentType.REACT:
-            final_answer = None
-            async for event in self.stream_react(
+            async for event in self._stream_react(
                 user_prompt, context, max_steps=self.max_iterations
             ):
                 if event.event_type.value == "final_answer":
                     final_answer = event.data.get("answer", "")
                     break
 
-            if self.result_type == str:
-                return final_answer or "No final answer received"
-            else:
-                return final_answer or "No final answer received"
-
         elif self.agent_type == AgentType.PLAN_AND_EXECUTE:
-            final_answer = None
-            async for event in self.stream_plan_execute(
-                user_prompt, context, max_replans=self.max_iterations // 5  # Default max replans
+            async for event in self._stream_plan_execute(
+                user_prompt, context, max_replans=self.max_iterations // 5
             ):
                 if hasattr(event, "event_type") and event.event_type.value == "final_answer":
                     final_answer = event.data.get("answer", "")
                     break
 
-            if self.result_type == str:
-                return final_answer or "No final answer received"
-            else:
-                return final_answer or "No final answer received"
-
         else:
             raise ValueError(f"Unknown agent type: {self.agent_type}")
+
+        return final_answer or "No final answer received"
 
     async def _execute_tool_calls(
         self, tool_calls: List[Dict[str, Any]], context: RunContext[Deps]
@@ -298,7 +276,52 @@ class Agent(Generic[Deps, Result]):
                 )
             )
 
-    async def stream_react(
+    async def stream(
+        self,
+        query: str,
+        context: RunContext,
+        *,
+        agent_type: Optional[AgentType] = None,
+        max_steps: int = 10,
+        max_budget: Optional[float] = None,
+        max_time_seconds: Optional[float] = None,
+        max_replans: int = 2,
+        existing_plan=None,
+    ) -> AsyncIterator[Any]:
+        """Unified streaming method that dispatches based on agent_type.
+
+        Args:
+            query: User's query/goal
+            context: Run context with messages and deps
+            agent_type: Optional override for agent type. Defaults to self.agent_type
+            max_steps: Maximum ReAct steps (for REACT type)
+            max_budget: Optional budget limit (for REACT type)
+            max_time_seconds: Optional time limit (for REACT type)
+            max_replans: Maximum replanning attempts (for PLAN_AND_EXECUTE type)
+            existing_plan: Optional pre-generated plan (for PLAN_AND_EXECUTE type)
+
+        Yields:
+            Streaming events specific to the agent type
+        """
+        effective_type = agent_type or self.agent_type
+
+        if effective_type == AgentType.SINGLE_HOP:
+            async for event in self._stream_single_hop(query, context=context):
+                yield event
+        elif effective_type == AgentType.REACT:
+            async for event in self._stream_react(
+                query, context, max_steps, max_budget, max_time_seconds
+            ):
+                yield event
+        elif effective_type == AgentType.PLAN_AND_EXECUTE:
+            async for event in self._stream_plan_execute(
+                query, context, max_replans, existing_plan
+            ):
+                yield event
+        else:
+            raise ValueError(f"Unknown agent type: {effective_type}")
+
+    async def _stream_react(
         self,
         query: str,
         context: RunContext,
@@ -306,7 +329,7 @@ class Agent(Generic[Deps, Result]):
         max_budget: Optional[float] = None,
         max_time_seconds: Optional[float] = None,
     ):
-        """Run agent in ReAct mode with streaming events."""
+        """Internal: Run agent in ReAct mode with streaming events."""
         from .react import ReActFactory
 
         orchestrator = ReActFactory.create_orchestrator(
@@ -314,7 +337,7 @@ class Agent(Generic[Deps, Result]):
             max_steps=max_steps,
             max_budget=max_budget,
             max_time_seconds=max_time_seconds,
-            use_native_tools=self.use_native_tool_calling,
+            use_native_tools=True,
         )
 
         # Real-time streaming setup
@@ -353,14 +376,14 @@ class Agent(Generic[Deps, Result]):
         finally:
             orchestrator.event_bus.unsubscribe(real_time_stream)
 
-    async def stream_plan_execute(
+    async def _stream_plan_execute(
         self,
         query: str,
         context: RunContext,
         max_replans: int = 2,
-        existing_plan=None,  # NEW: Optional pre-generated plan from combined routing
+        existing_plan=None,
     ):
-        """Run agent in Plan and Execute mode with streaming events.
+        """Internal: Run agent in Plan and Execute mode with streaming events.
 
         Args:
             query: User's query/goal
@@ -384,7 +407,7 @@ class Agent(Generic[Deps, Result]):
         react_orchestrator = ReActFactory.create_orchestrator(
             agent=self,
             max_steps=10,  # Each subtask gets up to 10 ReAct steps
-            use_native_tools=self.use_native_tool_calling,
+            use_native_tools=True,
         )
 
         # Create Plan and Execute orchestrator
@@ -464,10 +487,10 @@ class Agent(Generic[Deps, Result]):
 
         return result
 
-    async def stream_single_hop(
+    async def _stream_single_hop(
         self, user_prompt: str, *, context: RunContext[Deps]
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Stream single-hop execution - uses context from run() (no duplication)."""
+        """Internal: Stream single-hop execution - uses context from run() (no duplication)."""
 
         # Add user message to context if not already present
         # This handles cases where stream_single_hop is called directly (not from run())

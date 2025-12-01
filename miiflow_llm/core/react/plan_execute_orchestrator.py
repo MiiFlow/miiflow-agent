@@ -203,13 +203,16 @@ class PlanAndExecuteOrchestrator:
             )
 
     async def _generate_plan(self, query: str, context: RunContext) -> Plan:
-        """Generate initial plan for the query using direct LLM call with JSON schema.
+        """Generate initial plan using tool call with streaming thinking.
 
-        Calls LLM directly (not via Agent wrapper) for simpler message handling:
-        - Direct control over message ordering (SYSTEM first, then conversation)
-        - No duplicate user messages
-        - More reliable than tool calling (no tool execution issues)
-        - Universal provider support (all LLMs support JSON mode)
+        Uses the same pattern as ReAct native:
+        1. LLM streams thinking in <thinking> tags (readable text)
+        2. LLM calls create_plan tool with structured plan data
+
+        This provides:
+        - Real-time streaming of planning reasoning (not raw JSON)
+        - Structured plan output via tool call
+        - Unified architecture with ReAct pattern
 
         Args:
             query: User's goal
@@ -218,49 +221,17 @@ class PlanAndExecuteOrchestrator:
         Returns:
             Plan with subtasks
         """
-        from .data import PLAN_SCHEMA
+        from .data import PLANNING_WITH_TOOL_SYSTEM_PROMPT, create_plan_tool
+        from .parsing.xml_parser import XMLReActParser, ParseEventType
 
         await self._publish_event(PlanExecuteEventType.PLANNING_START, {"goal": query})
 
-        # Emit a "Creating plan..." message so frontend shows planning mode
-        await self._publish_event(
-            PlanExecuteEventType.PLANNING_THINKING_CHUNK,
-            {"delta": "", "accumulated": "Analyzing task and creating execution plan..."},
-        )
-
         try:
-            # Build planning prompt for JSON mode
+            # Build planning prompt with tool info
             tools_info = self.tool_executor.build_tools_description()
-            planning_prompt = f"""You are a planning assistant. Your job is to analyze the user's task and create an execution plan in JSON format.
+            planning_prompt = PLANNING_WITH_TOOL_SYSTEM_PROMPT.format(tools=tools_info)
 
-Available tools for execution:
-{tools_info}
-
-Task Complexity Guidelines:
-- **Simple tasks** (direct lookup/single action): 1 subtask
-- **Straightforward tasks** (single source): 2-3 subtasks
-- **Moderate tasks** (multiple sources): 3-5 subtasks
-- **Complex tasks** (research + synthesis): 5-8 subtasks
-
-Planning Principles:
-1. Match subtask count to actual complexity (don't over-plan simple tasks!)
-2. Each subtask should be independently executable
-3. Use dependencies to order subtasks correctly
-4. Specify required tools for each subtask
-5. Define clear success criteria
-
-Respond with a JSON object containing:
-- reasoning: Brief explanation of your planning strategy
-- subtasks: Array of subtasks (can be empty for simple queries)
-
-Each subtask should have:
-- id: Unique identifier (1, 2, 3, ...)
-- description: Clear, specific description
-- required_tools: Array of tool names needed
-- dependencies: Array of subtask IDs that must complete first
-- success_criteria: How to verify success"""
-
-            logger.info("Generating plan using JSON mode (direct LLM call)")
+            logger.info("Generating plan using tool call with streaming thinking")
 
             # Build messages for LLM
             messages = []
@@ -280,25 +251,82 @@ Each subtask should have:
                 f"Calling LLM with {len(messages)} messages for planning (1 system + {len(conversation_history)} conversation)"
             )
 
-            # 3. Call underlying provider client directly to bypass tool_registry
-            # We pass tools=None to ensure the LLM returns JSON, not tool calls
-            # (The prompt still describes available tools for planning context)
-            response = await self.tool_executor._client.client.achat(
-                messages=messages,
-                tools=None,  # Explicitly disable tools - must return JSON only
-                json_schema=PLAN_SCHEMA,
-                temperature=0.2,
+            # 3. Create the planning tool and get its schema
+            plan_tool = create_plan_tool()
+            tool_schema = self.tool_executor._client.client.convert_schema_to_provider_format(
+                plan_tool.definition.to_universal_schema()
             )
 
-            # 4. Parse JSON from response
-            if not response.message.content:
-                logger.error("LLM returned empty response for planning")
-                raise ValueError("Planning LLM returned empty response")
+            # 4. Stream LLM response with thinking + tool call
+            accumulated_content = ""
+            accumulated_tool_calls = {}  # index -> {id, function: {name, arguments}}
+            parser = XMLReActParser()
+            parser.reset()
+            plan_data = None
 
-            plan_data = json.loads(response.message.content)
+            async for chunk in self.tool_executor._client.client.astream_chat(
+                messages=messages,
+                tools=[tool_schema],
+                temperature=0.2,
+            ):
+                # Stream thinking text as it arrives
+                if chunk.delta:
+                    accumulated_content += chunk.delta
+
+                    # Parse XML incrementally to detect <thinking> tags
+                    for parse_event in parser.parse_streaming(chunk.delta):
+                        if parse_event.event_type == ParseEventType.THINKING:
+                            # Thinking chunk detected - emit readable planning reasoning
+                            delta = parse_event.data["delta"]
+                            await self._publish_event(
+                                PlanExecuteEventType.PLANNING_THINKING_CHUNK,
+                                {"delta": delta, "accumulated": accumulated_content},
+                            )
+
+                # Accumulate tool calls if present in chunk
+                if chunk.tool_calls:
+                    for tool_call_dict in chunk.tool_calls:
+                        idx = 0  # Planning uses single tool call
+
+                        if idx not in accumulated_tool_calls:
+                            accumulated_tool_calls[idx] = {
+                                "id": None,
+                                "type": "function",
+                                "function": {"name": None, "arguments": None},
+                            }
+
+                        if tool_call_dict.get("id") is not None:
+                            accumulated_tool_calls[idx]["id"] = tool_call_dict.get("id")
+
+                        function_data = tool_call_dict.get("function", {})
+                        if function_data.get("name") is not None:
+                            accumulated_tool_calls[idx]["function"]["name"] = function_data.get("name")
+
+                        new_args = function_data.get("arguments")
+                        if new_args is not None:
+                            if isinstance(new_args, str):
+                                accumulated_tool_calls[idx]["function"]["arguments"] = new_args
+                            elif isinstance(new_args, dict):
+                                accumulated_tool_calls[idx]["function"]["arguments"] = new_args
+
+            # 5. Extract plan from tool call
+            if accumulated_tool_calls:
+                tool_call = accumulated_tool_calls.get(0)
+                if tool_call and tool_call["function"]["name"] == "create_plan":
+                    args = tool_call["function"]["arguments"]
+                    if isinstance(args, str):
+                        plan_data = json.loads(args)
+                    else:
+                        plan_data = args
+                    logger.info(f"Extracted plan from tool call: {len(plan_data.get('subtasks', []))} subtasks")
+
+            # Fallback: try to parse JSON from accumulated content if no tool call
+            if plan_data is None and accumulated_content:
+                logger.warning("No tool call detected, attempting JSON fallback parse")
+                plan_data = self._parse_plan_json_dict(accumulated_content)
 
             logger.info(f"Extracted plan: {len(plan_data.get('subtasks', []))} subtasks")
-            logger.debug(f"Plan JSON: {response.message.content}")
+            logger.debug(f"Plan JSON: {accumulated_content}")
 
             # Convert to Plan object
             subtasks = []

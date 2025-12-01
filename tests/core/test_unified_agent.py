@@ -96,29 +96,27 @@ class TestUnifiedAgentArchitecture:
     
     def test_stateless_agent_creation(self, llm_client):
         """Test stateless agent creation for different types."""
-        single_hop_agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP, deps_type=MockDeps)
+        single_hop_agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP)
         assert single_hop_agent.agent_type == AgentType.SINGLE_HOP
-        assert single_hop_agent.deps_type == MockDeps
         assert len(single_hop_agent._tools) == 0
-        
-        react_agent = Agent(llm_client, agent_type=AgentType.REACT, deps_type=MockDeps)
+
+        react_agent = Agent(llm_client, agent_type=AgentType.REACT)
         assert react_agent.agent_type == AgentType.REACT
         assert react_agent.max_iterations == 10
-    
-    
-    
+
+
+
     def test_agent_with_custom_prompt(self, llm_client):
         """Test agent creation with custom configuration."""
-        single_hop_agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP, deps_type=MockDeps)
+        single_hop_agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP)
         assert single_hop_agent.agent_type == AgentType.SINGLE_HOP
-        
-        react_agent = Agent(llm_client, agent_type=AgentType.REACT, deps_type=MockDeps)
+
+        react_agent = Agent(llm_client, agent_type=AgentType.REACT)
         assert react_agent.agent_type == AgentType.REACT
-        
+
         custom_agent = Agent(
-            llm_client, 
+            llm_client,
             agent_type=AgentType.REACT,
-            deps_type=MockDeps,
             system_prompt="You are a helpful assistant specialized in calculations."
         )
         assert custom_agent.system_prompt == "You are a helpful assistant specialized in calculations."
@@ -189,36 +187,34 @@ class TestStatelessPatterns:
     
     def test_context_injection_patterns(self):
         """Test context injection works without memory persistence using unified @tool approach."""
-        
-        
-        
-        mock_provider = MagicMock()  
+
+        mock_provider = MagicMock()
         mock_provider.provider_name = "test"
         llm_client = LLMClient(mock_provider)
-        
-        agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP, deps_type=MockDeps)
-        
+
+        agent = Agent(llm_client, agent_type=AgentType.SINGLE_HOP)
+
         @tool("get_context")
         async def get_context_tool(context: RunContext[MockDeps]) -> str:
             """Tool that uses context injection."""
             if context.deps:
                 return f"Context role: {context.deps.user_role}"
             return "No context"
-        
+
         # Register tool with agent using unified approach
         agent.add_tool(get_context_tool)
-        
+
         # Verify tool was registered with context injection
         context_tool = agent.tool_registry.tools["get_context"]
         assert hasattr(context_tool, 'context_injection')
 
 
 class TestStreamSingleHop:
-    """Tests for stream_single_hop method."""
+    """Tests for _stream_single_hop method."""
 
     @pytest.mark.asyncio
     async def test_stream_single_hop_adds_user_message(self):
-        """Test that stream_single_hop adds user message to context."""
+        """Test that _stream_single_hop adds user message to context."""
         from unittest.mock import MagicMock
         from miiflow_llm.core.agent import Agent, RunContext
         from miiflow_llm.core.message import Message, MessageRole
@@ -246,7 +242,7 @@ class TestStreamSingleHop:
 
         # Stream single hop
         events = []
-        async for event in agent.stream_single_hop(user_prompt, context=context):
+        async for event in agent._stream_single_hop(user_prompt, context=context):
             events.append(event)
 
         # Verify user message was added to context
@@ -256,7 +252,7 @@ class TestStreamSingleHop:
 
     @pytest.mark.asyncio
     async def test_stream_single_hop_doesnt_duplicate_message(self):
-        """Test that stream_single_hop doesn't duplicate if message already exists."""
+        """Test that _stream_single_hop doesn't duplicate if message already exists."""
         from unittest.mock import MagicMock
         from miiflow_llm.core.agent import Agent, RunContext
         from miiflow_llm.core.message import Message, MessageRole
@@ -285,7 +281,7 @@ class TestStreamSingleHop:
 
         # Stream single hop
         events = []
-        async for event in agent.stream_single_hop(user_prompt, context=context):
+        async for event in agent._stream_single_hop(user_prompt, context=context):
             events.append(event)
 
         # Verify message count increased by only 1 (the assistant response)
@@ -310,11 +306,12 @@ class TestImportPatterns:
         assert AgentType.REACT is not None
     
     def test_agent_typing_support(self):
-        """Test that proper type annotations work.""" 
+        """Test that proper type annotations work."""
         from miiflow_llm.core import Agent
-        
+
+        # Type annotations work even without deps_type/result_type params
         def create_typed_agent(client) -> Agent[MockDeps, str]:
-            return Agent(client, deps_type=MockDeps, result_type=str)
-        
+            return Agent(client)
+
         agent_type = Agent[MockDeps, str]
         assert agent_type is not None

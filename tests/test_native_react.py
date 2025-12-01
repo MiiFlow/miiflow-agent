@@ -45,17 +45,16 @@ async def test_native_react():
     # Create LLM client (OpenAI)
     client = LLMClient.create("openai", model="gpt-4o-mini")
 
-    # Create agent with native tool calling enabled
+    # Create agent
     agent = Agent(
         client=client,
         agent_type=AgentType.REACT,
-        use_native_tool_calling=True,  # Enable native tool calling
         tools=[multiply, add, subtract],
         max_iterations=10,
         temperature=0.7
     )
 
-    logger.info("\n✓ Agent created with native tool calling enabled")
+    logger.info("\n✓ Agent created")
 
     # Get tool names safely
     tool_names = []
@@ -87,7 +86,7 @@ async def test_native_react():
         from miiflow_llm.core.agent import RunContext
         context = RunContext(deps=None)
 
-        async for event in agent.stream_react(query, context, max_steps=10):
+        async for event in agent.stream(query, context, max_steps=10):
             event_type = event.event_type.value
 
             if event_type == "step_start":
@@ -169,70 +168,16 @@ async def test_native_react():
     return success
 
 
-async def test_xml_fallback():
-    """Test XML fallback mode for comparison."""
-
-    logger.info("\n\n")
-    logger.info("=" * 80)
-    logger.info("Testing XML Fallback Mode (Legacy)")
-    logger.info("=" * 80)
-
-    # Create LLM client (OpenAI)
-    client = LLMClient.create("openai", model="gpt-4o-mini")
-
-    # Create agent with XML mode (legacy)
-    agent = Agent(
-        client=client,
-        agent_type=AgentType.REACT,
-        use_native_tool_calling=False,  # Disable native tool calling (use XML)
-        tools=[multiply, add],
-        max_iterations=10,
-        temperature=0.7
-    )
-
-    logger.info("\n✓ Agent created with XML mode (legacy)")
-
-    query = "What is 8 times 5?"
-    logger.info(f"\n📝 Query: {query}")
-    logger.info("\n" + "=" * 80)
-    logger.info("Starting XML ReAct execution...")
-    logger.info("=" * 80 + "\n")
-
-    thinking_chunks = 0
-
-    try:
-        from miiflow_llm.core.agent import RunContext
-        context = RunContext(deps=None)
-
-        async for event in agent.stream_react(query, context, max_steps=5):
-            if event.event_type.value == "thinking_chunk":
-                thinking_chunks += 1
-                print(event.data.get('delta', ''), end='', flush=True)
-            elif event.event_type.value == "final_answer":
-                logger.info(f"\n\n✅ Final Answer: {event.data.get('answer', '')}")
-
-    except Exception as e:
-        logger.error(f"\n❌ Error: {e}", exc_info=True)
-        return False
-
-    logger.info(f"\n✓ XML mode executed successfully ({thinking_chunks} chunks)")
-    return True
-
-
 async def main():
     """Run all tests."""
 
     # Test native tool calling
     native_success = await test_native_react()
 
-    # Test XML fallback
-    xml_success = await test_xml_fallback()
-
     logger.info("\n\n" + "=" * 80)
     logger.info("Final Results")
     logger.info("=" * 80)
-    logger.info(f"Native Tool Calling: {'✅ PASS' if native_success else '❌ FAIL'}")
-    logger.info(f"XML Fallback Mode: {'✅ PASS' if xml_success else '❌ FAIL'}")
+    logger.info(f"ReAct Agent: {'✅ PASS' if native_success else '❌ FAIL'}")
     logger.info("=" * 80)
 
 

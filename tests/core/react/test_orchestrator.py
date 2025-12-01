@@ -336,7 +336,6 @@ class TestReActOrchestratorExecution:
 <answer>Your user ID is test_user_123.</answer>"""
 
         mock_agent = self._create_mock_agent_with_streaming([tool_call_response, answer_response])
-        mock_agent.deps_type = MockDeps
 
         context_captured = []
 

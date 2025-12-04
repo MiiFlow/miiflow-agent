@@ -162,38 +162,54 @@ class TestLLMClient:
     
     @pytest.mark.asyncio
     async def test_supported_providers(self):
-        """Test all supported providers can be created."""
+        """Test core supported providers can be created."""
+        # Only test providers that don't require optional dependencies
         providers = [
             ("openai", "gpt-4o-mini"),
             ("anthropic", "claude-3-haiku-20240307"),
-            ("groq", "llama-3.1-8b-instant"),
             ("gemini", "gemini-1.5-flash"),
             ("xai", "grok-beta"),
             ("openrouter", "meta-llama/llama-3.2-3b-instruct:free"),
             ("ollama", "llama3.1:8b"),
         ]
-        
+
         for provider, model in providers:
             with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
                 if provider == "ollama":
                     mock_get_key.return_value = None  # Ollama doesn't need key
                 else:
                     mock_get_key.return_value = "test-key"
-                
+
                 client = LLMClient.create(provider, model)
                 assert client.client.provider_name == provider
                 assert client.client.model == model
-    
+
     @pytest.mark.asyncio
-    async def test_mistral_provider_creation(self):
-        """Test Mistral provider creation."""
+    async def test_groq_provider_creation(self):
+        """Test Groq provider creation (requires groq package)."""
+        try:
+            import groq
+        except ImportError:
+            pytest.skip("groq package not installed")
+
         with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
             mock_get_key.return_value = "test-key"
-            
-            # Mock the actual Mistral client
-            with patch('miiflow_llm.providers.mistral_client.Mistral') as mock_mistral:
-                mock_mistral.return_value = MagicMock()
-                
-                client = LLMClient.create("mistral", "mistral-small-latest")
-                assert client.client.provider_name == "mistral"
-                assert client.client.model == "mistral-small-latest"
+
+            client = LLMClient.create("groq", "llama-3.1-8b-instant")
+            assert client.client.provider_name == "groq"
+            assert client.client.model == "llama-3.1-8b-instant"
+
+    @pytest.mark.asyncio
+    async def test_mistral_provider_creation(self):
+        """Test Mistral provider creation (requires mistralai package)."""
+        try:
+            import mistralai
+        except ImportError:
+            pytest.skip("mistralai package not installed")
+
+        with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
+            mock_get_key.return_value = "test-key"
+
+            client = LLMClient.create("mistral", "mistral-small-latest")
+            assert client.client.provider_name == "mistral"
+            assert client.client.model == "mistral-small-latest"

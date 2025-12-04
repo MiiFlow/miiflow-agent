@@ -84,8 +84,6 @@ def test_context_detection():
     print("  - Tools without ctx parameter: detected as not needing context")
     print("  - Tools with ctx parameter: detected as needing context")
 
-    return True
-
 
 async def test_tool_execution():
     """Test that tools execute correctly with/without context."""

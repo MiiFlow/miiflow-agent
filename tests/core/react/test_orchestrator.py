@@ -547,5 +547,637 @@ Let me think about this problem.
         # Parser should gracefully handle this
 
 
+class TestNativeToolCallingMode:
+    """Test ReAct orchestrator with native tool calling (use_native_tools=True)."""
+
+    def _create_mock_agent_with_native_tools(self, responses: List[dict]):
+        """Helper to create a mock agent for native tool calling mode.
+
+        Args:
+            responses: List of dicts with 'content', 'tool_calls', and optional 'finish_reason'
+        """
+        from miiflow_llm.core.client import StreamChunk
+
+        mock_model_client = MagicMock()
+        mock_model_client.provider_name = "openai"
+        mock_model_client.convert_schema_to_provider_format = MagicMock(side_effect=lambda x: x)
+
+        response_list = list(responses)
+        response_index = [0]
+
+        async def create_stream_generator(response_data):
+            """Create an async generator for a response with optional tool calls."""
+            content = response_data.get("content", "")
+            tool_calls = response_data.get("tool_calls", None)
+
+            # Stream content in chunks
+            chunk_size = 50
+            for i in range(0, len(content), chunk_size):
+                chunk_text = content[i:i + chunk_size]
+                chunk = StreamChunk(
+                    content=content[:i + chunk_size],
+                    delta=chunk_text,
+                    finish_reason=None,
+                    usage=None,
+                    tool_calls=None,
+                )
+                yield chunk
+
+            # Final chunk with tool calls and finish reason
+            final_chunk = StreamChunk(
+                content=content,
+                delta="",
+                finish_reason=response_data.get("finish_reason", "stop"),
+                usage=MagicMock(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+                tool_calls=tool_calls,
+            )
+            yield final_chunk
+
+        async def mock_astream_chat(*args, **kwargs):
+            if response_index[0] < len(response_list):
+                response_data = response_list[response_index[0]]
+                response_index[0] += 1
+                async for chunk in create_stream_generator(response_data):
+                    yield chunk
+
+        mock_model_client.astream_chat = mock_astream_chat
+
+        mock_llm_client = MagicMock()
+        mock_llm_client.client = mock_model_client
+        mock_llm_client._client = mock_model_client
+        mock_llm_client.astream_chat = mock_astream_chat
+        mock_llm_client.tool_registry = ToolRegistry()
+
+        agent = MagicMock()
+        agent.client = mock_llm_client
+        agent.tool_registry = mock_llm_client.tool_registry
+        agent.temperature = 0.7
+        agent.max_tokens = None
+        agent._tools = []
+
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_native_mode_direct_answer(self):
+        """Test native mode with direct answer (no tool calls)."""
+        response = {
+            "content": "<thinking>Simple question.</thinking>\n\n<answer>The answer is 42.</answer>",
+            "tool_calls": None,
+            "finish_reason": "stop"
+        }
+
+        mock_agent = self._create_mock_agent_with_native_tools([response])
+
+        orchestrator = ReActFactory.create_orchestrator(
+            agent=mock_agent,
+            max_steps=5,
+            use_native_tools=True,
+        )
+
+        context = RunContext(deps=None, messages=[])
+        result = await orchestrator.execute("What is the meaning of life?", context)
+
+        assert isinstance(result, ReActResult)
+        assert result.final_answer == "The answer is 42."
+        assert result.stop_reason == StopReason.ANSWER_COMPLETE
+
+    @pytest.mark.asyncio
+    async def test_native_mode_with_tool_call(self):
+        """Test native mode with tool call in response."""
+        # First response: tool call
+        first_response = {
+            "content": "<thinking>I need to calculate.</thinking>",
+            "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "calculator",
+                    "arguments": '{"expression": "2+2"}'
+                }
+            }],
+            "finish_reason": "tool_calls"
+        }
+
+        # Second response: final answer
+        second_response = {
+            "content": "<thinking>Got the result.</thinking>\n\n<answer>2 + 2 equals 4.</answer>",
+            "tool_calls": None,
+            "finish_reason": "stop"
+        }
+
+        mock_agent = self._create_mock_agent_with_native_tools([first_response, second_response])
+
+        @tool("calculator", "Calculate an expression")
+        def calculator(expression: str) -> str:
+            return str(eval(expression))
+
+        mock_agent.tool_registry.register(calculator)
+
+        orchestrator = ReActFactory.create_orchestrator(
+            agent=mock_agent,
+            max_steps=5,
+            use_native_tools=True,
+        )
+
+        context = RunContext(deps=None, messages=[])
+        result = await orchestrator.execute("What is 2 + 2?", context)
+
+        assert isinstance(result, ReActResult)
+        assert "4" in result.final_answer
+        assert result.stop_reason == StopReason.ANSWER_COMPLETE
+
+
+class TestResponseClassification:
+    """Test response classification methods."""
+
+    @pytest.fixture
+    def orchestrator(self):
+        """Create orchestrator with mock components."""
+        mock_agent = MagicMock()
+        mock_agent.client = MagicMock()
+        mock_agent.client.provider_name = "openai"
+        mock_agent.tool_registry = MagicMock()
+        mock_agent.tool_registry.list_tools.return_value = []
+        mock_agent._tools = []
+
+        return ReActFactory.create_orchestrator(
+            agent=mock_agent,
+            max_steps=10,
+        )
+
+    def test_heuristic_detects_final_answer_phrases(self, orchestrator):
+        """Test heuristic detects common final answer indicators."""
+        final_answer_texts = [
+            "The answer is 42.",
+            "In conclusion, the data shows positive growth.",
+            "To summarize, you have 5 items.",
+            "Based on the analysis, the best option is A.",
+            "Therefore, the answer is yes.",
+        ]
+
+        for text in final_answer_texts:
+            assert orchestrator._heuristic_is_final_answer(text) is True, f"Failed for: {text}"
+
+    def test_heuristic_detects_thinking_phrases(self, orchestrator):
+        """Test heuristic detects phrases indicating more work needed."""
+        thinking_texts = [
+            "I need to check the database first.",
+            "Let me analyze the data.",
+            "I should verify this information.",
+            "First, I will search for the answer.",
+            "I'll look into this further.",
+        ]
+
+        for text in thinking_texts:
+            assert orchestrator._heuristic_is_final_answer(text) is False, f"Failed for: {text}"
+
+    def test_heuristic_detects_declarative_statements(self, orchestrator):
+        """Test heuristic detects declarative statements with data."""
+        declarative_texts = [
+            "You have 131 accounts in your database.",
+            "There are 5 items in the list.",
+            "The total is 100 units.",
+        ]
+
+        for text in declarative_texts:
+            assert orchestrator._heuristic_is_final_answer(text) is True, f"Failed for: {text}"
+
+    def test_heuristic_handles_empty_input(self, orchestrator):
+        """Test heuristic handles empty or None input."""
+        assert orchestrator._heuristic_is_final_answer("") is False
+        assert orchestrator._heuristic_is_final_answer(None) is False
+        assert orchestrator._heuristic_is_final_answer("   ") is False
+
+    def test_heuristic_long_text_is_answer(self, orchestrator):
+        """Test heuristic treats long text as final answer."""
+        long_text = "A" * 250  # 250 characters
+        assert orchestrator._heuristic_is_final_answer(long_text) is True
+
+
+class TestToolFuzzyMatching:
+    """Test tool name fuzzy matching for LLM hallucinations."""
+
+    @pytest.fixture
+    def orchestrator_with_tools(self):
+        """Create orchestrator with sample tools."""
+        mock_agent = MagicMock()
+        mock_agent.client = MagicMock()
+        mock_agent.client.provider_name = "openai"
+        mock_agent.tool_registry = ToolRegistry()
+        mock_agent._tools = []
+
+        @tool("Addition", "Add two numbers")
+        def addition(a: int, b: int) -> int:
+            return a + b
+
+        @tool("Multiplication", "Multiply two numbers")
+        def multiplication(a: int, b: int) -> int:
+            return a * b
+
+        @tool("search_database", "Search the database")
+        def search_database(query: str) -> str:
+            return f"Results for: {query}"
+
+        mock_agent.tool_registry.register(addition)
+        mock_agent.tool_registry.register(multiplication)
+        mock_agent.tool_registry.register(search_database)
+
+        return ReActFactory.create_orchestrator(
+            agent=mock_agent,
+            max_steps=10,
+        )
+
+    def test_find_similar_tool_prefix_match(self, orchestrator_with_tools):
+        """Test finding tool by prefix match."""
+        # "Add" should match "Addition"
+        result = orchestrator_with_tools._find_similar_tool("Add")
+        assert result == "Addition"
+
+    def test_find_similar_tool_case_insensitive(self, orchestrator_with_tools):
+        """Test case-insensitive matching."""
+        result = orchestrator_with_tools._find_similar_tool("addition")
+        assert result == "Addition"
+
+        result = orchestrator_with_tools._find_similar_tool("MULTIPLICATION")
+        assert result == "Multiplication"
+
+    def test_find_similar_tool_substring(self, orchestrator_with_tools):
+        """Test substring matching."""
+        result = orchestrator_with_tools._find_similar_tool("search")
+        assert result == "search_database"
+
+    def test_find_similar_tool_no_match(self, orchestrator_with_tools):
+        """Test no match returns None."""
+        result = orchestrator_with_tools._find_similar_tool("completely_different")
+        assert result is None
+
+    def test_find_similar_tool_empty_input(self, orchestrator_with_tools):
+        """Test empty input returns None."""
+        assert orchestrator_with_tools._find_similar_tool("") is None
+        assert orchestrator_with_tools._find_similar_tool(None) is None
+
+    def test_is_similar_enough_basic(self, orchestrator_with_tools):
+        """Test basic similarity check."""
+        # Same string
+        assert orchestrator_with_tools._is_similar_enough("hello", "hello") is True
+
+        # One character difference
+        assert orchestrator_with_tools._is_similar_enough("hello", "hallo") is True
+
+        # Two character difference
+        assert orchestrator_with_tools._is_similar_enough("hello", "hxllx") is True
+
+    def test_is_similar_enough_length_threshold(self, orchestrator_with_tools):
+        """Test length difference threshold."""
+        # More than 2 characters length difference
+        assert orchestrator_with_tools._is_similar_enough("hi", "hello") is False
+        assert orchestrator_with_tools._is_similar_enough("a", "abcd") is False
+
+
+class TestResultBuilding:
+    """Test result building methods."""
+
+    @pytest.fixture
+    def orchestrator(self):
+        """Create orchestrator with mock components."""
+        mock_agent = MagicMock()
+        mock_agent.client = MagicMock()
+        mock_agent.client.provider_name = "openai"
+        mock_agent.tool_registry = MagicMock()
+        mock_agent.tool_registry.list_tools.return_value = []
+        mock_agent._tools = []
+
+        return ReActFactory.create_orchestrator(
+            agent=mock_agent,
+            max_steps=10,
+        )
+
+    def test_build_result_with_final_answer(self, orchestrator):
+        """Test building result when final answer is present."""
+        state = ExecutionState()
+        state.steps = [
+            ReActStep(step_number=1, thought="Thinking", answer="The answer", cost=0.01, tokens_used=100)
+        ]
+        state.final_answer = "The answer"
+
+        result = orchestrator._build_result(state)
+
+        assert result.final_answer == "The answer"
+        assert result.stop_reason == StopReason.ANSWER_COMPLETE
+        assert result.steps_count == 1
+        assert result.total_tokens == 100
+
+    def test_build_result_generates_fallback(self, orchestrator):
+        """Test building result generates fallback when no answer."""
+        state = ExecutionState()
+        state.steps = [
+            ReActStep(step_number=1, thought="Thinking", observation="Some observation")
+        ]
+        state.final_answer = None
+
+        result = orchestrator._build_result(state)
+
+        assert result.stop_reason == StopReason.FORCED_STOP
+        assert "Some observation" in result.final_answer
+
+    def test_build_error_result(self, orchestrator):
+        """Test building error result."""
+        state = ExecutionState()
+        state.steps = [ReActStep(step_number=1, thought="Started")]
+        error = ValueError("Something went wrong")
+
+        result = orchestrator._build_error_result(state, error)
+
+        assert result.stop_reason == StopReason.FORCED_STOP
+        assert "Something went wrong" in result.final_answer
+        assert result.steps_count == 1
+
+    def test_generate_fallback_answer_with_observation(self, orchestrator):
+        """Test fallback answer uses observation."""
+        steps = [ReActStep(step_number=1, thought="T", observation="The data shows X")]
+
+        fallback = orchestrator._generate_fallback_answer(steps)
+
+        assert "The data shows X" in fallback
+
+    def test_generate_fallback_answer_with_thought_only(self, orchestrator):
+        """Test fallback answer uses thought when no observation."""
+        steps = [ReActStep(step_number=1, thought="My analysis is complete")]
+
+        fallback = orchestrator._generate_fallback_answer(steps)
+
+        assert "My analysis is complete" in fallback
+
+    def test_generate_fallback_answer_empty_steps(self, orchestrator):
+        """Test fallback answer for empty steps."""
+        fallback = orchestrator._generate_fallback_answer([])
+
+        assert "No reasoning steps" in fallback
+
+
+class TestErrorHandlingPaths:
+    """Test error handling in orchestrator."""
+
+    def _create_mock_agent_with_streaming(self, responses: List[str]):
+        """Helper to create agent with streaming mock."""
+        from miiflow_llm.core.client import StreamChunk
+
+        mock_model_client = MagicMock()
+        mock_model_client.provider_name = "openai"
+        mock_model_client.convert_schema_to_provider_format = MagicMock(side_effect=lambda x: x)
+
+        response_list = list(responses)
+        response_index = [0]
+
+        async def create_stream_generator(response_text):
+            chunk_size = 50
+            for i in range(0, len(response_text), chunk_size):
+                chunk_text = response_text[i:i + chunk_size]
+                chunk = StreamChunk(
+                    content=response_text[:i + chunk_size],
+                    delta=chunk_text,
+                    finish_reason=None,
+                    usage=None,
+                    tool_calls=None,
+                )
+                yield chunk
+
+            final_chunk = StreamChunk(
+                content=response_text,
+                delta="",
+                finish_reason="stop",
+                usage=MagicMock(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+                tool_calls=None,
+            )
+            yield final_chunk
+
+        async def mock_astream_chat(*args, **kwargs):
+            if response_index[0] < len(response_list):
+                response_text = response_list[response_index[0]]
+                response_index[0] += 1
+                async for chunk in create_stream_generator(response_text):
+                    yield chunk
+
+        mock_model_client.astream_chat = mock_astream_chat
+
+        mock_llm_client = MagicMock()
+        mock_llm_client.client = mock_model_client
+        mock_llm_client._client = mock_model_client
+        mock_llm_client.astream_chat = mock_astream_chat
+        mock_llm_client.tool_registry = ToolRegistry()
+
+        agent = MagicMock()
+        agent.client = mock_llm_client
+        agent.tool_registry = mock_llm_client.tool_registry
+        agent.temperature = 0.7
+        agent.max_tokens = None
+        agent._tools = []
+
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_tool_not_found_with_fuzzy_correction(self):
+        """Test that tool not found triggers fuzzy matching."""
+        # LLM requests "Add" but actual tool is "Addition"
+        response = """<thinking>Let me add the numbers.</thinking>
+
+<tool_call name="Add">{"a": 2, "b": 3}</tool_call>"""
+
+        answer_response = """<thinking>Got the result.</thinking>
+
+<answer>2 + 3 equals 5.</answer>"""
+
+        mock_agent = self._create_mock_agent_with_streaming([response, answer_response])
+
+        @tool("Addition", "Add two numbers")
+        def addition(a: int, b: int) -> int:
+            return a + b
+
+        mock_agent.tool_registry.register(addition)
+
+        orchestrator = ReActFactory.create_orchestrator(
+            agent=mock_agent,
+            max_steps=5,
+            use_native_tools=False,
+        )
+
+        context = RunContext(deps=None, messages=[])
+        result = await orchestrator.execute("What is 2 + 3?", context)
+
+        # Should still complete because of fuzzy matching
+        assert result.final_answer is not None
+
+    @pytest.mark.asyncio
+    async def test_handles_malformed_tool_input(self):
+        """Test graceful handling of malformed tool input."""
+        # Tool call with invalid JSON
+        response = """<thinking>Using tool.</thinking>
+
+<tool_call name="search">not valid json</tool_call>"""
+
+        answer_response = """<thinking>I'll provide an answer anyway.</thinking>
+
+<answer>Here's what I found.</answer>"""
+
+        mock_agent = self._create_mock_agent_with_streaming([response, answer_response])
+
+        @tool("search", "Search for something")
+        def search(query: str) -> str:
+            return f"Results: {query}"
+
+        mock_agent.tool_registry.register(search)
+
+        orchestrator = ReActFactory.create_orchestrator(
+            agent=mock_agent,
+            max_steps=5,
+            use_native_tools=False,
+        )
+
+        context = RunContext(deps=None, messages=[])
+        result = await orchestrator.execute("Search for something", context)
+
+        # Should not crash, should complete
+        assert result is not None
+
+
+class TestSanitizeErrorMessage:
+    """Test error message sanitization."""
+
+    def test_removes_stack_traces(self):
+        """Test that stack traces are removed."""
+        error_msg = """Traceback (most recent call last):
+  File "/path/to/file.py", line 123, in function
+    do_something()
+  File "/path/to/other.py", line 456, in other_function
+    raise ValueError("The actual error")
+ValueError: The actual error"""
+
+        result = _sanitize_error_message(error_msg)
+
+        assert "Traceback" not in result
+        assert "File " not in result
+        assert "line " not in result
+        # Should preserve the actual error message
+        assert "actual error" in result.lower() or "ValueError" in result
+
+    def test_handles_empty_input(self):
+        """Test handling of empty input."""
+        assert _sanitize_error_message("") == "Unknown error occurred"
+        assert _sanitize_error_message(None) == "Unknown error occurred"
+
+    def test_truncates_long_messages(self):
+        """Test that very long messages are truncated."""
+        long_msg = "A" * 1000
+        result = _sanitize_error_message(long_msg)
+
+        assert len(result) <= 503  # 500 + "..."
+        assert result.endswith("...")
+
+    def test_preserves_simple_error(self):
+        """Test that simple error messages are preserved."""
+        simple_error = "Connection failed: timeout after 30s"
+        result = _sanitize_error_message(simple_error)
+
+        assert result == simple_error
+
+
+class TestEventStreamingIntegration:
+    """Test event streaming during orchestrator execution."""
+
+    def _create_mock_agent_with_streaming(self, responses: List[str]):
+        """Helper to create agent with streaming mock."""
+        from miiflow_llm.core.client import StreamChunk
+
+        mock_model_client = MagicMock()
+        mock_model_client.provider_name = "openai"
+        mock_model_client.convert_schema_to_provider_format = MagicMock(side_effect=lambda x: x)
+
+        response_list = list(responses)
+        response_index = [0]
+
+        async def create_stream_generator(response_text):
+            chunk_size = 50
+            for i in range(0, len(response_text), chunk_size):
+                chunk_text = response_text[i:i + chunk_size]
+                chunk = StreamChunk(
+                    content=response_text[:i + chunk_size],
+                    delta=chunk_text,
+                    finish_reason=None,
+                    usage=None,
+                    tool_calls=None,
+                )
+                yield chunk
+
+            final_chunk = StreamChunk(
+                content=response_text,
+                delta="",
+                finish_reason="stop",
+                usage=MagicMock(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+                tool_calls=None,
+            )
+            yield final_chunk
+
+        async def mock_astream_chat(*args, **kwargs):
+            if response_index[0] < len(response_list):
+                response_text = response_list[response_index[0]]
+                response_index[0] += 1
+                async for chunk in create_stream_generator(response_text):
+                    yield chunk
+
+        mock_model_client.astream_chat = mock_astream_chat
+
+        mock_llm_client = MagicMock()
+        mock_llm_client.client = mock_model_client
+        mock_llm_client._client = mock_model_client
+        mock_llm_client.astream_chat = mock_astream_chat
+        mock_llm_client.tool_registry = ToolRegistry()
+
+        agent = MagicMock()
+        agent.client = mock_llm_client
+        agent.tool_registry = mock_llm_client.tool_registry
+        agent.temperature = 0.7
+        agent.max_tokens = None
+        agent._tools = []
+
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_events_published_during_execution(self):
+        """Test that events are published during execution."""
+        response = """<thinking>Let me think about this.</thinking>
+
+<answer>The answer is 42.</answer>"""
+
+        mock_agent = self._create_mock_agent_with_streaming([response])
+
+        orchestrator = ReActFactory.create_orchestrator(
+            agent=mock_agent,
+            max_steps=5,
+            use_native_tools=False,
+        )
+
+        # Collect events
+        events_received = []
+
+        def event_handler(event):
+            events_received.append(event)
+
+        orchestrator.event_bus.subscribe(event_handler)
+
+        context = RunContext(deps=None, messages=[])
+        await orchestrator.execute("What is the answer?", context)
+
+        # Should have received events
+        assert len(events_received) > 0
+
+        # Should have step_start event
+        event_types = [e.event_type for e in events_received]
+        assert ReActEventType.STEP_START in event_types
+
+
+# Import the sanitize function for testing
+from miiflow_llm.core.react.orchestrator import _sanitize_error_message
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

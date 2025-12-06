@@ -6,6 +6,9 @@ Tests:
 2. Streaming - real-time token streaming
 3. Agent mode - tool/function calling
 4. Image input - multimodal understanding
+
+Note: These tests require real API keys and are excluded by default (marked with @pytest.mark.smoke).
+Run with: pytest -m smoke tests/smoke/
 """
 
 import asyncio
@@ -21,6 +24,23 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+
+def is_ci_environment() -> bool:
+    """Check if running in a CI/CD environment."""
+    ci_env_vars = [
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "TRAVIS",
+        "JENKINS_URL",
+        "BUILDKITE",
+        "DRONE",
+        "TEAMCITY_VERSION",
+        "TF_BUILD",
+    ]
+    return any(os.getenv(var) for var in ci_env_vars)
 
 
 # Helper function to extract tool call information (provider-agnostic)
@@ -88,9 +108,21 @@ PROVIDERS_MULTIMODAL = [
 
 
 def skip_if_no_api_key(api_key_env: str):
-    """Skip test if API key is not available."""
+    """Skip test if API key is not available or in CI without keys."""
+    api_key = os.getenv(api_key_env)
+    has_valid_key = (
+        api_key
+        and not api_key.startswith("your-")
+        and not api_key.startswith("sk-test")
+        and api_key != "test"
+    )
+
+    # Always skip in CI if no valid API key
+    if is_ci_environment() and not has_valid_key:
+        return pytest.mark.skip(reason=f"Skipping in CI: {api_key_env} not configured")
+
     return pytest.mark.skipif(
-        not os.getenv(api_key_env) or os.getenv(api_key_env) == f"your-{api_key_env.lower().replace('_', '-')}-if-available",
+        not has_valid_key,
         reason=f"{api_key_env} not configured"
     )
 

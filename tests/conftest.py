@@ -1,10 +1,55 @@
 """Test configuration and fixtures."""
 
+import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from typing import AsyncGenerator, List, Dict, Any
 
 from miiflow_llm.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
+
+
+def is_ci_environment() -> bool:
+    """Check if running in a CI/CD environment."""
+    ci_env_vars = [
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "TRAVIS",
+        "JENKINS_URL",
+        "BUILDKITE",
+        "DRONE",
+        "TEAMCITY_VERSION",
+        "TF_BUILD",  # Azure DevOps
+    ]
+    return any(os.getenv(var) for var in ci_env_vars)
+
+
+def has_api_key(env_var: str) -> bool:
+    """Check if an API key environment variable is set and valid."""
+    value = os.getenv(env_var)
+    if not value:
+        return False
+    # Check for placeholder values
+    if value.startswith("your-") or value.startswith("sk-test") or value == "test":
+        return False
+    return True
+
+
+def skip_in_ci_without_api_key(api_key_env: str):
+    """Skip test in CI environment if API key is not available."""
+    return pytest.mark.skipif(
+        is_ci_environment() and not has_api_key(api_key_env),
+        reason=f"Skipping in CI: {api_key_env} not configured"
+    )
+
+
+# Register custom markers
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line(
+        "markers", "requires_api_key(env_var): mark test as requiring an API key"
+    )
 
 
 @pytest.fixture

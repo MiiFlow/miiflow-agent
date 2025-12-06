@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from miiflow_llm.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
 
+# Skip entire module if mistralai is not installed
+pytest.importorskip("mistralai", reason="mistralai package not installed")
 
 
 class TestMistralClient:

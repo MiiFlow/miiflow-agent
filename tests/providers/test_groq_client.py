@@ -4,8 +4,12 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import List
 
-from miiflow_llm.providers.groq_client import GroqClient
 from miiflow_llm.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
+
+# Skip entire module if groq is not installed
+pytest.importorskip("groq", reason="groq package not installed")
+
+from miiflow_llm.providers.groq_client import GroqClient
 
 
 class TestGroqClient:

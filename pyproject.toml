@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "miiflow-llm"
-version = "0.3.0"
+version = "0.3.1"
 description = "A lightweight, unified interface for LLM providers with streaming, tool calling, and structured output support"
 authors = [ "Yaozhong Kang <yaozhong@miiflow.ai>" , "Debjyoti Ray <dev@miiflow.ai>" ]
 maintainers = [ "Yaozhong Kang <yaozhong@miiflow.ai>" ]

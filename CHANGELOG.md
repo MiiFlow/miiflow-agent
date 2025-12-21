@@ -2,6 +2,15 @@
 
 All notable changes to miiflow-llm will be documented here.
 
+## [0.3.1] - 2025-12-20
+
+### Added
+- New xAI Grok models: grok-4-1-fast-reasoning, grok-4-1-fast-non-reasoning, grok-code-fast-1, grok-4-fast-reasoning, grok-4-fast-non-reasoning, grok-4-0709, grok-3, grok-3-mini, grok-2-vision-1212
+
+### Removed
+- Deprecated OpenAI models: o1-preview, o1-mini
+- Deprecated xAI models: grok-beta, grok-vision-beta
+
 ## [0.3.0] - 2025-12-12
 
 ### Added

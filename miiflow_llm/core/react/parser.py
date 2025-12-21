@@ -72,6 +72,14 @@ class ReActParser:
         """Parse XML chunks incrementally (delegates to XML parser)."""
         return self.xml_parser.parse_streaming(chunk)
 
+    def finalize(self):
+        """Finalize parsing and flush any remaining buffered content.
+
+        IMPORTANT: Call this after streaming ends to ensure all content is emitted.
+        Delegates to the underlying XML parser's finalize method.
+        """
+        return self.xml_parser.finalize()
+
     @property
     def has_parsed_content(self) -> bool:
         """Check if any content was successfully parsed."""

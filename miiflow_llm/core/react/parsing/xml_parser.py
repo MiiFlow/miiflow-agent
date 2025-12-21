@@ -239,6 +239,92 @@ class XMLReActParser:
                         data={"delta": chunk_to_emit}
                     )
 
+    def finalize(self) -> Iterator[ParseEvent]:
+        """Finalize parsing and flush any remaining buffered content.
+
+        IMPORTANT: Call this method after streaming ends to ensure all content
+        is properly emitted. This handles the case where the LLM doesn't output
+        a closing </answer> tag - the held-back buffer content needs to be flushed.
+
+        Yields:
+            ParseEvent: Any remaining events from buffered content
+        """
+        # If we're in answer mode and have buffered content, flush it
+        if self.in_answer and self.buffer:
+            # Check one more time for closing tag
+            answer_end_match = re.search(r'</answer>', self.buffer, re.IGNORECASE)
+            if answer_end_match:
+                # Found closing tag - emit final chunk and complete
+                final_chunk = self.buffer[:answer_end_match.start()]
+                if final_chunk:
+                    self.current_answer += final_chunk
+                    yield ParseEvent(
+                        event_type=ParseEventType.ANSWER_CHUNK,
+                        data={"delta": final_chunk}
+                    )
+                self.in_answer = False
+                yield ParseEvent(
+                    event_type=ParseEventType.ANSWER_COMPLETE,
+                    data={"answer": self.current_answer}
+                )
+                self.buffer = self.buffer[answer_end_match.end():]
+            else:
+                # No closing tag found - flush remaining buffer as final chunk
+                # This handles LLMs that don't output </answer> properly
+                if self.buffer:
+                    self.current_answer += self.buffer
+                    yield ParseEvent(
+                        event_type=ParseEventType.ANSWER_CHUNK,
+                        data={"delta": self.buffer}
+                    )
+                    self.buffer = ""
+
+                # Emit ANSWER_COMPLETE with whatever we accumulated
+                # (even without closing tag, we need to signal completion)
+                self.in_answer = False
+                yield ParseEvent(
+                    event_type=ParseEventType.ANSWER_COMPLETE,
+                    data={"answer": self.current_answer}
+                )
+
+        # If we're in thinking mode and have buffered content, flush it
+        elif self.in_thinking and self.buffer:
+            # Check for closing tag
+            closing_match = re.search(r'</thinking>', self.buffer, re.IGNORECASE)
+            if closing_match:
+                remaining_content = self.buffer[:closing_match.start()]
+                if remaining_content:
+                    self.current_thinking += remaining_content
+                    yield ParseEvent(
+                        event_type=ParseEventType.THINKING,
+                        data={"delta": remaining_content}
+                    )
+                self.thinking_complete = True
+                self.in_thinking = False
+                self.has_parsed_content = True
+                yield ParseEvent(
+                    event_type=ParseEventType.THINKING_COMPLETE,
+                    data={"thought": self.current_thinking.strip()}
+                )
+                self.buffer = self.buffer[closing_match.end():]
+            else:
+                # No closing tag - flush remaining as thinking
+                if self.buffer:
+                    self.current_thinking += self.buffer
+                    yield ParseEvent(
+                        event_type=ParseEventType.THINKING,
+                        data={"delta": self.buffer}
+                    )
+                    self.buffer = ""
+
+                self.thinking_complete = True
+                self.in_thinking = False
+                self.has_parsed_content = True
+                yield ParseEvent(
+                    event_type=ParseEventType.THINKING_COMPLETE,
+                    data={"thought": self.current_thinking.strip()}
+                )
+
     def parse_complete(self, response: str) -> Dict[str, Any]:
         """Parse a complete XML response (non-streaming).
 

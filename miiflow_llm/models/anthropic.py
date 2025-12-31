@@ -251,3 +251,35 @@ def supports_thinking(model: str) -> bool:
             return config.reasoning
 
     return False
+
+
+def supports_native_mcp(model: str) -> bool:
+    """Check if model supports native MCP via the beta API.
+
+    Native MCP allows the Anthropic API to connect directly to MCP servers
+    and execute tools server-side, rather than requiring client-side handling.
+
+    All Claude models support native MCP via the mcp-client-2025-04-04 beta.
+
+    Args:
+        model: The model identifier
+
+    Returns:
+        True if model supports native MCP (all Claude models do)
+    """
+    # All Claude models support native MCP via beta API
+    # Check if it's a known Claude model
+    if model in ANTHROPIC_MODELS:
+        return True
+
+    # Check if model identifier matches any config
+    for config in ANTHROPIC_MODELS.values():
+        if config.model_identifier == model:
+            return True
+
+    # Check partial match for Claude models
+    model_lower = model.lower()
+    if "claude" in model_lower:
+        return True
+
+    return False

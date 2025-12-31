@@ -358,6 +358,35 @@ class ReActOrchestrator:
             step.tokens_used = tokens_used
             step.cost = cost
 
+            # Finalize XML parser to flush any remaining buffered content
+            # This is critical for handling LLMs that don't output closing </answer> tags
+            # The parser holds back 10 chars to handle split tags, which need to be flushed
+            from .parsing.xml_parser import ParseEventType
+
+            for parse_event in self.parser.finalize():
+                if parse_event.event_type == ParseEventType.ANSWER_CHUNK:
+                    delta = parse_event.data["delta"]
+                    if not hasattr(state, "accumulated_answer"):
+                        state.accumulated_answer = ""
+                    state.accumulated_answer += delta
+                    await self.event_bus.publish(
+                        EventFactory.final_answer_chunk(
+                            state.current_step, delta, state.accumulated_answer
+                        )
+                    )
+                elif parse_event.event_type == ParseEventType.ANSWER_COMPLETE:
+                    step.answer = _strip_xml_tags_from_answer(parse_event.data["answer"])
+                elif parse_event.event_type == ParseEventType.THINKING:
+                    delta = parse_event.data["delta"]
+                    await self.event_bus.publish(
+                        EventFactory.thinking_chunk(state.current_step, delta, buffer)
+                    )
+                elif parse_event.event_type == ParseEventType.THINKING_COMPLETE:
+                    step.thought = parse_event.data["thought"]
+                    await self.event_bus.publish(
+                        EventFactory.thought(state.current_step, step.thought)
+                    )
+
             # Reconstruct assistant message from buffer
             # This preserves the complete response including XML tags for context
             assistant_content = buffer.strip()

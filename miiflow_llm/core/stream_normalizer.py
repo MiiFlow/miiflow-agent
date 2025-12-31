@@ -26,6 +26,10 @@ class StreamState:
     current_tool_use: Optional[Dict[str, Any]] = None
     accumulated_tool_json: str = ""
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    # MCP-specific state
+    current_mcp_tool_use: Optional[Dict[str, Any]] = None
+    accumulated_mcp_tool_json: str = ""
+    mcp_tool_results: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class BaseStreamNormalizer(ABC):
@@ -193,7 +197,12 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
     """
 
     def normalize_chunk(self, chunk: Any) -> StreamChunk:
-        """Normalize Anthropic streaming format to unified StreamChunk."""
+        """Normalize Anthropic streaming format to unified StreamChunk.
+
+        Handles both regular tool_use blocks and MCP-specific blocks:
+        - mcp_tool_use: Native MCP tool invocation (server-side)
+        - mcp_tool_result: Result from MCP tool execution
+        """
         delta = ""
         finish_reason = None
         usage = None
@@ -225,9 +234,17 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         return self._build_chunk(delta, finish_reason, usage, tool_calls)
 
     def _handle_content_block_start(self, chunk: Any) -> Optional[List[Dict[str, Any]]]:
-        """Handle content_block_start event."""
+        """Handle content_block_start event.
+
+        Handles both regular tool_use and MCP-specific blocks:
+        - tool_use: Regular tool invocation
+        - mcp_tool_use: Native MCP tool invocation
+        - mcp_tool_result: Result from MCP tool (content extracted as text)
+        """
         if hasattr(chunk, "content_block") and hasattr(chunk.content_block, "type"):
-            if chunk.content_block.type == "tool_use":
+            block_type = chunk.content_block.type
+
+            if block_type == "tool_use":
                 tool_name = chunk.content_block.name
                 original_name = self._restore_tool_name(tool_name)
 
@@ -240,29 +257,85 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
 
                 # Yield tool call immediately
                 return [self._state.current_tool_use]
+
+            elif block_type == "mcp_tool_use":
+                # Native MCP tool invocation (server-side execution)
+                tool_name = getattr(chunk.content_block, "name", "")
+                server_name = getattr(chunk.content_block, "server_name", None)
+
+                self._state.current_mcp_tool_use = {
+                    "id": getattr(chunk.content_block, "id", ""),
+                    "type": "mcp_function",
+                    "function": {"name": tool_name, "arguments": {}},
+                    "server_name": server_name,
+                }
+                self._state.accumulated_mcp_tool_json = ""
+
+                # Yield MCP tool call immediately
+                return [self._state.current_mcp_tool_use]
+
+            elif block_type == "mcp_tool_result":
+                # MCP tool result - store for metadata
+                is_error = getattr(chunk.content_block, "is_error", False)
+                self._state.mcp_tool_results.append({
+                    "tool_use_id": getattr(chunk.content_block, "tool_use_id", ""),
+                    "is_error": is_error,
+                    "content": "",  # Will be accumulated in delta
+                })
+
         return None
 
     def _handle_content_block_delta(self, chunk: Any) -> str:
-        """Handle content_block_delta event."""
+        """Handle content_block_delta event.
+
+        Handles deltas for text, tool_use JSON, MCP tool_use JSON, and MCP tool results.
+        """
         if hasattr(chunk.delta, "text"):
             return chunk.delta.text
 
-        if hasattr(chunk.delta, "partial_json") and self._state.current_tool_use:
-            self._state.accumulated_tool_json += chunk.delta.partial_json
+        if hasattr(chunk.delta, "partial_json"):
+            # Handle regular tool_use JSON accumulation
+            if self._state.current_tool_use:
+                self._state.accumulated_tool_json += chunk.delta.partial_json
 
-            # Try to parse accumulated JSON
-            try:
-                self._state.current_tool_use["function"]["arguments"] = json.loads(
-                    self._state.accumulated_tool_json
-                )
-            except json.JSONDecodeError:
-                # Still accumulating
-                pass
+                # Try to parse accumulated JSON
+                try:
+                    self._state.current_tool_use["function"]["arguments"] = json.loads(
+                        self._state.accumulated_tool_json
+                    )
+                except json.JSONDecodeError:
+                    # Still accumulating
+                    pass
+
+            # Handle MCP tool_use JSON accumulation
+            elif self._state.current_mcp_tool_use:
+                self._state.accumulated_mcp_tool_json += chunk.delta.partial_json
+
+                # Try to parse accumulated JSON
+                try:
+                    self._state.current_mcp_tool_use["function"]["arguments"] = json.loads(
+                        self._state.accumulated_mcp_tool_json
+                    )
+                except json.JSONDecodeError:
+                    # Still accumulating
+                    pass
+
+        # Handle MCP tool result content
+        if self._state.mcp_tool_results and hasattr(chunk.delta, "type"):
+            if chunk.delta.type == "text" and hasattr(chunk.delta, "text"):
+                # Accumulate text content from MCP result
+                if self._state.mcp_tool_results:
+                    self._state.mcp_tool_results[-1]["content"] += chunk.delta.text
+                return chunk.delta.text
 
         return ""
 
     def _handle_content_block_stop(self) -> Optional[List[Dict[str, Any]]]:
-        """Handle content_block_stop event."""
+        """Handle content_block_stop event.
+
+        Handles both regular tool_use and MCP tool_use blocks.
+        """
+        # Handle regular tool_use block completion
         if self._state.current_tool_use:
             if self._state.accumulated_tool_json:
                 try:
@@ -279,6 +352,25 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             self._state.accumulated_tool_json = ""
 
             return result
+
+        # Handle MCP tool_use block completion
+        if self._state.current_mcp_tool_use:
+            if self._state.accumulated_mcp_tool_json:
+                try:
+                    self._state.current_mcp_tool_use["function"]["arguments"] = json.loads(
+                        self._state.accumulated_mcp_tool_json
+                    )
+                except json.JSONDecodeError:
+                    self._state.current_mcp_tool_use["function"]["arguments"] = {}
+
+            self._state.tool_calls.append(self._state.current_mcp_tool_use)
+            result = [self._state.current_mcp_tool_use]
+
+            self._state.current_mcp_tool_use = None
+            self._state.accumulated_mcp_tool_json = ""
+
+            return result
+
         return None
 
     def _extract_usage(self, chunk: Any) -> Optional[TokenCount]:

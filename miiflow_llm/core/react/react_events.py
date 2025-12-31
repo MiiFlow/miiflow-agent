@@ -1,10 +1,10 @@
-"""Event dataclasses for ReAct and Plan & Execute systems."""
+"""Event dataclasses for ReAct, Plan & Execute, and Multi-Agent systems."""
 
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
-from .enums import ReActEventType, PlanExecuteEventType
+from .enums import MultiAgentEventType, ParallelPlanEventType, PlanExecuteEventType, ReActEventType
 
 
 @dataclass
@@ -38,6 +38,40 @@ class PlanExecuteEvent:
     """Event emitted during Plan and Execute."""
 
     event_type: PlanExecuteEventType
+    data: Dict[str, Any]
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert event to dictionary."""
+        return {
+            "event_type": self.event_type.value,
+            "data": self.data,
+            "timestamp": self.timestamp,
+        }
+
+
+@dataclass
+class ParallelPlanEvent:
+    """Event emitted during Parallel Plan execution."""
+
+    event_type: ParallelPlanEventType
+    data: Dict[str, Any]
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert event to dictionary."""
+        return {
+            "event_type": self.event_type.value,
+            "data": self.data,
+            "timestamp": self.timestamp,
+        }
+
+
+@dataclass
+class MultiAgentEvent:
+    """Event emitted during Multi-Agent execution."""
+
+    event_type: MultiAgentEventType
     data: Dict[str, Any]
     timestamp: float = field(default_factory=time.time)
 

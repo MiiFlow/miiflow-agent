@@ -322,3 +322,159 @@ class PlanExecuteResult:
             "success_rate": self.success_rate,
             "metadata": self.metadata,
         }
+
+
+# Parallel Plan Execution Data Structures
+
+
+@dataclass
+class ExecutionWave:
+    """A wave of subtasks that can execute in parallel."""
+
+    wave_number: int
+    subtasks: List[SubTask]
+    parallel_count: int = 0
+
+    # Execution metrics
+    execution_time: float = 0.0
+
+    def __post_init__(self):
+        """Calculate derived fields."""
+        if not self.parallel_count:
+            self.parallel_count = len(self.subtasks)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert wave to dictionary."""
+        return {
+            "wave_number": self.wave_number,
+            "subtasks": [st.to_dict() for st in self.subtasks],
+            "parallel_count": self.parallel_count,
+            "execution_time": self.execution_time,
+        }
+
+
+# Multi-Agent Execution Data Structures
+
+
+@dataclass
+class SubAgentConfig:
+    """Configuration for a specialized subagent."""
+
+    name: str
+    role: str  # "researcher", "analyzer", "coder", "summarizer", etc.
+    focus: str  # Specific aspect this agent should focus on
+    query: str  # The specific query/task for this subagent
+    output_key: str  # Unique key for shared state
+
+    # Optional customization
+    system_prompt: Optional[str] = None
+    max_steps: int = 10
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert config to dictionary."""
+        return {
+            "name": self.name,
+            "role": self.role,
+            "focus": self.focus,
+            "query": self.query,
+            "output_key": self.output_key,
+            "system_prompt": self.system_prompt,
+            "max_steps": self.max_steps,
+        }
+
+
+@dataclass
+class SubAgentResult:
+    """Result from a single subagent execution."""
+
+    agent_name: str
+    role: str
+    output_key: str
+    result: Optional[str] = None
+    success: bool = True
+    error: Optional[str] = None
+
+    # Performance metrics
+    execution_time: float = 0.0
+    tokens_used: int = 0
+    cost: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert result to dictionary."""
+        return {
+            "agent_name": self.agent_name,
+            "role": self.role,
+            "output_key": self.output_key,
+            "result": self.result,
+            "success": self.success,
+            "error": self.error,
+            "execution_time": self.execution_time,
+            "tokens_used": self.tokens_used,
+            "cost": self.cost,
+        }
+
+
+@dataclass
+class SubAgentPlan:
+    """Plan for subagent allocation."""
+
+    reasoning: str
+    subagent_configs: List[SubAgentConfig]
+
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert plan to dictionary."""
+        return {
+            "reasoning": self.reasoning,
+            "subagent_configs": [cfg.to_dict() for cfg in self.subagent_configs],
+            "timestamp": self.timestamp,
+        }
+
+
+@dataclass
+class MultiAgentResult:
+    """Result of Multi-Agent orchestration."""
+
+    subagent_results: List[SubAgentResult]
+    final_answer: str
+    stop_reason: StopReason
+
+    # Performance metrics
+    total_cost: float = 0.0
+    total_execution_time: float = 0.0
+    total_tokens: int = 0
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def success_count(self) -> int:
+        """Number of successful subagents."""
+        return sum(1 for r in self.subagent_results if r.success)
+
+    @property
+    def failure_count(self) -> int:
+        """Number of failed subagents."""
+        return sum(1 for r in self.subagent_results if not r.success)
+
+    @property
+    def success_rate(self) -> float:
+        """Percentage of subagents that completed successfully."""
+        if not self.subagent_results:
+            return 0.0
+        return (self.success_count / len(self.subagent_results)) * 100
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert result to dictionary."""
+        return {
+            "subagent_results": [r.to_dict() for r in self.subagent_results],
+            "final_answer": self.final_answer,
+            "stop_reason": self.stop_reason.value,
+            "total_cost": self.total_cost,
+            "total_execution_time": self.total_execution_time,
+            "total_tokens": self.total_tokens,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count,
+            "success_rate": self.success_rate,
+            "metadata": self.metadata,
+        }

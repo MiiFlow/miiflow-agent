@@ -27,6 +27,7 @@ Usage:
 
 from .mcp_connection import (
     MCPServerConfig,
+    NativeMCPServerConfig,
     MCPServerConnection,
     StdioMCPConnection,
     SSEMCPConnection,
@@ -39,6 +40,7 @@ from .mcp_manager import MCPToolManager
 __all__ = [
     # Configuration
     "MCPServerConfig",
+    "NativeMCPServerConfig",
     # Connection classes
     "MCPServerConnection",
     "StdioMCPConnection",

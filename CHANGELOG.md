@@ -2,6 +2,28 @@
 
 All notable changes to miiflow-llm will be documented here.
 
+## [0.4.0] - 2025-12-30
+
+### Added
+- **Global Callback System**: New `CallbackRegistry` for registering listeners on LLM events (token usage, errors, agent lifecycle). Includes `@on_post_call` decorator and `callback_context` for passing metadata through calls
+- **Multi-Agent Orchestrator [beta]**: New orchestrator for parallel subagent execution with lead agent planning and coordination. Supports dynamic team allocation based on query complexity
+- **Parallel Plan Orchestrator [beta]**: Wave-based parallel execution of independent subtasks. Topological sorting into execution waves for up to 90% reduction in execution time for parallelizable tasks
+- **AG-UI Protocol Support**: Native support for Agent-User Interaction Protocol via optional `agui` extra. New `AGUIEventFactory` for creating standardized AG-UI events
+- **Shared Agent State**: Thread-safe shared state module (`SharedAgentState`) for multi-agent coordination following Google ADK patterns
+
+### Changed
+- Enhanced event system with new event types for multi-agent and parallel execution workflows
+- Improved tool executor with better context handling for nested agent execution
+
+## [0.3.1] - 2025-12-20
+
+### Added
+- New xAI Grok models: grok-4-1-fast-reasoning, grok-4-1-fast-non-reasoning, grok-code-fast-1, grok-4-fast-reasoning, grok-4-fast-non-reasoning, grok-4-0709, grok-3, grok-3-mini, grok-2-vision-1212
+
+### Removed
+- Deprecated OpenAI models: o1-preview, o1-mini
+- Deprecated xAI models: grok-beta, grok-vision-beta
+
 ## [0.3.0] - 2025-12-12
 
 ### Added

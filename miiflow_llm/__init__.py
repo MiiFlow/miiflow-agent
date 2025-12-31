@@ -40,6 +40,28 @@ from .core.tools import tool, FunctionTool, ToolRegistry
 # Metrics
 from .core.metrics import LLMMetrics, MetricsCollector, TokenCount, UsageData
 
+# Callbacks
+from .core.callbacks import (
+    CallbackContext,
+    CallbackEvent,
+    CallbackEventType,
+    CallbackRegistry,
+    clear,
+    get_global_registry,
+    on_agent_run_end,
+    on_agent_run_start,
+    on_error,
+    on_post_call,
+    register,
+    unregister,
+)
+from .core.callback_context import (
+    callback_context,
+    get_callback_context,
+    reset_callback_context,
+    set_callback_context,
+)
+
 # Exceptions
 from .core.exceptions import (
     AuthenticationError,
@@ -81,6 +103,23 @@ __all__ = [
     "TokenCount",
     "UsageData",
     "MetricsCollector",
+    # Callbacks
+    "CallbackContext",
+    "CallbackEvent",
+    "CallbackEventType",
+    "CallbackRegistry",
+    "callback_context",
+    "clear",
+    "get_callback_context",
+    "get_global_registry",
+    "on_agent_run_end",
+    "on_agent_run_start",
+    "on_error",
+    "on_post_call",
+    "register",
+    "reset_callback_context",
+    "set_callback_context",
+    "unregister",
     # Exceptions
     "MiiflowLLMError",
     "ProviderError",

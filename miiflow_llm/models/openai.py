@@ -7,8 +7,6 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # Models that use max_completion_tokens instead of max_tokens
 _REASONING_MODELS = {
     "o1",
-    "o1-mini",
-    "o1-preview",
     "o1-pro",
     "o3",
     "o3-mini",
@@ -256,40 +254,6 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=15.0,
         output_cost_hint=60.0,
     ),
-    "o1-preview": ModelConfig(
-        model_identifier="o1-preview",
-        name="o1-preview",
-        description="Early preview of OpenAI's reasoning model that thinks step-by-step.",
-        support_images=False,
-        support_files=False,
-        support_streaming=False,
-        supports_json_mode=False,
-        supports_tool_call=False,
-        reasoning=True,
-        maximum_context_tokens=128000,
-        maximum_output_tokens=32768,
-        token_param_name="max_completion_tokens",
-        supports_temperature=False,
-        input_cost_hint=15.0,
-        output_cost_hint=60.0,
-    ),
-    "o1-mini": ModelConfig(
-        model_identifier="o1-mini",
-        name="o1-mini",
-        description="Faster and more affordable reasoning model optimized for coding and math.",
-        support_images=False,
-        support_files=False,
-        support_streaming=False,
-        supports_json_mode=False,
-        supports_tool_call=False,
-        reasoning=True,
-        maximum_context_tokens=128000,
-        maximum_output_tokens=65536,
-        token_param_name="max_completion_tokens",
-        supports_temperature=False,
-        input_cost_hint=3.0,
-        output_cost_hint=12.0,
-    ),
     "o1-pro": ModelConfig(
         model_identifier="o1-pro",
         name="o1-pro",
@@ -387,8 +351,6 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
             "gpt-5-mini": 128000,
             "gpt-5-nano": 128000,
             "o1": 100000,
-            "o1-preview": 32768,
-            "o1-mini": 65536,
             "o1-pro": 100000,
             "o3": 100000,
             "o3-mini": 100000,
@@ -487,3 +449,34 @@ def supports_temperature(model: str) -> bool:
             return False
 
     return True
+
+
+def supports_native_mcp(model: str) -> bool:
+    """Check if model supports native MCP via the Responses API.
+
+    Native MCP allows the OpenAI API to connect directly to MCP servers
+    and execute tools server-side via the Responses API endpoint.
+
+    Note: This requires using the Responses API (/v1/responses) instead
+    of the Chat Completions API (/v1/chat/completions).
+
+    Args:
+        model: The model identifier
+
+    Returns:
+        True if model supports native MCP (most OpenAI models do)
+    """
+    # Most OpenAI models support native MCP via Responses API
+    model_lower = model.lower()
+
+    # Check exact match first
+    if model_lower in OPENAI_MODELS:
+        return True
+
+    # Check common OpenAI model prefixes
+    openai_prefixes = ("gpt-4", "gpt-5", "o1", "o3", "o4")
+    for prefix in openai_prefixes:
+        if model_lower.startswith(prefix):
+            return True
+
+    return False

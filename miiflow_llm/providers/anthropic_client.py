@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
 
 import anthropic
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -16,8 +16,11 @@ from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import AnthropicStreamNormalizer
 from ..core.streaming import StreamChunk
-from ..models.anthropic import supports_structured_outputs
+from ..models.anthropic import supports_native_mcp, supports_structured_outputs
 from ..utils.image import data_uri_to_base64_and_mimetype
+
+if TYPE_CHECKING:
+    from ..core.tools.mcp import NativeMCPServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +220,10 @@ class AnthropicClient(ModelClient):
 
         return system_content, anthropic_messages
 
+    def _supports_native_mcp(self) -> bool:
+        """Check if the current model supports native MCP via beta API."""
+        return supports_native_mcp(self.model)
+
     @retry(
         stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10), reraise=True
     )
@@ -227,19 +234,25 @@ class AnthropicClient(ModelClient):
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         json_schema: Optional[Dict[str, Any]] = None,
+        mcp_servers: Optional[List["NativeMCPServerConfig"]] = None,
         **kwargs,
     ) -> ChatResponse:
         """Send chat completion request to Anthropic.
 
-        Supports two modes for JSON schema:
-        1. Native structured outputs (for supported models like Claude Sonnet 4.5):
+        Supports:
+        1. Native MCP (for all Claude models via beta API):
+           Uses mcp_servers parameter for server-side tool execution
+        2. Native structured outputs (for supported models like Claude Sonnet 4.5):
            Uses output_format parameter with guaranteed schema compliance
-        2. Tool-based workaround (for older models):
+        3. Tool-based workaround (for older models):
            Uses a synthetic tool to force JSON output
         """
         try:
 
             system_content, anthropic_messages = self._prepare_messages(messages)
+
+            # Check for native MCP
+            use_native_mcp = mcp_servers and len(mcp_servers) > 0 and self._supports_native_mcp()
 
             # Handle JSON schema
             json_tool_name = None
@@ -323,8 +336,33 @@ class AnthropicClient(ModelClient):
                     f"Anthropic tools parameter:\n{json.dumps(tools, indent=2, default=str)}"
                 )
 
-            # Use beta client for structured outputs, regular client otherwise
-            if use_native_structured_output:
+            # Handle native MCP servers
+            if use_native_mcp:
+                # Convert NativeMCPServerConfig to Anthropic format
+                anthropic_mcp_servers = [
+                    server.to_anthropic_format() for server in mcp_servers
+                ]
+                request_params["mcp_servers"] = anthropic_mcp_servers
+
+                # Add MCP beta header (combine with existing betas if any)
+                betas = request_params.get("betas", [])
+                if isinstance(betas, list):
+                    betas = list(betas)  # Make a copy
+                else:
+                    betas = []
+                if "mcp-client-2025-04-04" not in betas:
+                    betas.append("mcp-client-2025-04-04")
+                request_params["betas"] = betas
+
+                logger.debug(
+                    f"Using native MCP with {len(mcp_servers)} servers: "
+                    f"{[s.name for s in mcp_servers]}"
+                )
+
+            # Determine which client to use
+            # Use beta client for structured outputs or native MCP
+            use_beta_client = use_native_structured_output or use_native_mcp
+            if use_beta_client:
                 response = await asyncio.wait_for(
                     self.client.beta.messages.create(**request_params), timeout=self.timeout
                 )
@@ -336,6 +374,7 @@ class AnthropicClient(ModelClient):
             # Extract content and tool calls from response
             content = ""
             tool_calls = []
+            mcp_tool_results = []  # Track MCP tool results for metadata
 
             if response.content:
                 for block in response.content:
@@ -358,6 +397,47 @@ class AnthropicClient(ModelClient):
                                     "function": {"name": original_name, "arguments": block.input},
                                 }
                             )
+                    elif hasattr(block, "type") and block.type == "mcp_tool_use":
+                        # Native MCP tool call (server-side execution)
+                        # These are handled by Anthropic's API directly
+                        tool_calls.append(
+                            {
+                                "id": getattr(block, "id", ""),
+                                "type": "mcp_function",
+                                "function": {
+                                    "name": getattr(block, "name", ""),
+                                    "arguments": getattr(block, "input", {}),
+                                },
+                                "server_name": getattr(block, "server_name", None),
+                            }
+                        )
+                        logger.debug(f"MCP tool use: {getattr(block, 'name', 'unknown')}")
+                    elif hasattr(block, "type") and block.type == "mcp_tool_result":
+                        # Native MCP tool result (already executed by API)
+                        is_error = getattr(block, "is_error", False)
+                        result_content = getattr(block, "content", "")
+
+                        # Extract text content from result
+                        if isinstance(result_content, list):
+                            # Content is a list of blocks
+                            for item in result_content:
+                                if hasattr(item, "text"):
+                                    content += item.text
+                                elif isinstance(item, dict) and "text" in item:
+                                    content += item["text"]
+                        elif isinstance(result_content, str):
+                            content += result_content
+
+                        mcp_tool_results.append({
+                            "tool_use_id": getattr(block, "tool_use_id", ""),
+                            "is_error": is_error,
+                            "content": result_content,
+                        })
+
+                        if is_error:
+                            logger.warning(f"MCP tool error: {result_content}")
+                        else:
+                            logger.debug(f"MCP tool result received")
 
             if tool_calls:
                 logger.debug(f"Returning {len(tool_calls)} tool calls to orchestrator")
@@ -374,13 +454,20 @@ class AnthropicClient(ModelClient):
                 total_tokens=response.usage.input_tokens + response.usage.output_tokens,
             )
 
+            # Build metadata
+            metadata = {"response_id": response.id}
+            if mcp_tool_results:
+                metadata["mcp_tool_results"] = mcp_tool_results
+            if use_native_mcp:
+                metadata["native_mcp"] = True
+
             return ChatResponse(
                 message=response_message,
                 usage=usage,
                 model=self.model,
                 provider=self.provider_name,
                 finish_reason=response.stop_reason,
-                metadata={"response_id": response.id},
+                metadata=metadata,
             )
 
         except anthropic.AuthenticationError as e:
@@ -403,14 +490,17 @@ class AnthropicClient(ModelClient):
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         json_schema: Optional[Dict[str, Any]] = None,
+        mcp_servers: Optional[List["NativeMCPServerConfig"]] = None,
         **kwargs,
     ) -> AsyncIterator[StreamChunk]:
         """Send streaming chat completion request to Anthropic.
 
-        Supports two modes for JSON schema:
-        1. Native structured outputs (for supported models like Claude Sonnet 4.5):
+        Supports:
+        1. Native MCP (for all Claude models via beta API):
+           Uses mcp_servers parameter for server-side tool execution
+        2. Native structured outputs (for supported models like Claude Sonnet 4.5):
            Uses output_format parameter with guaranteed schema compliance (streaming supported!)
-        2. Tool-based workaround (for older models):
+        3. Tool-based workaround (for older models):
            Uses a synthetic tool to force JSON output
         """
         import json
@@ -429,6 +519,9 @@ class AnthropicClient(ModelClient):
                 logger.debug(
                     f"    Content preview: {json.dumps(msg.get('content'), default=str)[:200]}"
                 )
+
+            # Check for native MCP
+            use_native_mcp = mcp_servers and len(mcp_servers) > 0 and self._supports_native_mcp()
 
             # Handle JSON schema
             json_tool_name = None
@@ -516,8 +609,32 @@ class AnthropicClient(ModelClient):
             if tools:
                 request_params["tools"] = tools
 
-            # Use beta client for structured outputs, regular client otherwise
-            if use_native_structured_output:
+            # Handle native MCP servers
+            if use_native_mcp:
+                # Convert NativeMCPServerConfig to Anthropic format
+                anthropic_mcp_servers = [
+                    server.to_anthropic_format() for server in mcp_servers
+                ]
+                request_params["mcp_servers"] = anthropic_mcp_servers
+
+                # Add MCP beta header (combine with existing betas if any)
+                betas = request_params.get("betas", [])
+                if isinstance(betas, list):
+                    betas = list(betas)  # Make a copy
+                else:
+                    betas = []
+                if "mcp-client-2025-04-04" not in betas:
+                    betas.append("mcp-client-2025-04-04")
+                request_params["betas"] = betas
+
+                logger.debug(
+                    f"Streaming with native MCP: {len(mcp_servers)} servers"
+                )
+
+            # Determine which client to use
+            # Use beta client for structured outputs or native MCP
+            use_beta_client = use_native_structured_output or use_native_mcp
+            if use_beta_client:
                 stream = await asyncio.wait_for(
                     self.client.beta.messages.create(**request_params), timeout=self.timeout
                 )

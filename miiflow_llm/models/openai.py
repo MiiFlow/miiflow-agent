@@ -449,3 +449,34 @@ def supports_temperature(model: str) -> bool:
             return False
 
     return True
+
+
+def supports_native_mcp(model: str) -> bool:
+    """Check if model supports native MCP via the Responses API.
+
+    Native MCP allows the OpenAI API to connect directly to MCP servers
+    and execute tools server-side via the Responses API endpoint.
+
+    Note: This requires using the Responses API (/v1/responses) instead
+    of the Chat Completions API (/v1/chat/completions).
+
+    Args:
+        model: The model identifier
+
+    Returns:
+        True if model supports native MCP (most OpenAI models do)
+    """
+    # Most OpenAI models support native MCP via Responses API
+    model_lower = model.lower()
+
+    # Check exact match first
+    if model_lower in OPENAI_MODELS:
+        return True
+
+    # Check common OpenAI model prefixes
+    openai_prefixes = ("gpt-4", "gpt-5", "o1", "o3", "o4")
+    for prefix in openai_prefixes:
+        if model_lower.startswith(prefix):
+            return True
+
+    return False

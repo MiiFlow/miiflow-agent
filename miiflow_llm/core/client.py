@@ -5,6 +5,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncIterator,
     Dict,
@@ -22,6 +23,9 @@ from .message import Message, MessageRole
 from .metrics import MetricsCollector, TokenCount, UsageData
 from .streaming import StreamChunk
 from .tools import FunctionTool, ToolRegistry
+
+if TYPE_CHECKING:
+    from .callbacks import CallbackRegistry
 
 
 @dataclass
@@ -201,14 +205,48 @@ class LLMClient:
         client: ModelClient,
         metrics_collector: Optional[MetricsCollector] = None,
         tool_registry: Optional[ToolRegistry] = None,
+        callback_registry: Optional["CallbackRegistry"] = None,
     ):
         self.client = client
         self.metrics_collector = metrics_collector or MetricsCollector()
         self.client.metrics_collector = self.metrics_collector
         self.tool_registry = tool_registry or ToolRegistry()
 
+        # Callback support - uses instance registry or falls back to global
+        self._callback_registry = callback_registry
+
         # Initialize unified streaming client
         self._unified_streaming_client = None
+
+    def _supports_native_mcp(self) -> bool:
+        """Check if the current provider supports native MCP.
+
+        Native MCP allows the provider to connect directly to MCP servers
+        and execute tools server-side, rather than client-side handling.
+
+        Returns:
+            True if provider supports native MCP
+        """
+        # Check if provider client has _supports_native_mcp method
+        if hasattr(self.client, "_supports_native_mcp"):
+            return self.client._supports_native_mcp()
+
+        # Check provider name
+        provider = getattr(self.client, "provider_name", "").lower()
+        return provider in ("anthropic", "openai")
+
+    @property
+    def callback_registry(self) -> "CallbackRegistry":
+        """Get the callback registry (instance-level or global)."""
+        if self._callback_registry:
+            return self._callback_registry
+        from .callbacks import get_global_registry
+
+        return get_global_registry()
+
+    async def _emit_callback(self, event: "CallbackEvent") -> None:
+        """Emit a callback event."""
+        await self.callback_registry.emit(event)
 
     @classmethod
     def create(
@@ -242,44 +280,97 @@ class LLMClient:
         self,
         messages: Union[List[Dict[str, Any]], List[Message]],
         tools: Optional[List[FunctionTool]] = None,
+        _formatted_tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> ChatResponse:
-        """Send async chat completion request."""
+        """Send async chat completion request.
+
+        Args:
+            messages: List of messages to send.
+            tools: List of FunctionTool objects to make available.
+            _formatted_tools: Pre-formatted tool schemas (internal use by AgentToolExecutor).
+                             If provided, skips tool formatting.
+            **kwargs: Additional arguments passed to the provider.
+
+        Returns:
+            ChatResponse with the model's response.
+        """
+        from .callback_context import get_callback_context
+        from .callbacks import CallbackEvent, CallbackEventType
+
         normalized_messages = self._normalize_messages(messages)
 
-        formatted_tools = None
-        if tools:
-            for tool in tools:
-                self.tool_registry.register(tool)
-            tool_names = [
-                (
-                    getattr(tool, "_function_tool", tool).name
-                    if hasattr(getattr(tool, "_function_tool", tool), "name")
-                    else getattr(tool, "__name__", str(tool))
-                )
-                for tool in tools
-            ]
-            all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
-            formatted_tools = [s for s in all_schemas if self._extract_tool_name(s) in tool_names]
-        elif self.tool_registry.tools:
-            formatted_tools = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+        # Use pre-formatted tools if provided, otherwise format from tools
+        formatted_tools = _formatted_tools
+        if formatted_tools is None:
+            if tools:
+                for tool in tools:
+                    self.tool_registry.register(tool)
+                tool_names = [
+                    (
+                        getattr(tool, "_function_tool", tool).name
+                        if hasattr(getattr(tool, "_function_tool", tool), "name")
+                        else getattr(tool, "__name__", str(tool))
+                    )
+                    for tool in tools
+                ]
+                all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+                formatted_tools = [s for s in all_schemas if self._extract_tool_name(s) in tool_names]
+            elif self.tool_registry.tools:
+                formatted_tools = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+
+        # Check for native MCP servers and pass to provider if supported
+        if self.tool_registry.has_native_mcp_servers() and self._supports_native_mcp():
+            kwargs["mcp_servers"] = self.tool_registry.get_native_mcp_configs()
+
+        # Get callback context
+        ctx = get_callback_context()
 
         start_time = time.time()
         try:
             response = await self.client.achat(normalized_messages, tools=formatted_tools, **kwargs)
+            latency_ms = (time.time() - start_time) * 1000
 
             # Record successful usage
             self._record_usage(
                 normalized_messages, response.usage, time.time() - start_time, success=True
             )
 
+            # Emit POST_CALL callback
+            post_event = CallbackEvent(
+                event_type=CallbackEventType.POST_CALL,
+                provider=self.client.provider_name,
+                model=self.client.model,
+                tokens=response.usage,
+                latency_ms=latency_ms,
+                context=ctx,
+                success=True,
+            )
+            await self._emit_callback(post_event)
+
             return response
 
         except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
+
             # Record failed usage
             self._record_usage(
                 normalized_messages, TokenCount(), time.time() - start_time, success=False
             )
+
+            # Emit ON_ERROR callback
+            error_event = CallbackEvent(
+                event_type=CallbackEventType.ON_ERROR,
+                provider=self.client.provider_name,
+                model=self.client.model,
+                error=e,
+                error_type=type(e).__name__,
+                latency_ms=latency_ms,
+                context=ctx,
+                success=False,
+            )
+            await self._emit_callback(error_event)
+
             raise
 
     # Sync wrapper methods
@@ -296,30 +387,56 @@ class LLMClient:
         self,
         messages: Union[List[Dict[str, Any]], List[Message]],
         tools: Optional[List[FunctionTool]] = None,
+        _formatted_tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> AsyncIterator[StreamChunk]:
-        """Send async streaming chat completion request."""
+        """Send async streaming chat completion request.
+
+        Args:
+            messages: List of messages to send.
+            tools: List of FunctionTool objects to make available.
+            _formatted_tools: Pre-formatted tool schemas (internal use by AgentToolExecutor).
+                             If provided, skips tool formatting.
+            **kwargs: Additional arguments passed to the provider.
+
+        Yields:
+            StreamChunk objects with content deltas and usage information.
+        """
+        from .callback_context import get_callback_context
+        from .callbacks import CallbackEvent, CallbackEventType
+
         normalized_messages = self._normalize_messages(messages)
 
-        formatted_tools = None
-        if tools:
-            for tool in tools:
-                self.tool_registry.register(tool)
-            tool_names = [
-                (
-                    getattr(tool, "_function_tool", tool).name
-                    if hasattr(getattr(tool, "_function_tool", tool), "name")
-                    else getattr(tool, "__name__", str(tool))
-                )
-                for tool in tools
-            ]
-            all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
-            formatted_tools = [s for s in all_schemas if self._extract_tool_name(s) in tool_names]
-        elif self.tool_registry.tools:
-            formatted_tools = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+        # Use pre-formatted tools if provided, otherwise format from tools
+        formatted_tools = _formatted_tools
+        if formatted_tools is None:
+            if tools:
+                for tool in tools:
+                    self.tool_registry.register(tool)
+                tool_names = [
+                    (
+                        getattr(tool, "_function_tool", tool).name
+                        if hasattr(getattr(tool, "_function_tool", tool), "name")
+                        else getattr(tool, "__name__", str(tool))
+                    )
+                    for tool in tools
+                ]
+                all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+                formatted_tools = [s for s in all_schemas if self._extract_tool_name(s) in tool_names]
+            elif self.tool_registry.tools:
+                formatted_tools = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+
+        # Check for native MCP servers and pass to provider if supported
+        if self.tool_registry.has_native_mcp_servers() and self._supports_native_mcp():
+            kwargs["mcp_servers"] = self.tool_registry.get_native_mcp_configs()
+
+        # Get callback context
+        ctx = get_callback_context()
 
         start_time = time.time()
         total_tokens = TokenCount()
+        callback_emitted = False
+        error_occurred = None
 
         try:
             async for chunk in self.client.astream_chat(
@@ -329,17 +446,55 @@ class LLMClient:
                     total_tokens += chunk.usage
                 yield chunk
 
-            # Record successful streaming usage
-            self._record_usage(
-                normalized_messages, total_tokens, time.time() - start_time, success=True
-            )
-
         except Exception as e:
-            # Record failed streaming usage
-            self._record_usage(
-                normalized_messages, total_tokens, time.time() - start_time, success=False
-            )
+            error_occurred = e
             raise
+
+        finally:
+            # Always emit callback when generator closes (success, break, or error)
+            if not callback_emitted:
+                latency_ms = (time.time() - start_time) * 1000
+
+                if error_occurred:
+                    # Record failed streaming usage
+                    self._record_usage(
+                        normalized_messages, total_tokens, time.time() - start_time, success=False
+                    )
+
+                    # Emit ON_ERROR callback
+                    error_event = CallbackEvent(
+                        event_type=CallbackEventType.ON_ERROR,
+                        provider=self.client.provider_name,
+                        model=self.client.model,
+                        tokens=total_tokens,
+                        error=error_occurred,
+                        error_type=type(error_occurred).__name__,
+                        latency_ms=latency_ms,
+                        context=ctx,
+                        success=False,
+                    )
+                    # Use sync emit in finally block since we can't await
+                    self.callback_registry.emit_sync(error_event)
+                else:
+                    # Record successful streaming usage
+                    self._record_usage(
+                        normalized_messages, total_tokens, time.time() - start_time, success=True
+                    )
+
+                    # Emit POST_CALL callback
+                    post_event = CallbackEvent(
+                        event_type=CallbackEventType.POST_CALL,
+                        provider=self.client.provider_name,
+                        model=self.client.model,
+                        tokens=total_tokens,
+                        latency_ms=latency_ms,
+                        context=ctx,
+                        success=True,
+                    )
+                    # Use sync emit in finally block since we can't await
+                    self.callback_registry.emit_sync(post_event)
+
+                callback_emitted = True
 
     def stream_chat(
         self,

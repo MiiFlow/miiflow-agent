@@ -55,11 +55,11 @@ class AgentToolExecutor:
         """Execute LLM call WITH native tools enabled."""
         tools = self._build_native_tool_schemas()
 
-        # Call the underlying client directly (not the LLMClient wrapper)
-        # to avoid re-registering already-formatted tools
-        return await self._client.client.achat(
+        # Use LLMClient with pre-formatted tools via _formatted_tools parameter
+        # This ensures callbacks fire while avoiding tool re-formatting
+        return await self._client.achat(
             messages=messages,
-            tools=tools,
+            _formatted_tools=tools,
             temperature=temperature or self.agent.temperature,
             max_tokens=self.agent.max_tokens,
         )
@@ -68,10 +68,11 @@ class AgentToolExecutor:
         """Stream LLM call WITH native tools enabled."""
         tools = self._build_native_tool_schemas()
 
-        # Call the underlying client directly (not the LLMClient wrapper)
-        async for chunk in self._client.client.astream_chat(
+        # Use LLMClient with pre-formatted tools via _formatted_tools parameter
+        # This ensures callbacks fire while avoiding tool re-formatting
+        async for chunk in self._client.astream_chat(
             messages=messages,
-            tools=tools,
+            _formatted_tools=tools,
             temperature=temperature or self.agent.temperature,
             max_tokens=self.agent.max_tokens,
         ):

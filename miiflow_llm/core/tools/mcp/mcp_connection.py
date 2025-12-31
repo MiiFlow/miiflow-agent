@@ -71,6 +71,63 @@ class MCPServerConfig:
             raise ValueError(f"Unsupported transport: {transport}")
 
 
+@dataclass
+class NativeMCPServerConfig:
+    """Configuration for native provider MCP support (server-side execution).
+
+    This is used when the LLM provider (Anthropic, OpenAI) handles MCP
+    connections and tool execution directly, rather than the client.
+
+    Attributes:
+        name: Unique identifier for the server
+        url: MCP server URL (must be accessible from the provider's servers)
+        authorization_token: Optional bearer token for authentication (Anthropic)
+        allowed_tools: Optional list of tool names to enable (filter)
+        headers: Optional HTTP headers for authentication (OpenAI)
+        require_approval: Tool approval mode for OpenAI: "never", "always"
+        tool_configuration: Additional tool configuration options
+    """
+
+    name: str
+    url: str
+    authorization_token: Optional[str] = None
+    allowed_tools: Optional[List[str]] = None
+    headers: Optional[Dict[str, str]] = None
+    require_approval: str = "never"  # OpenAI: "never", "always"
+    tool_configuration: Optional[Dict[str, Any]] = None
+
+    def to_anthropic_format(self) -> Dict[str, Any]:
+        """Convert to Anthropic MCP server format."""
+        config: Dict[str, Any] = {
+            "type": "url",
+            "url": self.url,
+            "name": self.name,
+        }
+        if self.authorization_token:
+            config["authorization_token"] = self.authorization_token
+        if self.allowed_tools:
+            config["tool_configuration"] = {"allowed_tools": self.allowed_tools}
+        if self.tool_configuration:
+            # Merge with existing tool_configuration
+            existing = config.get("tool_configuration", {})
+            config["tool_configuration"] = {**existing, **self.tool_configuration}
+        return config
+
+    def to_openai_format(self) -> Dict[str, Any]:
+        """Convert to OpenAI MCP tool format (for Responses API)."""
+        config: Dict[str, Any] = {
+            "type": "mcp",
+            "server_label": self.name,
+            "server_url": self.url,
+            "require_approval": self.require_approval,
+        }
+        if self.allowed_tools:
+            config["allowed_tools"] = self.allowed_tools
+        if self.headers:
+            config["headers"] = self.headers
+        return config
+
+
 class MCPServerConnection(ABC):
     """Abstract base class for MCP server connections.
 

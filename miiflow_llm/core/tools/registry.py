@@ -15,7 +15,7 @@ from .schemas import ToolResult, ToolSchema
 from .types import ToolType
 
 if TYPE_CHECKING:
-    from .mcp import MCPTool, MCPToolManager
+    from .mcp import MCPTool, MCPToolManager, NativeMCPServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,8 @@ class ToolRegistry:
         self.execution_stats: Dict[str, Dict[str, Any]] = {}
         # Map sanitized names back to original names for provider compatibility
         self._sanitized_to_original: Dict[str, str] = {}
+        # Native MCP servers (for provider-side execution)
+        self._native_mcp_servers: List[NativeMCPServerConfig] = []
 
     def register(self, tool) -> None:
         """Register a function tool with allowlist validation."""
@@ -179,6 +181,41 @@ class ToolRegistry:
         """
         resolved_name = self._resolve_name(name)
         return self.mcp_tools.get(resolved_name)
+
+    def register_native_mcp_server(self, config: NativeMCPServerConfig) -> None:
+        """Register an MCP server for native provider-side execution.
+
+        Native MCP servers are handled directly by the LLM provider (Anthropic, OpenAI)
+        rather than requiring client-side connection management.
+
+        Args:
+            config: NativeMCPServerConfig with server URL and auth details
+        """
+        self._native_mcp_servers.append(config)
+        if self.enable_logging:
+            logger.info(f"Registered native MCP server: {config.name} -> {config.url}")
+
+    def get_native_mcp_configs(self) -> List[NativeMCPServerConfig]:
+        """Get all registered native MCP server configurations.
+
+        Returns:
+            List of NativeMCPServerConfig instances
+        """
+        return self._native_mcp_servers
+
+    def has_native_mcp_servers(self) -> bool:
+        """Check if any native MCP servers are registered.
+
+        Returns:
+            True if at least one native MCP server is registered
+        """
+        return len(self._native_mcp_servers) > 0
+
+    def clear_native_mcp_servers(self) -> None:
+        """Remove all registered native MCP servers."""
+        self._native_mcp_servers.clear()
+        if self.enable_logging:
+            logger.info("Cleared all native MCP servers")
 
     def list_tools(self) -> List[str]:
         """List all registered tool names (function, HTTP, and MCP)."""

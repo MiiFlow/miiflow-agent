@@ -1,9 +1,12 @@
 """OpenAI provider implementation."""
 
+from __future__ import annotations
+
 import asyncio
 import copy
+import json
 import re
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
 
 import openai
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -16,7 +19,10 @@ from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import OpenAIStreamNormalizer
 from ..core.streaming import StreamChunk
-from ..models.openai import get_token_param_name, supports_temperature
+from ..models.openai import get_token_param_name, supports_native_mcp, supports_temperature
+
+if TYPE_CHECKING:
+    from ..core.tools.mcp import NativeMCPServerConfig
 
 
 def _sanitize_tool_name(name: str) -> str:
@@ -41,6 +47,10 @@ class OpenAIClient(ModelClient):
         # Stream normalizer for unified streaming handling
         # Note: Pass class-level mapping for tool name restoration
         self._stream_normalizer = OpenAIStreamNormalizer(OpenAIClient._tool_name_mapping)
+
+    def _supports_native_mcp(self) -> bool:
+        """Check if current model supports native MCP via Responses API."""
+        return supports_native_mcp(self.model)
 
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to OpenAI format with name sanitization."""
@@ -136,9 +146,33 @@ class OpenAIClient(ModelClient):
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         json_schema: Optional[Dict[str, Any]] = None,
+        mcp_servers: Optional[List["NativeMCPServerConfig"]] = None,
         **kwargs,
     ) -> ChatResponse:
-        """Send chat completion request to OpenAI."""
+        """Send chat completion request to OpenAI.
+
+        Args:
+            messages: List of conversation messages
+            temperature: Sampling temperature (0-2)
+            max_tokens: Maximum tokens in response
+            tools: Tool schemas for function calling
+            json_schema: JSON schema for structured output
+            mcp_servers: Optional list of MCP server configs for native MCP support.
+                        When provided, uses Responses API instead of Chat Completions.
+            **kwargs: Additional parameters passed to the API
+
+        Returns:
+            ChatResponse with assistant message and metadata
+        """
+        # Auto-detect: use Responses API if MCP servers are provided
+        use_native_mcp = mcp_servers and len(mcp_servers) > 0 and self._supports_native_mcp()
+
+        if use_native_mcp:
+            return await self._achat_responses_api(
+                messages, temperature, max_tokens, tools, mcp_servers, **kwargs
+            )
+
+        # Use standard Chat Completions API
         try:
             openai_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
 
@@ -209,6 +243,223 @@ class OpenAIClient(ModelClient):
         except Exception as e:
             raise ProviderError(f"OpenAI API error: {str(e)}", self.provider_name, original_error=e)
 
+    async def _achat_responses_api(
+        self,
+        messages: List[Message],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        mcp_servers: Optional[List["NativeMCPServerConfig"]] = None,
+        **kwargs,
+    ) -> ChatResponse:
+        """Chat using OpenAI Responses API (supports native MCP).
+
+        The Responses API is a different API surface from Chat Completions,
+        designed for agentic workflows with native MCP server support.
+
+        Args:
+            messages: List of conversation messages
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens in response
+            tools: Regular function tools
+            mcp_servers: MCP server configurations for native MCP
+
+        Returns:
+            ChatResponse with assistant message and metadata
+        """
+        try:
+            # Build tools array with MCP servers
+            response_tools = []
+
+            # Add regular function tools
+            if tools:
+                response_tools.extend(tools)
+
+            # Add MCP servers as native MCP tools
+            if mcp_servers:
+                for server in mcp_servers:
+                    response_tools.append(server.to_openai_format())
+
+            # Convert messages to Responses API input format
+            # Responses API uses a different input structure
+            input_items = self._convert_messages_to_responses_input(messages)
+
+            request_params = {
+                "model": self.model,
+                "input": input_items,
+            }
+
+            if response_tools:
+                request_params["tools"] = response_tools
+
+            if max_tokens:
+                request_params["max_output_tokens"] = max_tokens
+
+            # Use Responses API endpoint
+            response = await asyncio.wait_for(
+                self.client.responses.create(**request_params), timeout=self.timeout
+            )
+
+            return self._parse_responses_api_response(response)
+
+        except openai.AuthenticationError as e:
+            raise AuthenticationError(str(e), self.provider_name, original_error=e)
+        except openai.RateLimitError as e:
+            retry_after = getattr(e.response.headers, "retry-after", None)
+            raise RateLimitError(
+                str(e), self.provider_name, retry_after=retry_after, original_error=e
+            )
+        except openai.BadRequestError as e:
+            raise ModelError(str(e), self.model, original_error=e)
+        except asyncio.TimeoutError as e:
+            raise MiiflowTimeoutError("Request timed out", self.timeout, original_error=e)
+        except Exception as e:
+            raise ProviderError(
+                f"OpenAI Responses API error: {str(e)}", self.provider_name, original_error=e
+            )
+
+    def _convert_messages_to_responses_input(self, messages: List[Message]) -> List[Dict[str, Any]]:
+        """Convert messages to Responses API input format.
+
+        The Responses API uses a different input structure than Chat Completions.
+        It expects an array of input items rather than messages.
+        """
+        input_items = []
+
+        for msg in messages:
+            if msg.role == MessageRole.SYSTEM:
+                # System messages become system items
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                input_items.append(
+                    {
+                        "type": "message",
+                        "role": "system",
+                        "content": content,
+                    }
+                )
+            elif msg.role == MessageRole.USER:
+                # User messages
+                if isinstance(msg.content, str):
+                    input_items.append(
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": msg.content,
+                        }
+                    )
+                else:
+                    # Handle multimodal content
+                    content_parts = []
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            content_parts.append({"type": "input_text", "text": block.text})
+                        elif isinstance(block, ImageBlock):
+                            content_parts.append(
+                                {
+                                    "type": "input_image",
+                                    "image_url": block.image_url,
+                                }
+                            )
+                    input_items.append(
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": content_parts,
+                        }
+                    )
+            elif msg.role == MessageRole.ASSISTANT:
+                # Assistant messages
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                input_items.append(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": content,
+                    }
+                )
+            elif msg.role == MessageRole.TOOL:
+                # Tool results
+                input_items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": msg.tool_call_id or "",
+                        "output": msg.content if isinstance(msg.content, str) else str(msg.content),
+                    }
+                )
+
+        return input_items
+
+    def _parse_responses_api_response(self, response: Any) -> ChatResponse:
+        """Parse Responses API output format.
+
+        The Responses API returns output items instead of choices/messages.
+        """
+        content = ""
+        tool_calls = []
+
+        # Extract content and tool calls from output items
+        for item in getattr(response, "output", []):
+            item_type = getattr(item, "type", None)
+
+            if item_type == "message":
+                # Text message content
+                for part in getattr(item, "content", []):
+                    part_type = getattr(part, "type", None)
+                    if part_type == "output_text":
+                        content += getattr(part, "text", "")
+                    elif part_type == "text":
+                        content += getattr(part, "text", "")
+
+            elif item_type == "function_call":
+                # Regular function call
+                tool_calls.append(
+                    {
+                        "id": getattr(item, "call_id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": getattr(item, "name", ""),
+                            "arguments": getattr(item, "arguments", "{}"),
+                        },
+                    }
+                )
+
+            elif item_type == "mcp_call":
+                # Native MCP call result
+                tool_calls.append(
+                    {
+                        "id": getattr(item, "id", ""),
+                        "type": "mcp_function",
+                        "function": {
+                            "name": getattr(item, "name", ""),
+                            "arguments": getattr(item, "arguments", "{}"),
+                        },
+                        "server_label": getattr(item, "server_label", None),
+                    }
+                )
+
+        # Extract usage
+        usage_data = getattr(response, "usage", None)
+        usage = TokenCount(
+            prompt_tokens=getattr(usage_data, "input_tokens", 0) if usage_data else 0,
+            completion_tokens=getattr(usage_data, "output_tokens", 0) if usage_data else 0,
+            total_tokens=getattr(usage_data, "total_tokens", 0) if usage_data else 0,
+        )
+
+        response_message = Message(
+            role=MessageRole.ASSISTANT,
+            content=content,
+            tool_calls=tool_calls if tool_calls else None,
+        )
+
+        return ChatResponse(
+            message=response_message,
+            usage=usage,
+            model=self.model,
+            provider=self.provider_name,
+            finish_reason=getattr(response, "status", "stop"),
+            metadata={"response_id": getattr(response, "id", "")},
+        )
+
     async def astream_chat(
         self,
         messages: List[Message],
@@ -216,8 +467,35 @@ class OpenAIClient(ModelClient):
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         json_schema: Optional[Dict[str, Any]] = None,
+        mcp_servers: Optional[List["NativeMCPServerConfig"]] = None,
         **kwargs,
     ) -> AsyncIterator[StreamChunk]:
+        """Stream chat completion from OpenAI.
+
+        Args:
+            messages: List of conversation messages
+            temperature: Sampling temperature (0-2)
+            max_tokens: Maximum tokens in response
+            tools: Tool schemas for function calling
+            json_schema: JSON schema for structured output
+            mcp_servers: Optional list of MCP server configs for native MCP support.
+                        When provided, uses Responses API streaming instead of Chat Completions.
+            **kwargs: Additional parameters passed to the API
+
+        Yields:
+            StreamChunk with delta content and metadata
+        """
+        # Auto-detect: use Responses API if MCP servers are provided
+        use_native_mcp = mcp_servers and len(mcp_servers) > 0 and self._supports_native_mcp()
+
+        if use_native_mcp:
+            async for chunk in self._astream_chat_responses_api(
+                messages, temperature, max_tokens, tools, mcp_servers, **kwargs
+            ):
+                yield chunk
+            return
+
+        # Use standard Chat Completions API streaming
         try:
             openai_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
 
@@ -284,4 +562,150 @@ class OpenAIClient(ModelClient):
         except Exception as e:
             raise ProviderError(
                 f"OpenAI streaming error: {str(e)}", self.provider_name, original_error=e
+            )
+
+    async def _astream_chat_responses_api(
+        self,
+        messages: List[Message],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        mcp_servers: Optional[List["NativeMCPServerConfig"]] = None,
+        **kwargs,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream chat using OpenAI Responses API (supports native MCP).
+
+        The Responses API supports streaming with a different event format.
+
+        Args:
+            messages: List of conversation messages
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens in response
+            tools: Regular function tools
+            mcp_servers: MCP server configurations for native MCP
+
+        Yields:
+            StreamChunk with delta content and metadata
+        """
+        try:
+            # Build tools array with MCP servers
+            response_tools = []
+
+            # Add regular function tools
+            if tools:
+                response_tools.extend(tools)
+
+            # Add MCP servers as native MCP tools
+            if mcp_servers:
+                for server in mcp_servers:
+                    response_tools.append(server.to_openai_format())
+
+            # Convert messages to Responses API input format
+            input_items = self._convert_messages_to_responses_input(messages)
+
+            request_params = {
+                "model": self.model,
+                "input": input_items,
+                "stream": True,
+            }
+
+            if response_tools:
+                request_params["tools"] = response_tools
+
+            if max_tokens:
+                request_params["max_output_tokens"] = max_tokens
+
+            # Use Responses API streaming
+            stream = await asyncio.wait_for(
+                self.client.responses.create(**request_params), timeout=self.timeout
+            )
+
+            accumulated_content = ""
+
+            async for event in stream:
+                event_type = getattr(event, "type", None)
+
+                if event_type == "response.output_text.delta":
+                    # Text content delta
+                    delta = getattr(event, "delta", "")
+                    accumulated_content += delta
+                    yield StreamChunk(
+                        content=accumulated_content,
+                        delta=delta,
+                        finish_reason=None,
+                    )
+
+                elif event_type == "response.function_call_arguments.done":
+                    # Function call complete
+                    yield StreamChunk(
+                        content=accumulated_content,
+                        delta="",
+                        finish_reason=None,
+                        tool_calls=[
+                            {
+                                "id": getattr(event, "call_id", ""),
+                                "type": "function",
+                                "function": {
+                                    "name": getattr(event, "name", ""),
+                                    "arguments": getattr(event, "arguments", "{}"),
+                                },
+                            }
+                        ],
+                    )
+
+                elif event_type == "response.mcp_call.done":
+                    # MCP call complete
+                    yield StreamChunk(
+                        content=accumulated_content,
+                        delta="",
+                        finish_reason=None,
+                        tool_calls=[
+                            {
+                                "id": getattr(event, "id", ""),
+                                "type": "mcp_function",
+                                "function": {
+                                    "name": getattr(event, "name", ""),
+                                    "arguments": getattr(event, "arguments", "{}"),
+                                },
+                                "server_label": getattr(event, "server_label", None),
+                            }
+                        ],
+                    )
+
+                elif event_type == "response.done":
+                    # Response complete
+                    response_data = getattr(event, "response", None)
+                    usage = None
+                    if response_data:
+                        usage_data = getattr(response_data, "usage", None)
+                        if usage_data:
+                            usage = TokenCount(
+                                prompt_tokens=getattr(usage_data, "input_tokens", 0),
+                                completion_tokens=getattr(usage_data, "output_tokens", 0),
+                                total_tokens=getattr(usage_data, "total_tokens", 0),
+                            )
+
+                    yield StreamChunk(
+                        content=accumulated_content,
+                        delta="",
+                        finish_reason="stop",
+                        usage=usage,
+                    )
+
+        except openai.AuthenticationError as e:
+            raise AuthenticationError(str(e), self.provider_name, original_error=e)
+        except openai.RateLimitError as e:
+            retry_after = getattr(e.response.headers, "retry-after", None)
+            raise RateLimitError(
+                str(e), self.provider_name, retry_after=retry_after, original_error=e
+            )
+        except openai.BadRequestError as e:
+            raise ModelError(str(e), self.model, original_error=e)
+        except asyncio.TimeoutError as e:
+            raise MiiflowTimeoutError("Streaming request timed out", self.timeout, original_error=e)
+        except Exception as e:
+            raise ProviderError(
+                f"OpenAI Responses API streaming error: {str(e)}",
+                self.provider_name,
+                original_error=e,
             )

@@ -1,8 +1,8 @@
-# Parallel Execution Architecture for miiflow-llm
+# Parallel Execution Architecture for miiflow-agent
 
 ## Summary
 
-This document describes the new parallel execution capabilities added to miiflow-llm, enabling up to **90% reduction in execution time** for parallelizable tasks (based on Anthropic's multi-agent research findings).
+This document describes the new parallel execution capabilities added to miiflow-agent, enabling up to **90% reduction in execution time** for parallelizable tasks (based on Anthropic's multi-agent research findings).
 
 ## Changes Implemented
 
@@ -16,7 +16,7 @@ This document describes the new parallel execution capabilities added to miiflow
 ### New Files
 
 ```
-miiflow_llm/core/react/
+miiflow_agent/core/react/
 ├── shared_state.py              # Thread-safe shared state for multi-agent coordination
 ├── parallel_plan_orchestrator.py # Wave-based parallel subtask execution
 └── multi_agent_orchestrator.py   # Multi-subagent parallel orchestration
@@ -97,7 +97,7 @@ Final Answer
 ## Usage
 
 ```python
-from miiflow_llm import Agent, AgentType, LLMClient
+from miiflow_agent import Agent, AgentType, LLMClient
 
 # Parallel Plan - for tasks with parallelizable subtasks
 agent = Agent(

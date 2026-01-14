@@ -63,12 +63,12 @@ jobs:
         
     - name: Check code formatting with Black
       run: |
-        black --check --diff miiflow_llm/ tests/ || echo "Code formatting check completed"
+        black --check --diff miiflow_agent/ tests/ || echo "Code formatting check completed"
         
     - name: Check import sorting with isort
       run: |
-        isort --check-only --diff miiflow_llm/ tests/ || echo "Import sorting check completed"
+        isort --check-only --diff miiflow_agent/ tests/ || echo "Import sorting check completed"
         
     - name: Lint with flake8
       run: |
-        flake8 miiflow_llm/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics || echo "Linting check completed"
+        flake8 miiflow_agent/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics || echo "Linting check completed"

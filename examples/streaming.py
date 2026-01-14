@@ -7,7 +7,7 @@ This example demonstrates real-time token streaming:
 """
 
 import asyncio
-from miiflow_llm import LLMClient, Message
+from miiflow_agent import LLMClient, Message
 
 
 async def basic_streaming():

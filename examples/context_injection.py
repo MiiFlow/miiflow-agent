@@ -9,7 +9,7 @@ This example demonstrates dependency injection for tools:
 import asyncio
 from dataclasses import dataclass, field
 from typing import List, Optional
-from miiflow_llm import LLMClient, Agent, RunContext, tool
+from miiflow_agent import LLMClient, Agent, RunContext, tool
 
 
 # Define your application context

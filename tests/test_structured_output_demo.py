@@ -18,8 +18,8 @@ import json
 import os
 from typing import Dict, Any
 
-from miiflow_llm import LLMClient
-from miiflow_llm.core.tools import tool, ParameterSchema, ParameterType
+from miiflow_agent import LLMClient
+from miiflow_agent.core.tools import tool, ParameterSchema, ParameterType
 
 
 # Colors for terminal output

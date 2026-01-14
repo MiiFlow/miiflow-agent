@@ -1,6 +1,6 @@
 ---
 name: Feature Request
-about: Suggest an idea for miiflow-llm
+about: Suggest an idea for miiflow-agent
 title: '[Feature] '
 labels: enhancement
 assignees: ''
@@ -14,7 +14,7 @@ How would you like this to work?
 
 ```python
 # Example of desired API (if applicable)
-from miiflow_llm import ...
+from miiflow_agent import ...
 ```
 
 ## Alternatives Considered

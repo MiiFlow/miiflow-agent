@@ -4,15 +4,15 @@ import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock
 
-from miiflow_llm.core.tools import (
+from miiflow_agent.core.tools import (
     ToolSchema, ParameterSchema, ToolType, ToolRegistry, 
     FunctionTool, tool, ParameterType
 )
-from miiflow_llm.core.client import LLMClient
-from miiflow_llm.core.message import Message, MessageRole
-from miiflow_llm.providers.openai_client import OpenAIClient
-from miiflow_llm.providers.anthropic_client import AnthropicClient
-from miiflow_llm.providers.gemini_client import GeminiClient
+from miiflow_agent.core.client import LLMClient
+from miiflow_agent.core.message import Message, MessageRole
+from miiflow_agent.providers.openai_client import OpenAIClient
+from miiflow_agent.providers.anthropic_client import AnthropicClient
+from miiflow_agent.providers.gemini_client import GeminiClient
 
 
 class TestToolSchemaConversion:

@@ -166,9 +166,9 @@ def create_plan_tool():
     Returns:
         FunctionTool: Tool that accepts plan parameters and returns plan confirmation
     """
-    from miiflow_llm.core.tools import FunctionTool
-    from miiflow_llm.core.tools.schemas import ToolSchema, ParameterSchema
-    from miiflow_llm.core.tools.types import ParameterType, ToolType
+    from miiflow_agent.core.tools import FunctionTool
+    from miiflow_agent.core.tools.schemas import ToolSchema, ParameterSchema
+    from miiflow_agent.core.tools.types import ParameterType, ToolType
     import logging
 
     logger = logging.getLogger(__name__)

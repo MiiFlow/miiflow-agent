@@ -3,7 +3,7 @@
 import os
 from typing import Optional, Dict, Any
 import httpx
-from miiflow_llm.core.tools import tool
+from miiflow_agent.core.tools import tool
 
 API_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
 

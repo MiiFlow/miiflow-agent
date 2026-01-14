@@ -3,8 +3,8 @@
 import asyncio
 import httpx
 from typing import List, Dict, Any, Optional
-from miiflow_llm.core.tools import tool
-from miiflow_llm.core.tools.http.proxy_utils import get_proxy_config, should_use_proxy
+from miiflow_agent.core.tools import tool
+from miiflow_agent.core.tools.http.proxy_utils import get_proxy_config, should_use_proxy
 
 
 @tool("get_user_posts", "Fetch posts for a specific user from JSONPlaceholder API")

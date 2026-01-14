@@ -15,7 +15,7 @@ Key Features:
 - Easy-to-use decorators for tool definition
 
 Quick Start:
-    from miiflow_llm.core.tools import tool, ToolRegistry
+    from miiflow_agent.core.tools import tool, ToolRegistry
     
     @tool(description="Add two numbers")
     def add(a: int, b: int) -> int:
@@ -179,7 +179,7 @@ __all__.extend([
 
 # Package metadata for introspection
 __package_info__ = {
-    "name": "miiflow-llm-tools",
+    "name": "miiflow-agent-tools",
     "version": __version__,
     "description": "Modular tool system for AI function calling",
     "features": [

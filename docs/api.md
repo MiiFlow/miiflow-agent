@@ -7,7 +7,7 @@
 Create a client for any provider.
 
 ```python
-from miiflow_llm import LLMClient
+from miiflow_agent import LLMClient
 
 # Basic
 client = LLMClient.create("openai", model="gpt-4o-mini")
@@ -33,7 +33,7 @@ client = LLMClient.create(
 Sync chat completion.
 
 ```python
-from miiflow_llm.core import Message
+from miiflow_agent.core import Message
 
 response = client.chat([
     Message.system("You are a helpful assistant."),
@@ -98,13 +98,13 @@ async for chunk in client.astream_chat([Message.user("Hello")]):
 User message.
 
 ```python
-from miiflow_llm.core import Message
+from miiflow_agent.core import Message
 
 # Text only
 msg = Message.user("What is Rust?")
 
 # Multi-modal (list of blocks)
-from miiflow_llm.core import TextBlock, ImageBlock
+from miiflow_agent.core import TextBlock, ImageBlock
 
 msg = Message.user([
     TextBlock(text="Describe this:"),
@@ -133,7 +133,7 @@ msg = Message.system("You are a Python expert.")
 Text content block.
 
 ```python
-from miiflow_llm.core import TextBlock
+from miiflow_agent.core import TextBlock
 
 block = TextBlock(text="What's in this image?")
 ```
@@ -143,7 +143,7 @@ block = TextBlock(text="What's in this image?")
 Image content block.
 
 ```python
-from miiflow_llm.core import ImageBlock
+from miiflow_agent.core import ImageBlock
 
 # URL
 block = ImageBlock(image_url="https://example.com/photo.jpg")
@@ -162,8 +162,8 @@ block = ImageBlock(
 Create an agent with tools.
 
 ```python
-from miiflow_llm import Agent
-from miiflow_llm.core import AgentType
+from miiflow_agent import Agent
+from miiflow_agent.core import AgentType
 
 agent = Agent(
     client=client,
@@ -177,7 +177,7 @@ agent = Agent(
 Add a tool to the agent.
 
 ```python
-from miiflow_llm.core.tools import tool
+from miiflow_agent.core.tools import tool
 
 @tool("search", "Search the web")
 def search(query: str) -> str:
@@ -214,7 +214,7 @@ print(result.metadata["react_steps"])  # Execution steps
 Decorator to create a tool.
 
 ```python
-from miiflow_llm.core.tools import tool
+from miiflow_agent.core.tools import tool
 
 @tool("calculate", "Evaluate a math expression")
 def calculate(expression: str) -> str:
@@ -235,7 +235,7 @@ Function signature generates tool schema. Type hints required.
 ## Exceptions
 
 ```python
-from miiflow_llm.core.exceptions import (
+from miiflow_agent.core.exceptions import (
     ProviderError,          # Base exception
     RateLimitError,         # Rate limited
     InvalidRequestError,    # Bad request

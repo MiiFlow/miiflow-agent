@@ -56,12 +56,12 @@ def add_trace_correlation(logger, method_name, event_dict):
 
 def add_miiflow_context(logger, method_name, event_dict):
     """Add miiflow-specific context to log events."""
-    event_dict["component"] = "miiflow-llm"
+    event_dict["component"] = "miiflow-agent"
     
     # Try to get version dynamically
     try:
-        import miiflow_llm
-        event_dict["version"] = getattr(miiflow_llm, "__version__", "unknown")
+        import miiflow_agent
+        event_dict["version"] = getattr(miiflow_agent, "__version__", "unknown")
     except (ImportError, AttributeError):
         event_dict["version"] = "unknown"
     
@@ -72,7 +72,7 @@ def configure_structured_logging(
     config: Optional[ObservabilityConfig] = None,
     force_configuration: bool = False
 ) -> bool:
-    """Configure structured logging for miiflow-llm.
+    """Configure structured logging for miiflow-agent.
     
     Args:
         config: Observability configuration

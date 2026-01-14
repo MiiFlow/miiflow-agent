@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import List, Optional
 
-from miiflow_llm.core import LLMClient, Message
+from miiflow_agent.core import LLMClient, Message
 
 
 @dataclass 
@@ -81,7 +81,7 @@ async def test_incremental_parsing():
         ' AI and machine learning."}'
     ]
     
-    from miiflow_llm.core.streaming import IncrementalParser
+    from miiflow_agent.core.streaming import IncrementalParser
     
     parser = IncrementalParser(schema=PersonInfo)
     
@@ -104,7 +104,7 @@ async def test_incremental_parsing():
 async def test_error_handling():
     """Test error handling in streaming normalization."""
     
-    from miiflow_llm.core.streaming import ProviderStreamNormalizer
+    from miiflow_agent.core.streaming import ProviderStreamNormalizer
     
     normalizer = ProviderStreamNormalizer()
     

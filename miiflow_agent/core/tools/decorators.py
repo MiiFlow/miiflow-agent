@@ -42,8 +42,8 @@ def tool(
             return a + b
 
     Example with explicit schemas:
-        from miiflow_llm.core.tools import tool, ParameterSchema
-        from miiflow_llm.core.tools.types import ParameterType
+        from miiflow_agent.core.tools import tool, ParameterSchema
+        from miiflow_agent.core.tools.types import ParameterType
 
         @tool(
             description="Query CRM data with filters",
@@ -206,7 +206,7 @@ def auto_register_tools(module, registry, prefix: str = "") -> int:
     Automatically register all tools from a module.
     Example:
         import my_tools_module
-        from miiflow_llm.core.tools import ToolRegistry
+        from miiflow_agent.core.tools import ToolRegistry
         
         registry = ToolRegistry()
         count = auto_register_tools(my_tools_module, registry)

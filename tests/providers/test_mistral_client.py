@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from miiflow_llm.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
+from miiflow_agent.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
 
 # Skip entire module if mistralai is not installed
 pytest.importorskip("mistralai", reason="mistralai package not installed")
@@ -15,9 +15,9 @@ class TestMistralClient:
     @pytest.mark.asyncio
     async def test_client_initialization(self):
         """Test Mistral client initialization."""
-        from miiflow_llm.providers.mistral_client import MistralClient
+        from miiflow_agent.providers.mistral_client import MistralClient
         
-        with patch('miiflow_llm.providers.mistral_client.Mistral') as mock_mistral:
+        with patch('miiflow_agent.providers.mistral_client.Mistral') as mock_mistral:
             mock_mistral.return_value = MagicMock()
             
             client = MistralClient(
@@ -32,8 +32,8 @@ class TestMistralClient:
     @pytest.mark.asyncio
     async def test_client_requires_api_key(self):
         """Test that Mistral client requires API key."""
-        from miiflow_llm.providers.mistral_client import MistralClient
-        from miiflow_llm.core.exceptions import AuthenticationError
+        from miiflow_agent.providers.mistral_client import MistralClient
+        from miiflow_agent.core.exceptions import AuthenticationError
         
         with pytest.raises(AuthenticationError, match="Mistral API key is required"):
             MistralClient(model="mistral-small-latest", api_key=None)
@@ -41,9 +41,9 @@ class TestMistralClient:
     @pytest.mark.asyncio
     async def test_message_conversion(self):
         """Test message conversion."""
-        from miiflow_llm.providers.mistral_client import MistralClient
+        from miiflow_agent.providers.mistral_client import MistralClient
         
-        with patch('miiflow_llm.providers.mistral_client.Mistral') as mock_mistral:
+        with patch('miiflow_agent.providers.mistral_client.Mistral') as mock_mistral:
             mock_mistral.return_value = MagicMock()
             
             client = MistralClient(model="mistral-small-latest", api_key="test-key")

@@ -7,7 +7,7 @@ These tests verify multi-agent execution works correctly across:
 
 Run with:
     # All providers (requires all API keys)
-    cd packages/miiflow-llm
+    cd packages/miiflow-agent
     poetry run pytest tests/core/react/test_multi_agent_integration.py -v -m smoke -s
 
     # Specific provider
@@ -32,20 +32,20 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from unittest.mock import MagicMock, AsyncMock
 
-from miiflow_llm import LLMClient
-from miiflow_llm.core import Agent, AgentType
-from miiflow_llm.core.agent import RunContext
-from miiflow_llm.core.message import Message
-from miiflow_llm.core.tools import tool, ToolRegistry
-from miiflow_llm.core.react.enums import MultiAgentEventType, StopReason
-from miiflow_llm.core.react.events import EventBus
-from miiflow_llm.core.react.models import MultiAgentResult, SubAgentConfig, SubAgentPlan
-from miiflow_llm.core.react.multi_agent_orchestrator import MultiAgentOrchestrator
-from miiflow_llm.core.react.orchestrator import ReActOrchestrator
-from miiflow_llm.core.react.parser import ReActParser
-from miiflow_llm.core.react.react_events import MultiAgentEvent
-from miiflow_llm.core.react.safety import SafetyManager
-from miiflow_llm.core.react.tool_executor import AgentToolExecutor
+from miiflow_agent import LLMClient
+from miiflow_agent.core import Agent, AgentType
+from miiflow_agent.core.agent import RunContext
+from miiflow_agent.core.message import Message
+from miiflow_agent.core.tools import tool, ToolRegistry
+from miiflow_agent.core.react.enums import MultiAgentEventType, StopReason
+from miiflow_agent.core.react.events import EventBus
+from miiflow_agent.core.react.models import MultiAgentResult, SubAgentConfig, SubAgentPlan
+from miiflow_agent.core.react.multi_agent_orchestrator import MultiAgentOrchestrator
+from miiflow_agent.core.react.orchestrator import ReActOrchestrator
+from miiflow_agent.core.react.parser import ReActParser
+from miiflow_agent.core.react.react_events import MultiAgentEvent
+from miiflow_agent.core.react.safety import SafetyManager
+from miiflow_agent.core.react.tool_executor import AgentToolExecutor
 
 logger = logging.getLogger(__name__)
 

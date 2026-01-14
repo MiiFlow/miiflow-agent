@@ -1,4 +1,4 @@
-"""Observability and tracing for miiflow-llm with Phoenix integration."""
+"""Observability and tracing for miiflow-agent with Phoenix integration."""
 
 from .config import ObservabilityConfig
 from .context import TraceContext, get_current_trace_context

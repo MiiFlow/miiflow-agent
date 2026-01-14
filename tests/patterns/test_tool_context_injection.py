@@ -15,9 +15,9 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-from miiflow_llm.core.agent import Agent, RunContext
-from miiflow_llm.core.client import LLMClient
-from miiflow_llm.core.tools import FunctionTool, tool
+from miiflow_agent.core.agent import Agent, RunContext
+from miiflow_agent.core.client import LLMClient
+from miiflow_agent.core.tools import FunctionTool, tool
 
 
 @dataclass
@@ -145,7 +145,7 @@ class TestToolContextInjection:
         assert tool.context_injection['pattern'] == 'first_param'
         
         # Test execution through registry
-        from miiflow_llm.core.tools import ToolRegistry
+        from miiflow_agent.core.tools import ToolRegistry
         registry = ToolRegistry()
         registry.register(tool)
         

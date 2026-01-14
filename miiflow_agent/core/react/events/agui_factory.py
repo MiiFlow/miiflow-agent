@@ -1,9 +1,9 @@
 """AG-UI Event Factory - creates AG-UI protocol events.
 
 This module provides a factory for creating AG-UI (Agent-User Interaction Protocol)
-events, enabling native AG-UI support in miiflow-llm.
+events, enabling native AG-UI support in miiflow-agent.
 
-Requires the 'agui' extra: pip install miiflow-llm[agui]
+Requires the 'agui' extra: pip install miiflow-agent[agui]
 """
 
 from typing import Optional, Dict, Any, TYPE_CHECKING
@@ -60,7 +60,7 @@ def check_agui_available():
     """Check if AG-UI protocol is available."""
     if not AGUI_AVAILABLE:
         raise ImportError(
-            "AG-UI protocol not installed. Install with: pip install miiflow-llm[agui]"
+            "AG-UI protocol not installed. Install with: pip install miiflow-agent[agui]"
         )
 
 

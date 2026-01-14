@@ -2,7 +2,7 @@
 """Test multiple tool calls in a single response."""
 
 import asyncio
-from miiflow_llm.core.react.parsing.xml_parser import XMLReActParser, ParseEventType
+from miiflow_agent.core.react.parsing.xml_parser import XMLReActParser, ParseEventType
 
 async def test_multiple_tool_calls():
     """Test parsing a response with multiple tool calls."""

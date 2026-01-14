@@ -1,8 +1,8 @@
 """Tests for explicit parameter schema support in @tool decorator."""
 
 import pytest
-from miiflow_llm.core.tools import tool, ParameterSchema, get_tool_from_function, get_tool_schema
-from miiflow_llm.core.tools.types import ParameterType
+from miiflow_agent.core.tools import tool, ParameterSchema, get_tool_from_function, get_tool_schema
+from miiflow_agent.core.tools.types import ParameterType
 
 
 def test_explicit_schema_overrides_reflection():

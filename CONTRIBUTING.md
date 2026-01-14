@@ -1,14 +1,14 @@
 # Contributing
 
-Thanks for your interest in miiflow-llm. We welcome contributions.
+Thanks for your interest in miiflow-agent. We welcome contributions.
 
 ## Getting Started
 
 1. Fork the repo
 2. Clone your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/miiflow-llm.git
-   cd miiflow-llm
+   git clone https://github.com/YOUR_USERNAME/miiflow-agent.git
+   cd miiflow-agent
    ```
 
 3. Install dependencies:
@@ -40,10 +40,10 @@ We use:
 
 Run all checks:
 ```bash
-black miiflow_llm/
-isort miiflow_llm/
-flake8 miiflow_llm/
-mypy miiflow_llm/
+black miiflow_agent/
+isort miiflow_agent/
+flake8 miiflow_agent/
+mypy miiflow_agent/
 ```
 
 Or setup pre-commit:
@@ -54,7 +54,7 @@ pre-commit install
 ### Project Structure
 
 ```
-miiflow_llm/
+miiflow_agent/
 ├── core/           # Core abstractions
 │   ├── client.py   # LLM client
 │   ├── agent.py    # Agent implementation
@@ -111,11 +111,11 @@ miiflow_llm/
 
 ## Adding a Provider
 
-1. Create `miiflow_llm/providers/newprovider.py`:
+1. Create `miiflow_agent/providers/newprovider.py`:
    ```python
-   from miiflow_llm.core.client import BaseLLMClient
-   from miiflow_llm.core.message import Message
-   from miiflow_llm.core.streaming import StreamChunk
+   from miiflow_agent.core.client import BaseLLMClient
+   from miiflow_agent.core.message import Message
+   from miiflow_agent.core.streaming import StreamChunk
 
    class NewProviderClient(BaseLLMClient):
        async def _achat(self, messages):
@@ -127,9 +127,9 @@ miiflow_llm/
            pass
    ```
 
-2. Register in `miiflow_llm/__init__.py`:
+2. Register in `miiflow_agent/__init__.py`:
    ```python
-   "newprovider": "miiflow_llm.providers.newprovider.NewProviderClient"
+   "newprovider": "miiflow_agent.providers.newprovider.NewProviderClient"
    ```
 
 3. Add tests in `tests/providers/test_newprovider.py`
@@ -155,7 +155,7 @@ pytest tests/test_llm_client.py
 
 ### With Coverage
 ```bash
-pytest --cov=miiflow_llm tests/
+pytest --cov=miiflow_agent tests/
 ```
 
 ## Documentation

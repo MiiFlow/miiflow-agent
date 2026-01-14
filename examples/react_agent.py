@@ -8,8 +8,8 @@ This example demonstrates the ReAct (Reasoning + Acting) pattern:
 import asyncio
 import math
 
-from miiflow_llm import LLMClient, Agent, AgentType, RunContext, tool
-from miiflow_llm.core.react import ReActEventType
+from miiflow_agent import LLMClient, Agent, AgentType, RunContext, tool
+from miiflow_agent.core.react import ReActEventType
 
 
 # Define simple tools using the @tool decorator

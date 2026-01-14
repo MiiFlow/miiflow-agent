@@ -4,8 +4,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import List
 
-from miiflow_llm.providers.anthropic_client import AnthropicClient
-from miiflow_llm.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
+from miiflow_agent.providers.anthropic_client import AnthropicClient
+from miiflow_agent.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
 
 
 class TestAnthropicClient:
@@ -137,7 +137,7 @@ class TestAnthropicClient:
     @pytest.mark.asyncio
     async def test_multimodal_message_conversion(self, client):
         """Test multimodal message conversion."""
-        from miiflow_llm.core.message import TextBlock, ImageBlock
+        from miiflow_agent.core.message import TextBlock, ImageBlock
         
         multimodal_message = Message.user([
             TextBlock(text="What's in this image?"),
@@ -164,7 +164,7 @@ class TestAnthropicClient:
     @pytest.mark.asyncio
     async def test_error_handling(self, client, sample_messages):
         """Test error handling in chat completion."""
-        from miiflow_llm.core.exceptions import ProviderError
+        from miiflow_agent.core.exceptions import ProviderError
         
         with patch.object(client.client.messages, 'create', new_callable=AsyncMock) as mock_create:
             mock_create.side_effect = Exception("API Error")
@@ -175,7 +175,7 @@ class TestAnthropicClient:
     @pytest.mark.asyncio
     async def test_stream_error_handling(self, client, sample_messages):
         """Test error handling in streaming."""
-        from miiflow_llm.core.exceptions import ProviderError
+        from miiflow_agent.core.exceptions import ProviderError
         
         async def error_generator():
             yield MagicMock()  # First chunk OK
@@ -239,7 +239,7 @@ class TestAnthropicClient:
     @pytest.mark.asyncio
     async def test_whitespace_textblock_filtering(self, client):
         """Test that whitespace-only TextBlock objects are filtered out."""
-        from miiflow_llm.core.message import TextBlock, ImageBlock
+        from miiflow_agent.core.message import TextBlock, ImageBlock
 
         # Create a message with both valid and whitespace-only text blocks
         multimodal_message = Message.user([
@@ -261,7 +261,7 @@ class TestAnthropicClient:
     @pytest.mark.asyncio
     async def test_all_whitespace_blocks_get_placeholder(self, client):
         """Test that if all TextBlocks are whitespace, a placeholder is added."""
-        from miiflow_llm.core.message import TextBlock
+        from miiflow_agent.core.message import TextBlock
 
         # Create a message with only whitespace text blocks
         multimodal_message = Message.user([

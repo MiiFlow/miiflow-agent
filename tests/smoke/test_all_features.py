@@ -17,9 +17,9 @@ import os
 import pytest
 from typing import List, Dict, Any
 
-from miiflow_llm import LLMClient
-from miiflow_llm.core.message import Message, MessageRole
-from miiflow_llm.core.tools import tool, ParameterSchema, ParameterType
+from miiflow_agent import LLMClient
+from miiflow_agent.core.message import Message, MessageRole
+from miiflow_agent.core.tools import tool, ParameterSchema, ParameterType
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -816,7 +816,7 @@ class TestImageInput:
             api_key=api_key
         )
 
-        from miiflow_llm.core.message import Message
+        from miiflow_agent.core.message import Message
 
         # Create message with image
         message = Message.from_image(
@@ -847,7 +847,7 @@ class TestImageInput:
             api_key=api_key
         )
 
-        from miiflow_llm.core.message import Message
+        from miiflow_agent.core.message import Message
 
         schema = {
             "type": "object",
@@ -898,7 +898,7 @@ class TestImageInput:
             api_key=api_key
         )
 
-        from miiflow_llm.core.message import Message, TextBlock, ImageBlock
+        from miiflow_agent.core.message import Message, TextBlock, ImageBlock
 
         # Create message with multiple images
         message = Message(

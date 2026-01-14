@@ -3,13 +3,13 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from miiflow_llm.core.agent import (
+from miiflow_agent.core.agent import (
     Agent, RunContext, RunResult, AgentType
 )
-from miiflow_llm.core.client import LLMClient, ChatResponse
-from miiflow_llm.core.message import Message, MessageRole
-from miiflow_llm.core.metrics import TokenCount
-from miiflow_llm.core.tools import tool
+from miiflow_agent.core.client import LLMClient, ChatResponse
+from miiflow_agent.core.message import Message, MessageRole
+from miiflow_agent.core.metrics import TokenCount
+from miiflow_agent.core.tools import tool
 from dataclasses import dataclass
 from typing import Optional
 
@@ -216,9 +216,9 @@ class TestStreamSingleHop:
     async def test_stream_single_hop_adds_user_message(self):
         """Test that _stream_single_hop adds user message to context."""
         from unittest.mock import MagicMock
-        from miiflow_llm.core.agent import Agent, RunContext
-        from miiflow_llm.core.message import Message, MessageRole
-        from miiflow_llm.core.client import StreamChunk
+        from miiflow_agent.core.agent import Agent, RunContext
+        from miiflow_agent.core.message import Message, MessageRole
+        from miiflow_agent.core.client import StreamChunk
 
         # Create a mock client
         mock_client = MagicMock()
@@ -254,9 +254,9 @@ class TestStreamSingleHop:
     async def test_stream_single_hop_doesnt_duplicate_message(self):
         """Test that _stream_single_hop doesn't duplicate if message already exists."""
         from unittest.mock import MagicMock
-        from miiflow_llm.core.agent import Agent, RunContext
-        from miiflow_llm.core.message import Message, MessageRole
-        from miiflow_llm.core.client import StreamChunk
+        from miiflow_agent.core.agent import Agent, RunContext
+        from miiflow_agent.core.message import Message, MessageRole
+        from miiflow_agent.core.client import StreamChunk
 
         # Create a mock client
         mock_client = MagicMock()
@@ -298,7 +298,7 @@ class TestImportPatterns:
     
     def test_core_imports(self):
         """Test that applications can import everything they need."""
-        from miiflow_llm.core import Agent, RunContext, RunResult, AgentType
+        from miiflow_agent.core import Agent, RunContext, RunResult, AgentType
         
         assert Agent is not None
         assert RunContext is not None
@@ -307,7 +307,7 @@ class TestImportPatterns:
     
     def test_agent_typing_support(self):
         """Test that proper type annotations work."""
-        from miiflow_llm.core import Agent
+        from miiflow_agent.core import Agent
 
         # Type annotations work even without deps_type/result_type params
         def create_typed_agent(client) -> Agent[MockDeps, str]:

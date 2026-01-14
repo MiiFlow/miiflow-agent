@@ -4,15 +4,15 @@ import pytest
 from unittest.mock import Mock, patch
 from typing import Dict, Any
 
-from miiflow_llm.core.observability.config import ObservabilityConfig
-from miiflow_llm.core.observability.context import TraceContext, get_current_trace_context, set_trace_context
-from miiflow_llm.core.observability.auto_instrumentation import (
+from miiflow_agent.core.observability.config import ObservabilityConfig
+from miiflow_agent.core.observability.context import TraceContext, get_current_trace_context, set_trace_context
+from miiflow_agent.core.observability.auto_instrumentation import (
     setup_openinference_instrumentation,
     setup_opentelemetry_tracing,
     check_instrumentation_status,
     enable_phoenix_tracing,
 )
-from miiflow_llm.core.observability.logging import get_logger, configure_structured_logging
+from miiflow_agent.core.observability.logging import get_logger, configure_structured_logging
 
 
 class TestObservabilityConfig:
@@ -245,8 +245,8 @@ class TestAutoInstrumentation:
         assert "available" in status["google_genai"]
         assert "instrumented" in status["google_genai"]
 
-    @patch('miiflow_llm.core.observability.auto_instrumentation.setup_opentelemetry_tracing')
-    @patch('miiflow_llm.core.observability.auto_instrumentation.setup_openinference_instrumentation')
+    @patch('miiflow_agent.core.observability.auto_instrumentation.setup_opentelemetry_tracing')
+    @patch('miiflow_agent.core.observability.auto_instrumentation.setup_openinference_instrumentation')
     def test_enable_phoenix_tracing(self, mock_instrumentation, mock_otel):
         """Test enabling Phoenix tracing."""
         mock_otel.return_value = True
@@ -290,7 +290,7 @@ class TestIntegration:
             # Should not raise an error even with missing dependencies
             assert config.phoenix_enabled
 
-    @patch('miiflow_llm.core.observability.auto_instrumentation.setup_opentelemetry_tracing')
+    @patch('miiflow_agent.core.observability.auto_instrumentation.setup_opentelemetry_tracing')
     def test_simplified_phoenix_setup(self, mock_otel_setup):
         """Test the simplified Phoenix setup process."""
         mock_otel_setup.return_value = True

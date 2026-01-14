@@ -311,7 +311,7 @@ def enable_phoenix_tracing(
             config = ObservabilityConfig(
                 phoenix_enabled=True,
                 phoenix_endpoint=endpoint,
-                phoenix_project_name="miiflow-llm",
+                phoenix_project_name="miiflow-agent",
                 structured_logging=True,
             )
         else:

@@ -5,13 +5,13 @@ import sys
 import os
 
 # Add package to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "packages/miiflow-llm"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "packages/miiflow-agent"))
 
-from miiflow_llm.core.react.orchestrator import ReActOrchestrator
-from miiflow_llm.core.react.tool_executor import AgentToolExecutor
-from miiflow_llm.core.react.events import EventBus
-from miiflow_llm.core.react.safety import SafetyManager
-from miiflow_llm.core.react.parser import ReActParser
+from miiflow_agent.core.react.orchestrator import ReActOrchestrator
+from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+from miiflow_agent.core.react.events import EventBus
+from miiflow_agent.core.react.safety import SafetyManager
+from miiflow_agent.core.react.parser import ReActParser
 
 
 class MockToolExecutor:

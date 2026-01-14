@@ -4,7 +4,7 @@ This module provides a callback registry that allows users to register listeners
 for LLM events like token consumption, errors, and agent lifecycle events.
 
 Usage:
-    from miiflow_llm import on_post_call, CallbackEvent, CallbackContext, callback_context
+    from miiflow_agent import on_post_call, CallbackEvent, CallbackContext, callback_context
 
     # Register a callback
     @on_post_call
@@ -118,7 +118,7 @@ class CallbackRegistry:
     LLM call.
 
     Usage:
-        from miiflow_llm import callbacks
+        from miiflow_agent import callbacks
 
         @callbacks.on_post_call
         async def track_usage(event: CallbackEvent):

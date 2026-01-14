@@ -6,15 +6,15 @@ with support for streaming, tool calling, structured output, and agentic pattern
 like ReAct and Plan & Execute.
 
 Quick Start:
-    from miiflow_llm import LLMClient, Message
+    from miiflow_agent import LLMClient, Message
 
     # Simple chat
     client = LLMClient.create("openai", model="gpt-4o-mini")
     response = client.chat([Message.user("Hello")])
 
     # Agent with ReAct
-    from miiflow_llm import Agent, AgentType
-    from miiflow_llm.core.tools import tool
+    from miiflow_agent import Agent, AgentType
+    from miiflow_agent.core.tools import tool
 
     @tool("calculate", "Do math")
     def calculate(expression: str) -> str:

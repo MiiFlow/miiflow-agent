@@ -16,7 +16,7 @@ Takes 20 minutes.
 Start with a basic LLM client:
 
 ```python
-from miiflow_llm import LLMClient
+from miiflow_agent import LLMClient
 import asyncio
 
 client = LLMClient.create("openai", model="gpt-4o-mini")
@@ -29,8 +29,8 @@ Nothing special yet. Just a normal client.
 Add an agent with no tools:
 
 ```python
-from miiflow_llm import Agent
-from miiflow_llm.core import AgentType
+from miiflow_agent import Agent
+from miiflow_agent.core import AgentType
 
 agent = Agent(
     client=client,
@@ -50,7 +50,7 @@ Run this. The agent will answer but can't use any tools yet.
 Give it a calculator:
 
 ```python
-from miiflow_llm.core.tools import tool
+from miiflow_agent.core.tools import tool
 import math
 
 @tool("calculate", "Evaluate a math expression")
@@ -282,9 +282,9 @@ result = asyncio.run(agent.run(
 import asyncio
 import httpx
 import math
-from miiflow_llm import LLMClient, Agent
-from miiflow_llm.core import AgentType
-from miiflow_llm.core.tools import tool
+from miiflow_agent import LLMClient, Agent
+from miiflow_agent.core import AgentType
+from miiflow_agent.core.tools import tool
 
 @tool("calculate", "Evaluate math expressions")
 def calculate(expression: str) -> str:

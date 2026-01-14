@@ -74,7 +74,7 @@ class EventBus:
         if event_format == "agui":
             if not AGUI_AVAILABLE:
                 raise ImportError(
-                    "AG-UI protocol not installed. Install with: pip install miiflow-llm[agui]"
+                    "AG-UI protocol not installed. Install with: pip install miiflow-agent[agui]"
                 )
             if not thread_id or not message_id:
                 raise ValueError(

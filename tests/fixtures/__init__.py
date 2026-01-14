@@ -1,1 +1,1 @@
-"""Shared test fixtures for miiflow-llm tests."""
+"""Shared test fixtures for miiflow-agent tests."""

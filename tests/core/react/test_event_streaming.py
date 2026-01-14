@@ -6,11 +6,11 @@ from unittest.mock import MagicMock, AsyncMock
 from dataclasses import dataclass
 from typing import List
 
-from miiflow_llm import RunContext
-from miiflow_llm.core.react.events import EventBus, EventFactory
-from miiflow_llm.core.react.enums import ReActEventType, PlanExecuteEventType, StopReason
-from miiflow_llm.core.react.models import ReActStep
-from miiflow_llm.core.react.react_events import ReActEvent, PlanExecuteEvent
+from miiflow_agent import RunContext
+from miiflow_agent.core.react.events import EventBus, EventFactory
+from miiflow_agent.core.react.enums import ReActEventType, PlanExecuteEventType, StopReason
+from miiflow_agent.core.react.models import ReActStep
+from miiflow_agent.core.react.react_events import ReActEvent, PlanExecuteEvent
 
 
 class TestEventFactory:

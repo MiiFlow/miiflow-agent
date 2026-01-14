@@ -21,7 +21,7 @@ The tests support three major LLM providers:
 ### Single Provider (default: OpenAI)
 
 ```bash
-cd packages/miiflow-llm
+cd packages/miiflow-agent
 
 # OpenAI (default)
 export OPENAI_API_KEY="sk-..."

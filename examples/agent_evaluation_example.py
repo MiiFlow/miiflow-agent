@@ -4,14 +4,14 @@ import os
 import asyncio
 from typing import List
 
-# Set up Phoenix before importing miiflow-llm
+# Set up Phoenix before importing miiflow-agent
 os.environ["PHOENIX_ENABLED"] = "true"
 os.environ["PHOENIX_ENDPOINT"] = "http://localhost:6006"
 os.environ["STRUCTURED_LOGGING"] = "true"
 
-# Import miiflow-llm
-from miiflow_llm import LLMClient, Message, Agent
-from miiflow_llm.core.observability.evaluation import (
+# Import miiflow-agent
+from miiflow_agent import LLMClient, Message, Agent
+from miiflow_agent.core.observability.evaluation import (
     AgentEvaluator,
     EvaluatedAgent,
     EvaluationMetric,
@@ -210,7 +210,7 @@ async def evaluation_with_tools_example():
     )
 
     # Add tools
-    from miiflow_llm.core.tools import tool
+    from miiflow_agent.core.tools import tool
     calc_tool = tool("calculator", "Calculate mathematical expressions")(calculator)
     weather_tool = tool("weather", "Get weather information")(weather)
 
@@ -326,7 +326,7 @@ def setup_phoenix_for_evaluation():
 
     except ImportError:
         print("✗ Phoenix not installed. Install with:")
-        print("  pip install 'miiflow-llm[observability]'")
+        print("  pip install 'miiflow-agent[observability]'")
     except Exception as e:
         print(f"✗ Failed to start Phoenix: {e}")
 
@@ -373,7 +373,7 @@ if __name__ == "__main__":
     except ImportError as e:
         print(f"Missing dependencies: {e}")
         print("\nInstall evaluation dependencies with:")
-        print("pip install 'miiflow-llm[observability]'")
+        print("pip install 'miiflow-agent[observability]'")
     except KeyboardInterrupt:
         print("\nExamples interrupted by user")
     except Exception as e:

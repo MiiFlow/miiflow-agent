@@ -11,7 +11,7 @@ A clear description of the bug.
 
 ## To Reproduce
 ```python
-from miiflow_llm import LLMClient, Message
+from miiflow_agent import LLMClient, Message
 
 # Minimal code to reproduce the issue
 client = LLMClient.create("openai", model="gpt-4o-mini")
@@ -25,7 +25,7 @@ What you expected to happen.
 What actually happened. Include error messages if any.
 
 ## Environment
-- miiflow-llm version:
+- miiflow-agent version:
 - Python version:
 - OS:
 - Provider (OpenAI/Anthropic/etc):

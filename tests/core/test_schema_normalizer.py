@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from miiflow_llm.core.schema_normalizer import SchemaMode, normalize_json_schema
+from miiflow_agent.core.schema_normalizer import SchemaMode, normalize_json_schema
 
 
 class TestSchemaModeStrict:

@@ -1,17 +1,17 @@
 [tool.poetry]
-name = "miiflow-llm"
-version = "0.5.1"
-description = "A lightweight, unified interface for LLM providers with streaming, tool calling, and structured output support"
+name = "miiflow-agent"
+version = "1.0.0"
+description = "A lightweight Python SDK for building AI agents with unified LLM providers, ReAct orchestration, and tool calling"
 authors = [ "Yaozhong Kang <yaozhong@miiflow.ai>" , "Debjyoti Ray <dev@miiflow.ai>" ]
 maintainers = [ "Yaozhong Kang <yaozhong@miiflow.ai>" ]
 readme = "README.md"
 license = "MIT"
-homepage = "https://github.com/Miiflow/miiflow-llm"
-repository = "https://github.com/Miiflow/miiflow-llm"
-documentation = "https://github.com/Miiflow/miiflow-llm#readme"
-keywords = ["llm", "openai", "anthropic", "agents", "streaming", "tools"]
+homepage = "https://github.com/Miiflow/miiflow-agent"
+repository = "https://github.com/Miiflow/miiflow-agent"
+documentation = "https://github.com/Miiflow/miiflow-agent#readme"
+keywords = ["agent", "llm", "openai", "anthropic", "react", "orchestration", "tools"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",

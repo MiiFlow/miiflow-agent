@@ -9,7 +9,7 @@ Responsibilities:
 - NOT responsible for custom type mappings (TIMESTAMP->string) - that's handled upstream
 
 Usage:
-    from miiflow_llm.core.schema_normalizer import normalize_json_schema, SchemaMode
+    from miiflow_agent.core.schema_normalizer import normalize_json_schema, SchemaMode
 
     # For OpenAI
     normalized = normalize_json_schema(schema, SchemaMode.STRICT)

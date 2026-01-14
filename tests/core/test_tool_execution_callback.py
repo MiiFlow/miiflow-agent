@@ -3,14 +3,14 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from miiflow_llm.core.callbacks import (
+from miiflow_agent.core.callbacks import (
     CallbackEvent,
     CallbackEventType,
     CallbackRegistry,
     get_global_registry,
 )
-from miiflow_llm.core.react.tool_executor import AgentToolExecutor
-from miiflow_llm.core.tools import ToolRegistry, ToolResult
+from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+from miiflow_agent.core.tools import ToolRegistry, ToolResult
 
 
 class TestToolExecutionCallback:

@@ -13,9 +13,9 @@ import os
 # Add package to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from miiflow_llm.core.tools import tool, get_tool_from_function
-from miiflow_llm.core.react.tool_executor import AgentToolExecutor
-from miiflow_llm.core.tools.registry import ToolRegistry
+from miiflow_agent.core.tools import tool, get_tool_from_function
+from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+from miiflow_agent.core.tools.registry import ToolRegistry
 
 
 # Tool without context (like test_react_streaming tools)

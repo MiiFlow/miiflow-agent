@@ -1,7 +1,7 @@
 """Tests for XML-based ReAct parser."""
 
 import pytest
-from miiflow_llm.core.react.parsing import XMLReActParser
+from miiflow_agent.core.react.parsing import XMLReActParser
 
 
 class TestXMLParser:

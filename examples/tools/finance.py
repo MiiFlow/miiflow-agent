@@ -7,7 +7,7 @@ Install: pip install yfinance
 """
 
 from typing import Optional
-from miiflow_llm.core.tools import tool
+from miiflow_agent.core.tools import tool
 
 
 @tool("get_stock_quote", "Get real-time stock quote and key metrics for a symbol")

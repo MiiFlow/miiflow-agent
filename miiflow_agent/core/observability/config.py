@@ -12,7 +12,7 @@ class ObservabilityConfig:
 
     phoenix_enabled: bool = False
     phoenix_endpoint: Optional[str] = None
-    phoenix_project_name: str = "miiflow-llm"
+    phoenix_project_name: str = "miiflow-agent"
     phoenix_api_key: Optional[str] = None
     phoenix_client_headers: Optional[str] = None
     structured_logging: bool = True
@@ -47,14 +47,14 @@ class ObservabilityConfig:
         return cls(
             phoenix_enabled=phoenix_enabled,
             phoenix_endpoint=phoenix_endpoint,
-            phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "miiflow-llm"),
+            phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "miiflow-agent"),
             phoenix_api_key=phoenix_api_key,
             phoenix_client_headers=phoenix_client_headers,
             structured_logging=os.getenv("STRUCTURED_LOGGING", "true").lower() == "true",
         )
 
     @classmethod
-    def for_local(cls, project_name: str = "miiflow-llm") -> "ObservabilityConfig":
+    def for_local(cls, project_name: str = "miiflow-agent") -> "ObservabilityConfig":
         """Factory method for local Phoenix deployment.
 
         Args:
@@ -75,7 +75,7 @@ class ObservabilityConfig:
         cls,
         api_key: str,
         endpoint: str,
-        project_name: str = "miiflow-llm",
+        project_name: str = "miiflow-agent",
         client_headers: Optional[str] = None,
     ) -> "ObservabilityConfig":
         """Factory method for Phoenix Cloud deployment.

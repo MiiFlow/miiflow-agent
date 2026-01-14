@@ -1,17 +1,17 @@
-"""Example demonstrating Phoenix observability with miiflow-llm."""
+"""Example demonstrating Phoenix observability with miiflow-agent."""
 
 import os
 import asyncio
 from typing import List
 
-# Set up Phoenix before importing miiflow-llm
+# Set up Phoenix before importing miiflow-agent
 os.environ["PHOENIX_ENABLED"] = "true"
 os.environ["PHOENIX_ENDPOINT"] = "http://localhost:6006"
 os.environ["STRUCTURED_LOGGING"] = "true"
 
-# Import miiflow-llm (this will initialize observability)
-from miiflow_llm import LLMClient, Message, Agent, RunContext
-from miiflow_llm.core import print_observability_status
+# Import miiflow-agent (this will initialize observability)
+from miiflow_agent import LLMClient, Message, Agent, RunContext
+from miiflow_agent.core import print_observability_status
 
 
 async def basic_llm_tracing_example():
@@ -66,7 +66,7 @@ async def agent_tracing_example():
     )
 
     # Add the tool
-    from miiflow_llm.core.tools import tool
+    from miiflow_agent.core.tools import tool
     tool_decorator = tool("weather", "Get weather information")
     instrumented_tool = tool_decorator(weather_tool)
     agent.add_tool(instrumented_tool)
@@ -101,8 +101,8 @@ def demonstrate_metrics_integration():
     """Demonstrate metrics integration with Phoenix."""
     print("\n=== Metrics Integration Example ===")
 
-    from miiflow_llm.core.observability.metrics_bridge import ObservabilityMetricsCollector
-    from miiflow_llm.core.metrics import UsageData, TokenCount
+    from miiflow_agent.core.observability.metrics_bridge import ObservabilityMetricsCollector
+    from miiflow_agent.core.metrics import UsageData, TokenCount
     from datetime import datetime
 
     # Create enhanced metrics collector
@@ -166,7 +166,7 @@ def setup_phoenix_dashboard():
 
     except ImportError:
         print("✗ Phoenix not installed. Install with:")
-        print("  pip install 'miiflow-llm[observability]'")
+        print("  pip install 'miiflow-agent[observability]'")
     except Exception as e:
         print(f"✗ Failed to start Phoenix: {e}")
 
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     except ImportError as e:
         print(f"Missing dependencies: {e}")
         print("\nInstall observability dependencies with:")
-        print("pip install 'miiflow-llm[observability]'")
+        print("pip install 'miiflow-agent[observability]'")
         print("\nOr install individual packages:")
         print("pip install arize-phoenix opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp")
     except KeyboardInterrupt:

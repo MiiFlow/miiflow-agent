@@ -4,7 +4,7 @@ This module provides a way to pass context (like organization_id, agent_node_run
 through LLM calls to callbacks without changing method signatures.
 
 Usage:
-    from miiflow_llm import CallbackContext, callback_context
+    from miiflow_agent import CallbackContext, callback_context
 
     ctx = CallbackContext(
         organization_id="org_123",

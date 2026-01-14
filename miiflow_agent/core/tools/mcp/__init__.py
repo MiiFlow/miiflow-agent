@@ -2,7 +2,7 @@
 MCP (Model Context Protocol) tools package.
 
 Provides client support for connecting to external MCP servers and integrating
-their tools with the miiflow-llm tool system.
+their tools with the miiflow-agent tool system.
 
 Supported transports:
 - stdio: Local subprocess communication
@@ -10,7 +10,7 @@ Supported transports:
 - sse: HTTP Server-Sent Events (deprecated, use streamable_http)
 
 Usage:
-    from miiflow_llm.core.tools.mcp import MCPToolManager, MCPServerConfig
+    from miiflow_agent.core.tools.mcp import MCPToolManager, MCPServerConfig
 
     manager = MCPToolManager()
     manager.add_server(MCPServerConfig(

@@ -16,7 +16,7 @@ Takes 15 minutes.
 Start simple. A tool that returns fake weather:
 
 ```python
-from miiflow_llm.core.tools import tool
+from miiflow_agent.core.tools import tool
 
 @tool("get_weather", "Get current weather for a city")
 def get_weather(city: str) -> str:
@@ -36,8 +36,8 @@ That's it. The `@tool` decorator makes your function available to agents.
 Now hook it up:
 
 ```python
-from miiflow_llm import LLMClient, Agent
-from miiflow_llm.core import AgentType
+from miiflow_agent import LLMClient, Agent
+from miiflow_agent.core import AgentType
 import asyncio
 
 client = LLMClient.create("openai", model="gpt-4o-mini")
@@ -176,9 +176,9 @@ result = asyncio.run(agent.run(
 ```python
 import httpx
 import asyncio
-from miiflow_llm import LLMClient, Agent
-from miiflow_llm.core import AgentType
-from miiflow_llm.core.tools import tool
+from miiflow_agent import LLMClient, Agent
+from miiflow_agent.core import AgentType
+from miiflow_agent.core.tools import tool
 
 @tool("get_weather", "Get current weather for a city")
 def get_weather(city: str) -> str:

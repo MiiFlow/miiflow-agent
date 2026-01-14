@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, List
 import fitz
 import httpx
 
-from miiflow_llm.utils.url_validator import validate_external_url, URLSecurityError
+from miiflow_agent.utils.url_validator import validate_external_url, URLSecurityError
 
 logger = logging.getLogger(__name__)
 

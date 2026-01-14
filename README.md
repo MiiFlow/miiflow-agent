@@ -1,22 +1,22 @@
 <p align="center">
-  <h1 align="center">miiflow-llm</h1>
+  <h1 align="center">miiflow-agent</h1>
   <p align="center">
     <strong>A lightweight, unified Python SDK for LLM providers with built-in agentic patterns</strong>
   </p>
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/miiflow-llm/"><img src="https://img.shields.io/pypi/v/miiflow-llm.svg" alt="PyPI version"></a>
-  <a href="https://pypi.org/project/miiflow-llm/"><img src="https://img.shields.io/pypi/pyversions/miiflow-llm.svg" alt="Python versions"></a>
-  <a href="https://github.com/Miiflow/miiflow-llm/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://pypi.org/project/miiflow-agent/"><img src="https://img.shields.io/pypi/v/miiflow-agent.svg" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/miiflow-agent/"><img src="https://img.shields.io/pypi/pyversions/miiflow-agent.svg" alt="Python versions"></a>
+  <a href="https://github.com/Miiflow/miiflow-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
 </p>
 
 ---
 
-**miiflow-llm** gives you a unified API across LLM providers, with built-in support for ReAct agents, tool calling, and streaming — all in ~15K lines of focused code.
+**miiflow-agent** gives you a unified API across LLM providers, with built-in support for ReAct agents, tool calling, and streaming — all in ~15K lines of focused code.
 
 ```python
-from miiflow_llm import LLMClient, Message
+from miiflow_agent import LLMClient, Message
 
 # Same interface for any provider
 client = LLMClient.create("openai", model="gpt-4o-mini")
@@ -32,9 +32,9 @@ client = LLMClient.create("anthropic", model="claude-sonnet-4-20250514")
 https://github.com/user-attachments/assets/0b5c870a-f9b2-4d55-a829-9d7c000be907
 
 
-## Why miiflow-llm?
+## Why miiflow-agent?
 
-| | miiflow-llm | LangChain | LiteLLM |
+| | miiflow-agent | LangChain | LiteLLM |
 |---|:---:|:---:|:---:|
 | **Codebase size** | ~15K lines | ~500K lines | ~50K lines |
 | **Dependencies** | 8 core | 50+ | 20+ |
@@ -45,7 +45,7 @@ https://github.com/user-attachments/assets/0b5c870a-f9b2-4d55-a829-9d7c000be907
 
 ### The LangChain Problem
 
-LangChain is powerful but complex. For production apps, you often fight its abstractions more than use them. miiflow-llm gives you **what you actually need**:
+LangChain is powerful but complex. For production apps, you often fight its abstractions more than use them. miiflow-agent gives you **what you actually need**:
 
 - **Unified provider interface** — swap OpenAI → Claude → Gemini with one line
 - **Agentic patterns built-in** — ReAct and Plan & Execute, not bolted on
@@ -55,7 +55,7 @@ LangChain is powerful but complex. For production apps, you often fight its abst
 
 ### The LiteLLM Gap
 
-LiteLLM unifies provider APIs but stops there. miiflow-llm adds:
+LiteLLM unifies provider APIs but stops there. miiflow-agent adds:
 
 - **ReAct agents** with multi-hop reasoning
 - **Plan & Execute** for complex multi-step tasks
@@ -65,13 +65,13 @@ LiteLLM unifies provider APIs but stops there. miiflow-llm adds:
 ## Installation
 
 ```bash
-pip install miiflow-llm
+pip install miiflow-agent
 
 # With optional providers
-pip install miiflow-llm[groq,google]
+pip install miiflow-agent[groq,google]
 
 # Everything
-pip install miiflow-llm[all]
+pip install miiflow-agent[all]
 ```
 
 ## Quick Start
@@ -79,7 +79,7 @@ pip install miiflow-llm[all]
 ### Basic Chat
 
 ```python
-from miiflow_llm import LLMClient, Message
+from miiflow_agent import LLMClient, Message
 
 client = LLMClient.create("openai", model="gpt-4o-mini")
 response = client.chat([
@@ -99,7 +99,7 @@ async for chunk in client.astream_chat([Message.user("Tell me a story")]):
 ### ReAct Agent with Tools
 
 ```python
-from miiflow_llm import Agent, AgentType, LLMClient, tool
+from miiflow_agent import Agent, AgentType, LLMClient, tool
 
 @tool("calculate", "Evaluate mathematical expressions")
 def calculate(expression: str) -> str:
@@ -127,7 +127,7 @@ print(result.data)  # Agent reasons, calls tools, synthesizes answer
 
 ```python
 from dataclasses import dataclass
-from miiflow_llm import Agent, RunContext, tool
+from miiflow_agent import Agent, RunContext, tool
 
 @dataclass
 class UserContext:
@@ -252,7 +252,7 @@ agent = Agent(client, agent_type=AgentType.REACT)
 For complex tasks, the agent creates a plan first, then executes each step:
 
 ```python
-from miiflow_llm.core.react import ReActFactory
+from miiflow_agent.core.react import ReActFactory
 
 orchestrator = ReActFactory.create_plan_execute_orchestrator(
     agent=agent,
@@ -281,8 +281,8 @@ result = await orchestrator.execute(
 Stream real-time events during agent execution:
 
 ```python
-from miiflow_llm import Agent, AgentType, RunContext
-from miiflow_llm.core.react import ReActEventType
+from miiflow_agent import Agent, AgentType, RunContext
+from miiflow_agent.core.react import ReActEventType
 
 agent = Agent(client, agent_type=AgentType.REACT)
 context = RunContext(deps=None)
@@ -304,7 +304,7 @@ async for event in agent.stream_react("What is 2+2?", context):
 Built-in Phoenix tracing support:
 
 ```python
-from miiflow_llm.core import setup_tracing
+from miiflow_agent.core import setup_tracing
 
 setup_tracing(phoenix_endpoint="http://localhost:6006")
 
@@ -316,7 +316,7 @@ setup_tracing(phoenix_endpoint="http://localhost:6006")
 Comprehensive error hierarchy:
 
 ```python
-from miiflow_llm import (
+from miiflow_agent import (
     MiiflowLLMError,    # Base
     ProviderError,      # Provider-specific
     RateLimitError,     # Rate limited
@@ -350,16 +350,16 @@ We welcome contributions! Here's how to get started:
 
 ```bash
 # Clone and install
-git clone https://github.com/Miiflow/miiflow-llm.git
-cd miiflow-llm
+git clone https://github.com/Miiflow/miiflow-agent.git
+cd miiflow-agent
 pip install -e ".[all]"
 
 # Run tests
 pytest tests/
 
 # Format code
-black miiflow_llm/ tests/
-isort miiflow_llm/ tests/
+black miiflow_agent/ tests/
+isort miiflow_agent/ tests/
 ```
 
 ### Ways to Contribute

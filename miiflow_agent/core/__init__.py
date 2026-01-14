@@ -69,7 +69,7 @@ def setup_tracing(phoenix_endpoint: str = None, force: bool = False) -> bool:
         True if tracing was enabled, False otherwise.
 
     Example:
-        from miiflow_llm.core import setup_tracing
+        from miiflow_agent.core import setup_tracing
 
         # Enable with default endpoint from env
         setup_tracing()

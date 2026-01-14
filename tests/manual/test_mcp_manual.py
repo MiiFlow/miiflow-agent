@@ -36,9 +36,9 @@ import asyncio
 import os
 import sys
 
-from miiflow_llm import Agent, AgentType, LLMClient, RunContext
-from miiflow_llm.core.react import ReActEventType
-from miiflow_llm.core.tools import MCPServerConfig, MCPToolManager
+from miiflow_agent import Agent, AgentType, LLMClient, RunContext
+from miiflow_agent.core.react import ReActEventType
+from miiflow_agent.core.tools import MCPServerConfig, MCPToolManager
 
 
 # =============================================================================

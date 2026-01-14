@@ -5,8 +5,8 @@ import httpx
 import re
 from typing import List, Dict, Any, Optional
 from xml.etree import ElementTree as ET
-from miiflow_llm.core.tools import tool
-from miiflow_llm.core.tools.http.proxy_utils import get_proxy_config, should_use_proxy
+from miiflow_agent.core.tools import tool
+from miiflow_agent.core.tools.http.proxy_utils import get_proxy_config, should_use_proxy
 import urllib.parse
 
 @tool("get_top_news", "Fetch top N news headlines from Google News RSS feed")

@@ -5,16 +5,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from dataclasses import dataclass
 from typing import List, Optional
 
-from miiflow_llm import LLMClient, Agent, AgentType, RunContext, Message, tool, ToolRegistry
-from miiflow_llm.core.react.orchestrator import ReActOrchestrator, ExecutionState
-from miiflow_llm.core.react.factory import ReActFactory
-from miiflow_llm.core.react.enums import ReActEventType, StopReason
-from miiflow_llm.core.react.models import ReActStep, ReActResult
-from miiflow_llm.core.react.events import EventBus
-from miiflow_llm.core.react.safety import SafetyManager
-from miiflow_llm.core.react.tool_executor import AgentToolExecutor
-from miiflow_llm.core.react.parsing.xml_parser import XMLReActParser
-from miiflow_llm.core.message import MessageRole
+from miiflow_agent import LLMClient, Agent, AgentType, RunContext, Message, tool, ToolRegistry
+from miiflow_agent.core.react.orchestrator import ReActOrchestrator, ExecutionState
+from miiflow_agent.core.react.factory import ReActFactory
+from miiflow_agent.core.react.enums import ReActEventType, StopReason
+from miiflow_agent.core.react.models import ReActStep, ReActResult
+from miiflow_agent.core.react.events import EventBus
+from miiflow_agent.core.react.safety import SafetyManager
+from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+from miiflow_agent.core.react.parsing.xml_parser import XMLReActParser
+from miiflow_agent.core.message import MessageRole
 
 
 @dataclass
@@ -302,7 +302,7 @@ class TestNativeToolCallingMode:
         Args:
             responses: List of dicts with 'content', 'tool_calls', and optional 'finish_reason'
         """
-        from miiflow_llm.core.client import StreamChunk
+        from miiflow_agent.core.client import StreamChunk
 
         mock_model_client = MagicMock()
         mock_model_client.provider_name = "openai"
@@ -701,7 +701,7 @@ ValueError: The actual error"""
 
 
 # Import the sanitize function for testing
-from miiflow_llm.core.react.orchestrator import _sanitize_error_message
+from miiflow_agent.core.react.orchestrator import _sanitize_error_message
 
 
 if __name__ == "__main__":

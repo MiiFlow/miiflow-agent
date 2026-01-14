@@ -1,8 +1,8 @@
 """Basic usage: chat, streaming, async."""
 
 import asyncio
-from miiflow_llm import LLMClient
-from miiflow_llm.core import Message
+from miiflow_agent import LLMClient
+from miiflow_agent.core import Message
 
 
 def sync_chat():

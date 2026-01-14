@@ -1,13 +1,13 @@
 """ReAct (Reasoning + Acting) and Plan & Execute - Architecture
 
 Usage - ReAct:
-    from miiflow_llm.core.react import ReActOrchestrator, ReActFactory
+    from miiflow_agent.core.react import ReActOrchestrator, ReActFactory
 
     orchestrator = ReActFactory.create_orchestrator(agent, max_steps=10)
     result = await orchestrator.execute("Find today's top news", context)
 
 Usage - Plan & Execute:
-    from miiflow_llm.core.react import PlanAndExecuteOrchestrator
+    from miiflow_agent.core.react import PlanAndExecuteOrchestrator
 
     orchestrator = PlanAndExecuteOrchestrator(tool_executor, event_bus, safety_manager)
     result = await orchestrator.execute("Create Q4 sales report", context)

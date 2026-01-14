@@ -11,7 +11,7 @@ This module tests:
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from miiflow_llm.core.react.subagent_registry import (
+from miiflow_agent.core.react.subagent_registry import (
     DynamicSubAgentConfig,
     SubAgentRegistry,
     get_global_registry,
@@ -22,7 +22,7 @@ from miiflow_llm.core.react.subagent_registry import (
     REVIEWER_PROMPT,
     PLANNER_PROMPT,
 )
-from miiflow_llm.core.react.model_selector import (
+from miiflow_agent.core.react.model_selector import (
     ModelSelector,
     ModelTier,
     TaskComplexity,
@@ -32,7 +32,7 @@ from miiflow_llm.core.react.model_selector import (
     select_model_for_task,
     detect_complexity,
 )
-from miiflow_llm.core.react.task_tool import (
+from miiflow_agent.core.react.task_tool import (
     TaskTool,
     TaskToolResult,
     TaskToolConfig,

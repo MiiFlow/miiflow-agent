@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from typing import AsyncGenerator, List, Dict, Any
 
-from miiflow_llm.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
+from miiflow_agent.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
 
 
 def is_ci_environment() -> bool:

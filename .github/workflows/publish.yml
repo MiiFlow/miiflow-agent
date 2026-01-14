@@ -126,7 +126,7 @@ jobs:
             ## Installation
 
             ```bash
-            pip install miiflow-llm==${{ steps.version.outputs.version }}
+            pip install miiflow-agent==${{ steps.version.outputs.version }}
             ```
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, 'alpha') || contains(steps.version.outputs.version, 'beta') || contains(steps.version.outputs.version, 'rc') }}

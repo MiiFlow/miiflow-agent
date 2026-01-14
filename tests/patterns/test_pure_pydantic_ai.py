@@ -1,11 +1,11 @@
-"""Test Pydantic AI style context injection patterns in miiflow-llm agents."""
+"""Test Pydantic AI style context injection patterns in miiflow-agent agents."""
 import pytest
 import asyncio
 import os
 from dataclasses import dataclass
 from unittest.mock import MagicMock
 
-from miiflow_llm import LLMClient, Agent, RunContext, FunctionTool, tool
+from miiflow_agent import LLMClient, Agent, RunContext, FunctionTool, tool
 
 
 @dataclass

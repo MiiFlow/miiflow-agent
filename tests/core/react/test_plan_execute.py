@@ -5,15 +5,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from dataclasses import dataclass
 from typing import List
 
-from miiflow_llm import RunContext, ToolRegistry, tool
-from miiflow_llm.core.react.plan_execute_orchestrator import PlanAndExecuteOrchestrator
-from miiflow_llm.core.react.enums import PlanExecuteEventType, StopReason
-from miiflow_llm.core.react.models import Plan, SubTask, PlanExecuteResult, ReActResult
-from miiflow_llm.core.react.react_events import PlanExecuteEvent
-from miiflow_llm.core.react.events import EventBus
-from miiflow_llm.core.react.safety import SafetyManager
-from miiflow_llm.core.react.tool_executor import AgentToolExecutor
-from miiflow_llm.core.react.orchestrator import ReActOrchestrator
+from miiflow_agent import RunContext, ToolRegistry, tool
+from miiflow_agent.core.react.plan_execute_orchestrator import PlanAndExecuteOrchestrator
+from miiflow_agent.core.react.enums import PlanExecuteEventType, StopReason
+from miiflow_agent.core.react.models import Plan, SubTask, PlanExecuteResult, ReActResult
+from miiflow_agent.core.react.react_events import PlanExecuteEvent
+from miiflow_agent.core.react.events import EventBus
+from miiflow_agent.core.react.safety import SafetyManager
+from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+from miiflow_agent.core.react.orchestrator import ReActOrchestrator
 
 
 class TestPlanDataStructures:
@@ -287,7 +287,7 @@ class TestPlanAndExecuteOrchestrator:
 
         # Mock stream_without_tools for synthesis
         async def mock_stream(*args, **kwargs):
-            from miiflow_llm.core.client import StreamChunk
+            from miiflow_agent.core.client import StreamChunk
             yield StreamChunk(content="Final answer", delta="Final answer", finish_reason="stop", usage=None, tool_calls=None)
 
         mock_executor.stream_without_tools = mock_stream
@@ -327,7 +327,7 @@ class TestPlanAndExecuteOrchestrator:
 
         # Mock stream_without_tools for direct response
         async def mock_stream(*args, **kwargs):
-            from miiflow_llm.core.client import StreamChunk
+            from miiflow_agent.core.client import StreamChunk
             yield StreamChunk(content="Hello!", delta="Hello!", finish_reason="stop", usage=None, tool_calls=None)
 
         mock_executor.stream_without_tools = mock_stream
@@ -462,7 +462,7 @@ class TestPlanAndExecuteOrchestrator:
 
         # Mock stream for synthesis
         async def mock_stream(*args, **kwargs):
-            from miiflow_llm.core.client import StreamChunk
+            from miiflow_agent.core.client import StreamChunk
             yield StreamChunk(content="Done", delta="Done", finish_reason="stop", usage=None, tool_calls=None)
 
         mock_executor.stream_without_tools = mock_stream
@@ -508,7 +508,7 @@ class TestPlanExecuteEventBusIntegration:
 
         # Mock stream_without_tools
         async def mock_stream(*args, **kwargs):
-            from miiflow_llm.core.client import StreamChunk
+            from miiflow_agent.core.client import StreamChunk
             yield StreamChunk(content="Answer", delta="Answer", finish_reason="stop", usage=None, tool_calls=None)
 
         mock_executor.stream_without_tools = mock_stream

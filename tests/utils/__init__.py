@@ -1,1 +1,1 @@
-"""Test utilities for miiflow-llm."""
+"""Test utilities for miiflow-agent."""

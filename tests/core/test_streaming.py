@@ -4,19 +4,19 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 import json
 
-from miiflow_llm.core.streaming import (
+from miiflow_agent.core.streaming import (
     IncrementalParser,
     UnifiedStreamingClient,
     EnhancedStreamChunk
 )
-from miiflow_llm.core.stream_normalizer import (
+from miiflow_agent.core.stream_normalizer import (
     OpenAIStreamNormalizer,
     AnthropicStreamNormalizer,
 )
-from miiflow_llm.providers.openai_client import OpenAIClient
-from miiflow_llm.providers.anthropic_client import AnthropicClient
-from miiflow_llm.core import Message, TokenCount, MessageRole
-from miiflow_llm.core.streaming import StreamChunk
+from miiflow_agent.providers.openai_client import OpenAIClient
+from miiflow_agent.providers.anthropic_client import AnthropicClient
+from miiflow_agent.core import Message, TokenCount, MessageRole
+from miiflow_agent.core.streaming import StreamChunk
 
 
 class TestStreamNormalizers:

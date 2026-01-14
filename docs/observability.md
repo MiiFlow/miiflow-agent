@@ -5,16 +5,16 @@ Track LLM calls and agent execution with [Phoenix](https://phoenix.arize.com/).
 ## Quick Setup
 
 ```bash
-pip install "miiflow-llm[observability]"
+pip install "miiflow-agent[observability]"
 ```
 
 ```python
-from miiflow_llm.core.observability import setup_phoenix_for_miiflow
+from miiflow_agent.core.observability import setup_phoenix_for_miiflow
 
 setup_phoenix_for_miiflow()
 
 # Use normally - all calls are traced
-from miiflow_llm import LLMClient, Message
+from miiflow_agent import LLMClient, Message
 client = LLMClient.create("openai", model="gpt-4o-mini")
 response = await client.achat([Message.user("Hello")])
 
@@ -34,7 +34,7 @@ export TRACE_SAMPLE_RATE=1.0  # 0.0-1.0, lower for high volume
 ### Programmatic Setup
 
 ```python
-from miiflow_llm.core.observability import setup_phoenix_for_miiflow
+from miiflow_agent.core.observability import setup_phoenix_for_miiflow
 
 # With custom endpoint
 result = setup_phoenix_for_miiflow(
@@ -76,8 +76,8 @@ Open http://localhost:6006 to view:
 ## Example
 
 ```python
-from miiflow_llm import LLMClient, Agent, Message
-from miiflow_llm.core.tools import tool
+from miiflow_agent import LLMClient, Agent, Message
+from miiflow_agent.core.tools import tool
 import asyncio
 
 @tool("calculate", "Do math")
@@ -102,14 +102,14 @@ asyncio.run(main())
 
 **Check installation:**
 ```bash
-pip install "miiflow-llm[observability]"
+pip install "miiflow-agent[observability]"
 # Verify Phoenix installed
 python -c "import phoenix; print('Phoenix OK')"
 ```
 
 **Manual startup:**
 ```python
-from miiflow_llm.core.observability.auto_instrumentation import setup_phoenix_session
+from miiflow_agent.core.observability.auto_instrumentation import setup_phoenix_session
 
 session = setup_phoenix_session()
 if session:
@@ -126,7 +126,7 @@ else:
 
 **2. Verify instrumentation:**
 ```python
-from miiflow_llm.core.observability.auto_instrumentation import check_instrumentation_status
+from miiflow_agent.core.observability.auto_instrumentation import check_instrumentation_status
 
 status = check_instrumentation_status()
 for provider, info in status.items():
@@ -166,7 +166,7 @@ pip install arize-phoenix
 Automatically evaluate agent responses:
 
 ```python
-from miiflow_llm.core.observability.evaluation import create_evaluated_agent
+from miiflow_agent.core.observability.evaluation import create_evaluated_agent
 
 # Wrap agent with evaluation
 evaluated_agent = create_evaluated_agent(agent)
@@ -192,7 +192,7 @@ print(f"Metrics: {evaluation['metrics']}")
 Add your own evaluation logic:
 
 ```python
-from miiflow_llm.core.observability.evaluation import AgentEvaluator, EvaluationMetric
+from miiflow_agent.core.observability.evaluation import AgentEvaluator, EvaluationMetric
 
 evaluator = AgentEvaluator()
 
@@ -225,7 +225,7 @@ evaluator.add_metric(EvaluationMetric(
 ))
 
 # Use custom evaluator
-from miiflow_llm.core.observability.evaluation import EvaluatedAgent
+from miiflow_agent.core.observability.evaluation import EvaluatedAgent
 evaluated_agent = EvaluatedAgent(agent, evaluator)
 
 result = await evaluated_agent.run("What is the capital of France?")

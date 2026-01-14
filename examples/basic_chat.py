@@ -1,13 +1,13 @@
 """Basic chat completion example.
 
-This example demonstrates the simplest usage of miiflow-llm:
+This example demonstrates the simplest usage of miiflow-agent:
 - Creating a client for any provider
 - Sending messages and getting responses
 - Handling both sync and async patterns
 """
 
 import asyncio
-from miiflow_llm import LLMClient, Message
+from miiflow_agent import LLMClient, Message
 
 
 def sync_example():

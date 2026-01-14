@@ -3,8 +3,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from miiflow_llm.core import LLMClient, Message, MessageRole, TokenCount, StreamChunk, ChatResponse
-from miiflow_llm.core.exceptions import MiiflowLLMError
+from miiflow_agent.core import LLMClient, Message, MessageRole, TokenCount, StreamChunk, ChatResponse
+from miiflow_agent.core.exceptions import MiiflowLLMError
 
 
 class TestLLMClient:
@@ -13,7 +13,7 @@ class TestLLMClient:
     @pytest.mark.asyncio
     async def test_create_openai_client(self):
         """Test creating OpenAI client via factory."""
-        with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
+        with patch('miiflow_agent.utils.env.get_api_key') as mock_get_key:
             mock_get_key.return_value = "test-key"
             
             client = LLMClient.create("openai", "gpt-4o-mini")
@@ -24,7 +24,7 @@ class TestLLMClient:
     @pytest.mark.asyncio
     async def test_create_anthropic_client(self):
         """Test creating Anthropic client via factory."""
-        with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
+        with patch('miiflow_agent.utils.env.get_api_key') as mock_get_key:
             mock_get_key.return_value = "test-key"
             
             client = LLMClient.create("anthropic", "claude-3-haiku-20240307")
@@ -42,7 +42,7 @@ class TestLLMClient:
     @pytest.mark.asyncio
     async def test_create_missing_api_key(self):
         """Test error when API key is missing."""
-        with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
+        with patch('miiflow_agent.utils.env.get_api_key') as mock_get_key:
             mock_get_key.return_value = None
             
             with pytest.raises(ValueError, match="No API key found"):
@@ -51,7 +51,7 @@ class TestLLMClient:
     @pytest.mark.asyncio
     async def test_create_ollama_no_key_required(self):
         """Test Ollama creation doesn't require API key."""
-        with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
+        with patch('miiflow_agent.utils.env.get_api_key') as mock_get_key:
             mock_get_key.return_value = None
             
             # Should not raise error for Ollama
@@ -139,7 +139,7 @@ class TestLLMClient:
         
         assert len(enhanced_chunks) > 0
         # Should get EnhancedStreamChunk objects
-        from miiflow_llm.core.streaming import EnhancedStreamChunk
+        from miiflow_agent.core.streaming import EnhancedStreamChunk
         for chunk in enhanced_chunks:
             assert isinstance(chunk, EnhancedStreamChunk)
     
@@ -174,7 +174,7 @@ class TestLLMClient:
         ]
 
         for provider, model in providers:
-            with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
+            with patch('miiflow_agent.utils.env.get_api_key') as mock_get_key:
                 if provider == "ollama":
                     mock_get_key.return_value = None  # Ollama doesn't need key
                 else:
@@ -192,7 +192,7 @@ class TestLLMClient:
         except ImportError:
             pytest.skip("groq package not installed")
 
-        with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
+        with patch('miiflow_agent.utils.env.get_api_key') as mock_get_key:
             mock_get_key.return_value = "test-key"
 
             client = LLMClient.create("groq", "llama-3.1-8b-instant")
@@ -207,7 +207,7 @@ class TestLLMClient:
         except ImportError:
             pytest.skip("mistralai package not installed")
 
-        with patch('miiflow_llm.utils.env.get_api_key') as mock_get_key:
+        with patch('miiflow_agent.utils.env.get_api_key') as mock_get_key:
             mock_get_key.return_value = "test-key"
 
             client = LLMClient.create("mistral", "mistral-small-latest")

@@ -9,7 +9,7 @@ from dataclasses import asdict
 # Skip if fitz (PyMuPDF) is not installed
 pytest.importorskip("fitz", reason="PyMuPDF (fitz) not installed")
 
-from miiflow_llm.core.message import (
+from miiflow_agent.core.message import (
     Message,
     MessageRole,
     TextBlock,
@@ -17,7 +17,7 @@ from miiflow_llm.core.message import (
     DocumentBlock,
     ContentBlock
 )
-from miiflow_llm.utils.pdf_extractor import (
+from miiflow_agent.utils.pdf_extractor import (
     extract_pdf_text,
     extract_pdf_metadata,
 )
@@ -153,7 +153,7 @@ class TestPDFExtraction:
         }
         mock_fitz.return_value = mock_doc
         
-        from miiflow_llm.utils.pdf_extractor import extract_pdf_metadata
+        from miiflow_agent.utils.pdf_extractor import extract_pdf_metadata
         
         with patch('base64.b64decode') as mock_b64:
             mock_b64.return_value = b'mock_pdf_bytes'
@@ -165,7 +165,7 @@ class TestPDFExtraction:
             assert metadata['author'] == 'Test Author'
             assert metadata['subject'] == 'Test Subject'
     
-    @patch('miiflow_llm.utils.pdf_extractor.extract_pdf_text')
+    @patch('miiflow_agent.utils.pdf_extractor.extract_pdf_text')
     def test_pdf_chunking(self, mock_extract):
         """Test PDF chunking functionality."""
         mock_extract.return_value = {
@@ -176,7 +176,7 @@ class TestPDFExtraction:
             }
         }
 
-        from miiflow_llm.utils.pdf_extractor import extract_pdf_chunks
+        from miiflow_agent.utils.pdf_extractor import extract_pdf_chunks
 
         result = extract_pdf_chunks(
             pdf_data="mock_pdf",
@@ -197,9 +197,9 @@ class TestPDFExtraction:
     
     def test_llm_optimized_chunking(self):
         """Test LLM-optimized chunking with token estimation."""
-        from miiflow_llm.utils.pdf_extractor import chunk_pdf_for_llm
+        from miiflow_agent.utils.pdf_extractor import chunk_pdf_for_llm
         
-        with patch('miiflow_llm.utils.pdf_extractor.extract_pdf_chunks') as mock_chunks:
+        with patch('miiflow_agent.utils.pdf_extractor.extract_pdf_chunks') as mock_chunks:
             mock_chunks.return_value = {"chunks": [], "metadata": {}, "chunk_info": {}}
             
             # Test different model token calculations

@@ -3,7 +3,7 @@
 import math
 import operator
 from typing import Union
-from miiflow_llm.core.tools import tool
+from miiflow_agent.core.tools import tool
 
 
 @tool("add", "Add two numbers")

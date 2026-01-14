@@ -5,7 +5,7 @@ Get started in 5 minutes.
 ## Install
 
 ```bash
-pip install miiflow-llm
+pip install miiflow-agent
 ```
 
 Set your API key:
@@ -18,8 +18,8 @@ export OPENAI_API_KEY="sk-..."
 The basic pattern: create a client, send messages, get responses.
 
 ```python
-from miiflow_llm import LLMClient
-from miiflow_llm.core import Message
+from miiflow_agent import LLMClient
+from miiflow_agent.core import Message
 
 client = LLMClient.create("openai", model="gpt-4o-mini")
 response = client.chat([Message.user("What is Rust?")])

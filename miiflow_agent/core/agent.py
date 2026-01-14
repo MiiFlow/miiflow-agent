@@ -123,7 +123,7 @@ class Agent(Generic[Deps, Result]):
         """Add a tool function (decorated with global @tool) to this agent.
 
         Usage:
-        from miiflow_llm.core.tools import tool
+        from miiflow_agent.core.tools import tool
 
         @tool("search", "Search the web")
         def search_web(query: str) -> str:
@@ -149,7 +149,7 @@ class Agent(Generic[Deps, Result]):
         rather than requiring client-side connection management.
 
         Usage:
-            from miiflow_llm.core.tools.mcp import NativeMCPServerConfig
+            from miiflow_agent.core.tools.mcp import NativeMCPServerConfig
 
             config = NativeMCPServerConfig(
                 name="my-mcp-server",

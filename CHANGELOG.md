@@ -1,6 +1,33 @@
 # Changelog
 
-All notable changes to miiflow-llm will be documented here.
+All notable changes to miiflow-agent will be documented here.
+
+## [1.0.0] - 2026-01-13
+
+### Changed
+- **Package Renamed**: `miiflow-llm` is now `miiflow-agent` to better reflect the package's focus on AI agent orchestration
+- **Stable Release**: Marking version 1.0.0 as production-stable
+- Updated all imports from `miiflow_llm` to `miiflow_agent`
+- Repository URL updated to `https://github.com/Miiflow/miiflow-agent`
+
+### Migration Guide
+Update your imports:
+```python
+# Old
+from miiflow_llm import Agent, LLMClient
+
+# New
+from miiflow_agent import Agent, LLMClient
+```
+
+Update your dependencies:
+```bash
+# Old
+pip install miiflow-llm
+
+# New
+pip install miiflow-agent
+```
 
 ## [0.5.1] - 2026-01-12
 

@@ -7,9 +7,9 @@ from typing import Dict, Any
 
 import pytest
 
-from miiflow_llm import LLMClient
-from miiflow_llm.core import Agent, AgentType
-from miiflow_llm.core.tools import tool
+from miiflow_agent import LLMClient
+from miiflow_agent.core import Agent, AgentType
+from miiflow_agent.core.tools import tool
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
@@ -93,7 +93,7 @@ async def test_native_react():
 
     try:
         # Stream ReAct execution
-        from miiflow_llm.core.agent import RunContext
+        from miiflow_agent.core.agent import RunContext
         context = RunContext(deps=None)
 
         async for event in agent.stream(query, context, max_steps=10):

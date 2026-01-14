@@ -4,14 +4,14 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from miiflow_llm.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
+from miiflow_agent.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
 
 
 # Patch genai at module level to prevent any real API calls
 @pytest.fixture(autouse=True)
 def mock_genai():
     """Mock the genai module for all tests."""
-    with patch('miiflow_llm.providers.gemini_client.genai') as mock:
+    with patch('miiflow_agent.providers.gemini_client.genai') as mock:
         mock_model = MagicMock()
         mock.GenerativeModel.return_value = mock_model
         mock.configure = MagicMock()
@@ -24,7 +24,7 @@ class TestGeminiClient:
     @pytest.fixture
     def client(self, mock_genai):
         """Create test client with mocked SDK."""
-        from miiflow_llm.providers.gemini_client import GeminiClient
+        from miiflow_agent.providers.gemini_client import GeminiClient
 
         client = GeminiClient(
             model="gemini-1.5-flash",
@@ -157,7 +157,7 @@ class TestGeminiClient:
     @pytest.mark.asyncio
     async def test_multimodal_message_conversion(self, client):
         """Test multimodal message conversion for Gemini."""
-        from miiflow_llm.core.message import TextBlock, ImageBlock
+        from miiflow_agent.core.message import TextBlock, ImageBlock
 
         multimodal_message = Message.user([
             TextBlock(text="Describe this image"),
@@ -206,7 +206,7 @@ class TestGeminiClient:
     @pytest.mark.asyncio
     async def test_error_handling(self, client, sample_messages):
         """Test error handling in chat completion."""
-        from miiflow_llm.core.exceptions import ProviderError
+        from miiflow_agent.core.exceptions import ProviderError
 
         async def mock_to_thread_error(func, *args, **kwargs):
             raise Exception("Gemini API Error")
@@ -218,7 +218,7 @@ class TestGeminiClient:
     @pytest.mark.asyncio
     async def test_stream_error_handling(self, client, sample_messages):
         """Test error handling in streaming."""
-        from miiflow_llm.core.exceptions import ProviderError
+        from miiflow_agent.core.exceptions import ProviderError
 
         async def mock_to_thread_error(func, *args, **kwargs):
             raise Exception("Gemini stream error")
@@ -232,7 +232,7 @@ class TestGeminiClient:
     @pytest.mark.asyncio
     async def test_gemini_models(self, mock_genai):
         """Test Gemini model variations."""
-        from miiflow_llm.providers.gemini_client import GeminiClient
+        from miiflow_agent.providers.gemini_client import GeminiClient
 
         models = [
             "gemini-1.5-flash",

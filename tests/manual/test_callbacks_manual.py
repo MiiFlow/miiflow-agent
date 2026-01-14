@@ -9,7 +9,7 @@ This test verifies that callbacks fire correctly for:
 5. Context passing via callback_context()
 
 Usage:
-    cd packages/miiflow-llm
+    cd packages/miiflow-agent
     OPENAI_API_KEY=sk-xxx python tests/manual/test_callbacks_manual.py
 """
 
@@ -22,7 +22,7 @@ from typing import List
 # Add the package to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from miiflow_llm import (
+from miiflow_agent import (
     Agent,
     AgentType,
     CallbackContext,
@@ -39,7 +39,7 @@ from miiflow_llm import (
     on_error,
     on_post_call,
 )
-from miiflow_llm.core.tools import tool
+from miiflow_agent.core.tools import tool
 
 
 @dataclass

@@ -233,7 +233,7 @@ class PlanAndExecuteOrchestrator:
         context: RunContext,
         plan: Plan,
         orchestrator: Optional["ReActOrchestrator"] = None,
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """Execute subtask with timeout protection.
 
         Args:
@@ -244,7 +244,10 @@ class PlanAndExecuteOrchestrator:
                          If None, uses self.subtask_orchestrator.
 
         Returns:
-            True if successful, False otherwise
+            Dict with keys:
+                - success: bool (True if successful, False if failed)
+                - needs_clarification: bool (True if clarification requested)
+                - clarification_data: Optional[Dict] (clarification details if needed)
         """
         # Get remaining subtask descriptions for boundary enforcement
         remaining_descriptions = [
@@ -271,7 +274,7 @@ class PlanAndExecuteOrchestrator:
                 PlanExecuteEventType.SUBTASK_FAILED,
                 {"subtask": subtask.to_dict(), "error": subtask.error, "timeout": True},
             )
-            return False
+            return {"success": False, "needs_clarification": False, "clarification_data": None}
 
     async def execute(
         self, query: str, context: RunContext, existing_plan: Optional[Plan] = None
@@ -358,6 +361,25 @@ class PlanAndExecuteOrchestrator:
             # Phase 2: Execute plan with re-planning on failures
             while replans <= self.max_replans:
                 execution_success = await self._execute_plan(plan, context)
+
+                # Check for clarification request - skip re-planning and synthesis
+                if plan.metadata.get("needs_clarification"):
+                    logger.info("Clarification requested, returning without synthesis")
+                    total_time = time.time() - start_time
+                    total_cost = sum(st.cost for st in plan.subtasks)
+                    total_tokens = sum(st.tokens_used for st in plan.subtasks)
+
+                    result = PlanExecuteResult(
+                        plan=plan,
+                        final_answer="",  # No answer - waiting for clarification
+                        stop_reason=StopReason.NEEDS_CLARIFICATION,
+                        replans=replans,
+                        total_cost=total_cost,
+                        total_execution_time=total_time,
+                        total_tokens=total_tokens,
+                        clarification_data=plan.metadata.get("clarification_data"),
+                    )
+                    return result
 
                 if execution_success:
                     break
@@ -816,9 +838,17 @@ class PlanAndExecuteOrchestrator:
                 return False
 
             # Execute subtask with timeout
-            success = await self._execute_subtask_with_timeout(subtask, context, plan)
+            result = await self._execute_subtask_with_timeout(subtask, context, plan)
 
-            if success:
+            # Check for clarification request
+            if result.get("needs_clarification"):
+                logger.info(f"Subtask {subtask.id} needs clarification, stopping plan execution")
+                # Store clarification data in plan metadata for later retrieval
+                plan.metadata["needs_clarification"] = True
+                plan.metadata["clarification_data"] = result.get("clarification_data")
+                return False
+
+            if result.get("success"):
                 completed_ids.add(subtask.id)
             else:
                 # Subtask failed - stop execution and trigger replan
@@ -881,8 +911,15 @@ class PlanAndExecuteOrchestrator:
             if wave.parallel_count == 1:
                 # Single subtask - run directly
                 subtask = wave.subtasks[0]
-                success = await self._execute_subtask_with_timeout(subtask, context, plan)
-                results = [success]
+                result = await self._execute_subtask_with_timeout(subtask, context, plan)
+
+                # Check for clarification request
+                if result.get("needs_clarification"):
+                    plan.metadata["needs_clarification"] = True
+                    plan.metadata["clarification_data"] = result.get("clarification_data")
+                    return False
+
+                results = [result]
             else:
                 # Multiple subtasks - run in parallel with asyncio.gather
                 # CRITICAL: Each parallel subtask needs ISOLATED context AND orchestrator to avoid:
@@ -895,7 +932,7 @@ class PlanAndExecuteOrchestrator:
                     st: SubTask,
                     isolated_context: RunContext,
                     isolated_orchestrator: "ReActOrchestrator",
-                ) -> bool:
+                ) -> Dict[str, Any]:
                     """Execute subtask with isolated context and orchestrator."""
                     await self._publish_parallel_event(
                         ParallelPlanEventType.PARALLEL_SUBTASK_START,
@@ -907,10 +944,11 @@ class PlanAndExecuteOrchestrator:
                     )
 
                     # Pass isolated orchestrator to prevent event cross-contamination
-                    success = await self._execute_subtask_with_timeout(
+                    result = await self._execute_subtask_with_timeout(
                         st, isolated_context, plan, orchestrator=isolated_orchestrator
                     )
 
+                    success = result.get("success", False)
                     await self._publish_parallel_event(
                         ParallelPlanEventType.PARALLEL_SUBTASK_COMPLETE,
                         {
@@ -919,10 +957,11 @@ class PlanAndExecuteOrchestrator:
                             "success": success,
                             "result": st.result if success else None,
                             "error": st.error if not success else None,
+                            "needs_clarification": result.get("needs_clarification", False),
                         },
                     )
 
-                    return success
+                    return result
 
                 # Create isolated contexts for each parallel subtask
                 # Each subtask gets a deep copy of messages to prevent cross-contamination
@@ -951,6 +990,7 @@ class PlanAndExecuteOrchestrator:
 
             # Process results
             wave_success = True
+            clarification_found = False
             for i, result in enumerate(results):
                 subtask = wave.subtasks[i]
                 if isinstance(result, Exception):
@@ -958,10 +998,27 @@ class PlanAndExecuteOrchestrator:
                     subtask.error = str(result)
                     wave_success = False
                     logger.error(f"Subtask {subtask.id} raised exception: {result}")
-                elif result:
-                    completed_ids.add(subtask.id)
+                elif isinstance(result, dict):
+                    # Check for clarification request
+                    if result.get("needs_clarification"):
+                        clarification_found = True
+                        plan.metadata["needs_clarification"] = True
+                        plan.metadata["clarification_data"] = result.get("clarification_data")
+                        logger.info(f"Subtask {subtask.id} needs clarification")
+                    elif result.get("success"):
+                        completed_ids.add(subtask.id)
+                    else:
+                        wave_success = False
                 else:
-                    wave_success = False
+                    # Legacy: handle bool return (should not happen with updated code)
+                    if result:
+                        completed_ids.add(subtask.id)
+                    else:
+                        wave_success = False
+
+            # If any subtask needs clarification, stop wave execution
+            if clarification_found:
+                return False
 
             wave.execution_time = time.time() - wave_start_time
 
@@ -1083,7 +1140,7 @@ class PlanAndExecuteOrchestrator:
         total_subtasks: int = 1,
         remaining_subtasks: Optional[list] = None,
         orchestrator: Optional["ReActOrchestrator"] = None,
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """Execute a single subtask.
 
         Args:
@@ -1095,7 +1152,10 @@ class PlanAndExecuteOrchestrator:
                          If None, uses self.subtask_orchestrator.
 
         Returns:
-            True if successful, False otherwise
+            Dict with keys:
+                - success: bool (True if successful, False if failed)
+                - needs_clarification: bool (True if clarification requested)
+                - clarification_data: Optional[Dict] (clarification details if needed)
         """
         subtask.status = "running"
         start_time = time.time()
@@ -1248,6 +1308,35 @@ class PlanAndExecuteOrchestrator:
                 # Execute subtask with scoped query - events will be forwarded automatically
                 result = await active_orchestrator.execute(scoped_query, subtask_context)
 
+                # Check if subtask needs clarification
+                if result.stop_reason == StopReason.NEEDS_CLARIFICATION:
+                    subtask.status = "needs_clarification"
+                    subtask.result = result.final_answer
+                    subtask.cost = result.total_cost
+                    subtask.tokens_used = result.total_tokens
+                    subtask.execution_time = time.time() - start_time
+
+                    # Get clarification data from result
+                    clarification_data = getattr(result, "clarification_data", None) or {}
+                    clarification_data["subtask_id"] = subtask.id
+                    clarification_data["subtask_description"] = subtask.description
+
+                    # Emit clarification event
+                    await self._publish_event(
+                        PlanExecuteEventType.CLARIFICATION_NEEDED,
+                        {
+                            "subtask": subtask.to_dict(),
+                            **clarification_data,
+                        },
+                    )
+
+                    logger.info(f"Subtask {subtask.id} needs clarification")
+                    return {
+                        "success": False,
+                        "needs_clarification": True,
+                        "clarification_data": clarification_data,
+                    }
+
                 subtask.result = result.final_answer
                 subtask.cost = result.total_cost
                 subtask.tokens_used = result.total_tokens
@@ -1269,7 +1358,7 @@ class PlanAndExecuteOrchestrator:
                     },
                 )
 
-            return True
+            return {"success": True, "needs_clarification": False, "clarification_data": None}
 
         except Exception as e:
             subtask.status = "failed"
@@ -1285,7 +1374,7 @@ class PlanAndExecuteOrchestrator:
 
             logger.error(f"Subtask {subtask.id} failed: {e}", exc_info=True)
 
-            return False
+            return {"success": False, "needs_clarification": False, "clarification_data": None}
 
     async def _synthesize_results(self, plan: Plan, query: str, context: RunContext) -> str:
         """Synthesize subtask results into final answer.

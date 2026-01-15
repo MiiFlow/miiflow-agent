@@ -208,6 +208,33 @@ class MultiAgentOrchestrator:
 
             subagent_results = await self._execute_subagents(plan, query, context)
 
+            # Check if any subagent needs clarification
+            clarification_results = [
+                r for r in subagent_results
+                if not r.success and r.error == "needs_clarification"
+            ]
+
+            if clarification_results:
+                # Skip synthesis - return early with clarification data
+                logger.info(f"{len(clarification_results)} subagent(s) need clarification")
+                total_time = time.time() - start_time
+                total_cost = sum(r.cost for r in subagent_results)
+                total_tokens = sum(r.tokens_used for r in subagent_results)
+
+                # Get clarification data from the first subagent that needs it
+                clarification_data = getattr(clarification_results[0], "_clarification_data", None)
+
+                result = MultiAgentResult(
+                    subagent_results=subagent_results,
+                    final_answer="",  # No answer - waiting for clarification
+                    stop_reason=StopReason.NEEDS_CLARIFICATION,
+                    total_cost=total_cost,
+                    total_execution_time=total_time,
+                    total_tokens=total_tokens,
+                    clarification_data=clarification_data,
+                )
+                return result
+
             # Phase 3: Synthesize results
             await self._publish_event(
                 MultiAgentEventType.SYNTHESIS_START,
@@ -440,6 +467,39 @@ Complete this specific task. Stay focused on your assigned area."""
                 )
 
                 execution_time = time.time() - start_time
+
+                # Check if subagent needs clarification
+                if result.stop_reason == StopReason.NEEDS_CLARIFICATION:
+                    clarification_data = getattr(result, "clarification_data", None) or {}
+                    clarification_data["subagent_name"] = config.name
+                    clarification_data["subagent_role"] = config.role
+
+                    await self._publish_event(
+                        MultiAgentEventType.CLARIFICATION_NEEDED,
+                        {
+                            "name": config.name,
+                            "role": config.role,
+                            **clarification_data,
+                        },
+                    )
+
+                    logger.info(f"Subagent {config.name} needs clarification")
+
+                    # Return a special result indicating clarification needed
+                    subagent_result = SubAgentResult(
+                        agent_name=config.name,
+                        role=config.role,
+                        output_key=config.output_key,
+                        result=None,
+                        success=False,
+                        error="needs_clarification",
+                        execution_time=execution_time,
+                        tokens_used=result.total_tokens,
+                        cost=result.total_cost,
+                    )
+                    # Store clarification data in a way we can retrieve it later
+                    subagent_result._clarification_data = clarification_data
+                    return subagent_result
 
                 # Write result to shared state
                 await self.shared_state.write(

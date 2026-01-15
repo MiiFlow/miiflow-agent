@@ -17,6 +17,7 @@ class ReActEventType(Enum):
     FINAL_ANSWER_CHUNK = "final_answer_chunk"  # Streaming chunks for final answer
     ERROR = "error"
     STOP_CONDITION = "stop_condition"
+    CLARIFICATION_NEEDED = "clarification_needed"  # Agent needs user input
 
 
 class StopReason(Enum):
@@ -29,6 +30,7 @@ class StopReason(Enum):
     REPEATED_ACTIONS = "repeated_actions"
     ERROR_THRESHOLD = "error_threshold"
     FORCED_STOP = "forced_stop"
+    NEEDS_CLARIFICATION = "needs_clarification"  # Agent needs user input to continue
 
 
 class PlanExecuteEventType(Enum):
@@ -52,6 +54,7 @@ class PlanExecuteEventType(Enum):
     FINAL_ANSWER = "final_answer"
     FINAL_ANSWER_CHUNK = "final_answer_chunk"  # Streaming chunks for final answer
     ERROR = "error"
+    CLARIFICATION_NEEDED = "clarification_needed"  # Subtask needs user input
 
 
 class ParallelPlanEventType(Enum):
@@ -79,3 +82,4 @@ class MultiAgentEventType(Enum):
     SYNTHESIS_START = "multi_agent_synthesis_start"  # Starting result synthesis
     FINAL_ANSWER = "multi_agent_final_answer"  # Final synthesized answer
     FINAL_ANSWER_CHUNK = "multi_agent_final_answer_chunk"  # Streaming final answer
+    CLARIFICATION_NEEDED = "multi_agent_clarification_needed"  # Subagent needs user input

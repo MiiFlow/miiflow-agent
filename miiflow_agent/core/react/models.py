@@ -84,6 +84,9 @@ class ReActResult:
     action_steps_count: int = field(init=False)
     error_steps_count: int = field(init=False)
 
+    # Clarification data (when stop_reason == NEEDS_CLARIFICATION)
+    clarification_data: Optional[Dict[str, Any]] = None
+
     # Tracing
 
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -126,7 +129,7 @@ class ReActResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert result to dictionary for serialization."""
-        return {
+        result = {
             "steps": [step.to_dict() for step in self.steps],
             "final_answer": self.final_answer,
             "stop_reason": self.stop_reason.value,
@@ -141,6 +144,9 @@ class ReActResult:
             "tools_used": self.tools_used,
             "metadata": self.metadata,
         }
+        if self.clarification_data:
+            result["clarification_data"] = self.clarification_data
+        return result
 
 
 @dataclass
@@ -300,6 +306,9 @@ class PlanExecuteResult:
     total_execution_time: float = 0.0
     total_tokens: int = 0
 
+    # Clarification data (when stop_reason == NEEDS_CLARIFICATION)
+    clarification_data: Optional[Dict[str, Any]] = None
+
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -311,7 +320,7 @@ class PlanExecuteResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert result to dictionary."""
-        return {
+        result = {
             "plan": self.plan.to_dict(),
             "final_answer": self.final_answer,
             "stop_reason": self.stop_reason.value,
@@ -322,6 +331,9 @@ class PlanExecuteResult:
             "success_rate": self.success_rate,
             "metadata": self.metadata,
         }
+        if self.clarification_data:
+            result["clarification_data"] = self.clarification_data
+        return result
 
 
 # Parallel Plan Execution Data Structures
@@ -445,6 +457,9 @@ class MultiAgentResult:
     total_execution_time: float = 0.0
     total_tokens: int = 0
 
+    # Clarification data (when stop_reason == NEEDS_CLARIFICATION)
+    clarification_data: Optional[Dict[str, Any]] = None
+
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -466,7 +481,7 @@ class MultiAgentResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert result to dictionary."""
-        return {
+        result = {
             "subagent_results": [r.to_dict() for r in self.subagent_results],
             "final_answer": self.final_answer,
             "stop_reason": self.stop_reason.value,
@@ -478,3 +493,6 @@ class MultiAgentResult:
             "success_rate": self.success_rate,
             "metadata": self.metadata,
         }
+        if self.clarification_data:
+            result["clarification_data"] = self.clarification_data
+        return result

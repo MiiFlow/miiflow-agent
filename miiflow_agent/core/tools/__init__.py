@@ -79,6 +79,17 @@ from .exceptions import (
     MCPTimeoutError,
 )
 
+# Clarification tool for human-in-the-loop
+from .clarification import (
+    CLARIFICATION_MARKER,
+    CLARIFICATION_TOOL_NAME,
+    ClarificationRequest,
+    is_clarification_result,
+    extract_clarification_data,
+    ask_user_clarification,
+    create_clarification_tool,
+)
+
 # HTTP utilities (for advanced users)
 from .http.proxy_utils import (
     get_proxy_config,
@@ -155,6 +166,15 @@ __all__ = [
     "ContextPattern",
     "detect_context_pattern",
     "filter_context_params",
+
+    # Clarification tool
+    "CLARIFICATION_MARKER",
+    "CLARIFICATION_TOOL_NAME",
+    "ClarificationRequest",
+    "is_clarification_result",
+    "extract_clarification_data",
+    "ask_user_clarification",
+    "create_clarification_tool",
 ]
 
 

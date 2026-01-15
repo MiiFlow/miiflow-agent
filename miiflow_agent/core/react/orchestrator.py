@@ -7,8 +7,9 @@ from typing import Any, Dict, Optional
 
 from ..agent import RunContext
 from ..message import Message, MessageRole
-from .enums import StopReason
+from .enums import ReActEventType, StopReason
 from .events import EventBus, EventFactory
+from .react_events import ReActEvent
 from .execution import ExecutionState
 from .models import ReActResult, ReActStep
 from .parsing.xml_parser import XMLReActParser
@@ -115,6 +116,11 @@ class ReActOrchestrator:
                 step = await self._execute_reasoning_step_native(context, execution_state)
 
                 execution_state.steps.append(step)
+
+                # Check if clarification was requested during this step
+                if getattr(execution_state, "needs_clarification", False):
+                    logger.info("Breaking execution loop - clarification requested")
+                    break
 
                 if step.is_final_step:
                     execution_state.final_answer = step.answer
@@ -749,6 +755,34 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
 
             if result.success:
                 step.observation = str(result.output)
+
+                # Check if this is a clarification request
+                from ..tools.clarification import is_clarification_result, extract_clarification_data
+
+                if is_clarification_result(result):
+                    clarification = extract_clarification_data(result)
+                    if clarification:
+                        # Mark state for clarification
+                        state.needs_clarification = True
+                        state.clarification_data = clarification.to_dict()
+                        logger.info(
+                            f"Clarification requested: {clarification.question}"
+                        )
+
+                        # Emit clarification event
+                        await self.event_bus.publish(
+                            ReActEvent(
+                                event_type=ReActEventType.CLARIFICATION_NEEDED,
+                                step_number=state.current_step,
+                                data={
+                                    "step": state.current_step,
+                                    "question": clarification.question,
+                                    "options": clarification.options,
+                                    "context": clarification.context,
+                                    "allow_free_text": clarification.allow_free_text,
+                                },
+                            )
+                        )
             else:
                 # Sanitize error message for LLM consumption
                 sanitized_error = _sanitize_error_message(result.error)
@@ -853,7 +887,11 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
     def _build_result(self, state: "ExecutionState") -> ReActResult:
         """Build successful result."""
         # Determine stop reason
-        if state.final_answer:
+        if getattr(state, "needs_clarification", False):
+            stop_reason = StopReason.NEEDS_CLARIFICATION
+            # Don't generate fallback - we're waiting for user input
+            state.final_answer = ""
+        elif state.final_answer:
             stop_reason = StopReason.ANSWER_COMPLETE
         else:
             stop_reason = StopReason.FORCED_STOP
@@ -864,7 +902,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
         total_cost = sum(step.cost for step in state.steps)
         total_tokens = sum(step.tokens_used for step in state.steps)
 
-        return ReActResult(
+        result = ReActResult(
             steps=state.steps,
             final_answer=state.final_answer,
             stop_reason=stop_reason,
@@ -872,6 +910,12 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
             total_execution_time=total_time,
             total_tokens=total_tokens,
         )
+
+        # Attach clarification data if present
+        if getattr(state, "clarification_data", None):
+            result.clarification_data = state.clarification_data
+
+        return result
 
     def _build_error_result(self, state: "ExecutionState", error: Exception) -> ReActResult:
         """Build error result."""

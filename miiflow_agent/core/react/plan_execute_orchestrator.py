@@ -589,9 +589,15 @@ class PlanAndExecuteOrchestrator:
 
             # Convert to Plan object
             subtasks = []
-            for st_data in plan_data.get("subtasks", []):
+            for idx, st_data in enumerate(plan_data.get("subtasks", []), start=1):
+                # Ensure id is always a valid integer, fallback to index if not
+                raw_id = st_data.get("id")
+                try:
+                    subtask_id = int(raw_id) if raw_id is not None else idx
+                except (TypeError, ValueError):
+                    subtask_id = idx
                 subtask = SubTask(
-                    id=st_data.get("id"),
+                    id=subtask_id,
                     description=st_data.get("description", ""),
                     required_tools=st_data.get("required_tools", []),
                     dependencies=st_data.get("dependencies", []),
@@ -771,9 +777,15 @@ class PlanAndExecuteOrchestrator:
 
         # Convert to Plan object
         subtasks = []
-        for st_data in plan_data.get("subtasks", []):
+        for idx, st_data in enumerate(plan_data.get("subtasks", []), start=1):
+            # Ensure id is always a valid integer, fallback to index if not
+            raw_id = st_data.get("id")
+            try:
+                subtask_id = int(raw_id) if raw_id is not None else idx
+            except (TypeError, ValueError):
+                subtask_id = idx
             subtask = SubTask(
-                id=st_data.get("id"),
+                id=subtask_id,
                 description=st_data.get("description", ""),
                 required_tools=st_data.get("required_tools", []),
                 dependencies=st_data.get("dependencies", []),

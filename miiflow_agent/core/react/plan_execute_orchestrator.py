@@ -233,6 +233,7 @@ class PlanAndExecuteOrchestrator:
         context: RunContext,
         plan: Plan,
         orchestrator: Optional["ReActOrchestrator"] = None,
+        completed_ids: Optional[Set[int]] = None,
     ) -> Dict[str, Any]:
         """Execute subtask with timeout protection.
 
@@ -242,6 +243,10 @@ class PlanAndExecuteOrchestrator:
             plan: Parent plan (for total subtask count)
             orchestrator: Optional isolated orchestrator for parallel execution.
                          If None, uses self.subtask_orchestrator.
+            completed_ids: Optional set of completed subtask IDs for sequential mode.
+                          When provided, all completed subtasks' results are passed as context
+                          (instead of only explicit dependencies). This ensures sequential steps
+                          have access to all prior results even when dependencies aren't explicit.
 
         Returns:
             Dict with keys:
@@ -255,12 +260,25 @@ class PlanAndExecuteOrchestrator:
             if st.id > subtask.id and st.status == "pending"
         ]
 
-        # Collect results from completed dependencies to pass context to this subtask
+        # Collect results from dependencies OR all prior steps (sequential mode)
+        # In sequential mode (completed_ids provided), pass all prior results as context
+        # because order implies dependency. In parallel mode, only use explicit dependencies.
         dependency_context = ""
-        if subtask.dependencies:
-            id_to_subtask = {st.id: st for st in plan.subtasks}
+        id_to_subtask = {st.id: st for st in plan.subtasks}
+
+        # Determine which subtask IDs to collect results from
+        if completed_ids is not None:
+            # Sequential mode: collect all completed subtasks' results
+            source_ids = completed_ids
+        elif subtask.dependencies:
+            # Parallel mode: only explicit dependencies
+            source_ids = set(subtask.dependencies)
+        else:
+            source_ids = set()
+
+        if source_ids:
             dep_results = []
-            for dep_id in subtask.dependencies:
+            for dep_id in sorted(source_ids):  # Sort for consistent ordering
                 dep_st = id_to_subtask.get(dep_id)
                 if dep_st and dep_st.result:
                     dep_results.append(
@@ -868,7 +886,10 @@ class PlanAndExecuteOrchestrator:
                 return False
 
             # Execute subtask with timeout
-            result = await self._execute_subtask_with_timeout(subtask, context, plan)
+            # Pass completed_ids so that all prior results are available as context
+            result = await self._execute_subtask_with_timeout(
+                subtask, context, plan, completed_ids=completed_ids
+            )
 
             # Check for clarification request
             if result.get("needs_clarification"):

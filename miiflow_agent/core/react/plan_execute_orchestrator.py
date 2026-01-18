@@ -255,6 +255,23 @@ class PlanAndExecuteOrchestrator:
             if st.id > subtask.id and st.status == "pending"
         ]
 
+        # Collect results from completed dependencies to pass context to this subtask
+        dependency_context = ""
+        if subtask.dependencies:
+            id_to_subtask = {st.id: st for st in plan.subtasks}
+            dep_results = []
+            for dep_id in subtask.dependencies:
+                dep_st = id_to_subtask.get(dep_id)
+                if dep_st and dep_st.result:
+                    dep_results.append(
+                        f"### Step {dep_id}: {dep_st.description}\n{dep_st.result}"
+                    )
+            if dep_results:
+                dependency_context = "\n\n## Context from prerequisite steps:\n" + "\n\n".join(dep_results)
+                logger.debug(
+                    f"Subtask {subtask.id} dependency_results: {dependency_context[:200] if dependency_context else 'None'}"
+                )
+
         try:
             return await asyncio.wait_for(
                 self._execute_subtask(
@@ -263,6 +280,7 @@ class PlanAndExecuteOrchestrator:
                     total_subtasks=len(plan.subtasks),
                     remaining_subtasks=remaining_descriptions,
                     orchestrator=orchestrator,
+                    dependency_results=dependency_context if dependency_context else None,
                 ),
                 timeout=self.subtask_timeout_seconds,
             )
@@ -1152,6 +1170,7 @@ class PlanAndExecuteOrchestrator:
         total_subtasks: int = 1,
         remaining_subtasks: Optional[list] = None,
         orchestrator: Optional["ReActOrchestrator"] = None,
+        dependency_results: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a single subtask.
 
@@ -1162,6 +1181,7 @@ class PlanAndExecuteOrchestrator:
             remaining_subtasks: Descriptions of upcoming subtasks (for boundary enforcement)
             orchestrator: Optional isolated orchestrator for parallel execution.
                          If None, uses self.subtask_orchestrator.
+            dependency_results: Results from completed dependency subtasks to provide context.
 
         Returns:
             Dict with keys:
@@ -1217,6 +1237,11 @@ class PlanAndExecuteOrchestrator:
             else:
                 # Single subtask plan - no boundary needed
                 scoped_query = subtask.description
+
+            # Append dependency results if available - this provides context from
+            # prerequisite steps (wave 1) to dependent steps (wave 2+)
+            if dependency_results:
+                scoped_query += dependency_results
 
             # Create event forwarder to bubble up ReAct events as PlanExecute events
             # Using async to ensure events are published in order (no fire-and-forget race conditions)

@@ -274,4 +274,9 @@ CRITICAL - STAY FOCUSED ON THIS STEP ONLY:
 Current Subtask: {subtask_description}
 {remaining_steps_warning}
 
+IMPORTANT: You MUST provide your final result wrapped in <answer> tags:
+<answer>
+[Your complete result for this subtask - include all data, numbers, or findings]
+</answer>
+
 Now execute ONLY this subtask:"""

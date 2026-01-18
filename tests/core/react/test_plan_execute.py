@@ -363,9 +363,9 @@ class TestPlanAndExecuteOrchestrator:
         )
 
         context = RunContext(deps=None, messages=[])
-        success = await orchestrator._execute_subtask(subtask, context, total_subtasks=1)
+        result = await orchestrator._execute_subtask(subtask, context, total_subtasks=1)
 
-        assert success is True
+        assert result["success"] is True
         assert subtask.status == "completed"
         assert subtask.result == "Search results"
         mock_subtask_orchestrator.execute.assert_called_once()
@@ -388,9 +388,9 @@ class TestPlanAndExecuteOrchestrator:
         )
 
         context = RunContext(deps=None, messages=[])
-        success = await orchestrator._execute_subtask(subtask, context, total_subtasks=1)
+        result = await orchestrator._execute_subtask(subtask, context, total_subtasks=1)
 
-        assert success is True
+        assert result["success"] is True
         assert subtask.status == "completed"
         assert subtask.result == "Reasoning result"
 
@@ -418,10 +418,10 @@ class TestPlanAndExecuteOrchestrator:
         )
 
         context = RunContext(deps=None, messages=[])
-        success = await orchestrator._execute_subtask(subtask, context, total_subtasks=1)
+        result = await orchestrator._execute_subtask(subtask, context, total_subtasks=1)
 
         # Exception in orchestrator causes failure
-        assert success is False
+        assert result["success"] is False
         assert subtask.status == "failed"
         assert "Tool failed" in subtask.error
 
@@ -445,10 +445,10 @@ class TestPlanAndExecuteOrchestrator:
         )
 
         context = RunContext(deps=None, messages=[])
-        success = await orchestrator._execute_subtask(subtask, context, total_subtasks=1)
+        result = await orchestrator._execute_subtask(subtask, context, total_subtasks=1)
 
         # Exceptions cause the execution to return False
-        assert success is False
+        assert result["success"] is False
         assert subtask.status == "failed"
         assert "Network error" in subtask.error
 

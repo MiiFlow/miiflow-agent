@@ -130,3 +130,73 @@ class VisualizationResult:
 
     def __repr__(self) -> str:
         return f"VisualizationResult(type={self.type!r}, id={self.id!r}, title={self.title!r})"
+
+
+def is_visualization_result(value: Any) -> bool:
+    """
+    Check if a value is a VisualizationResult.
+
+    This function is used by the orchestrator to detect visualization results
+    BEFORE they are stringified. It handles:
+    - VisualizationResult instances directly
+    - Dict representations with __visualization__ marker
+    - Objects with to_dict() method that return __visualization__ marker
+
+    Args:
+        value: The value to check (could be VisualizationResult, dict, or any object)
+
+    Returns:
+        True if this is a visualization result
+    """
+    # Direct VisualizationResult instance
+    if isinstance(value, VisualizationResult):
+        return True
+
+    # Dict with __visualization__ marker
+    if isinstance(value, dict):
+        return value.get("__visualization__") is True
+
+    # Object with to_dict() method
+    if hasattr(value, "to_dict"):
+        try:
+            dict_repr = value.to_dict()
+            return isinstance(dict_repr, dict) and dict_repr.get("__visualization__") is True
+        except Exception:
+            return False
+
+    return False
+
+
+def extract_visualization_data(value: Any) -> Optional[Dict[str, Any]]:
+    """
+    Extract visualization data from a VisualizationResult or its dict representation.
+
+    This function is used by the orchestrator to extract the full visualization data
+    BEFORE the result is stringified. The extracted data can then be emitted as a
+    separate VISUALIZATION event to the streaming service.
+
+    Args:
+        value: A VisualizationResult object or its dict representation
+
+    Returns:
+        Dict with visualization data ready for the streaming service, or None if
+        the value is not a visualization result.
+    """
+    # Direct VisualizationResult instance
+    if isinstance(value, VisualizationResult):
+        return value.to_dict()
+
+    # Object with to_dict() method (handles subclasses or similar objects)
+    if hasattr(value, "to_dict"):
+        try:
+            dict_repr = value.to_dict()
+            if isinstance(dict_repr, dict) and dict_repr.get("__visualization__"):
+                return dict_repr
+        except Exception:
+            return None
+
+    # Dict with __visualization__ marker (already converted)
+    if isinstance(value, dict) and value.get("__visualization__"):
+        return value
+
+    return None

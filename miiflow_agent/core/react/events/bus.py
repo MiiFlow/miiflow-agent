@@ -515,3 +515,28 @@ class EventFactory:
             step_number=step_number,
             data={"stop_reason": stop_reason, "description": description}
         )
+
+    @staticmethod
+    def visualization(step_number: int, viz_data: dict, action: str) -> ReActEvent:
+        """Create visualization event.
+
+        This event is emitted when a tool returns a VisualizationResult,
+        allowing the visualization data to be passed to the streaming service
+        BEFORE the result is stringified (which would lose the data).
+
+        Args:
+            step_number: Current step number
+            viz_data: The visualization data dict (from VisualizationResult.to_dict())
+            action: The name of the tool that produced the visualization
+
+        Returns:
+            ReActEvent with VISUALIZATION type
+        """
+        return ReActEvent(
+            event_type=ReActEventType.VISUALIZATION,
+            step_number=step_number,
+            data={
+                "visualization": viz_data,
+                "action": action,
+            }
+        )

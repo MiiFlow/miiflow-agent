@@ -754,7 +754,29 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
             result = await self._execute_tool(step, context)
 
             if result.success:
-                step.observation = str(result.output)
+                # Check if this is a visualization result BEFORE stringification
+                # This is critical because str(VisualizationResult) returns [VIZ:uuid]
+                # which loses the actual chart data
+                from miiflow_agent.visualization import is_visualization_result, extract_visualization_data
+
+                if is_visualization_result(result.output):
+                    viz_data = extract_visualization_data(result.output)
+                    if viz_data:
+                        # Emit visualization event with full data BEFORE stringification
+                        await self.event_bus.publish(
+                            EventFactory.visualization(state.current_step, viz_data, step.action)
+                        )
+                        # Store marker for observation (what gets sent to LLM context)
+                        step.observation = f"[VIZ:{viz_data['id']}]"
+                        logger.info(
+                            f"Step {state.current_step} - Emitted visualization event: "
+                            f"type={viz_data.get('type')}, id={viz_data.get('id')}"
+                        )
+                    else:
+                        # Extraction failed, fall back to string
+                        step.observation = str(result.output)
+                else:
+                    step.observation = str(result.output)
 
                 # Check if this is a clarification request
                 from ..tools.clarification import is_clarification_result, extract_clarification_data

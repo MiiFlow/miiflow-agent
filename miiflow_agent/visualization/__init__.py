@@ -41,6 +41,8 @@ Usage (in APPLICATION code):
 from .types import (
     VisualizationConfig,
     VisualizationResult,
+    is_visualization_result,
+    extract_visualization_data,
 )
 from .registry import (
     VisualizationRegistry,
@@ -53,6 +55,8 @@ __all__ = [
     # Types
     "VisualizationConfig",
     "VisualizationResult",
+    "is_visualization_result",
+    "extract_visualization_data",
     # Registry
     "VisualizationRegistry",
     "visualization_tool",

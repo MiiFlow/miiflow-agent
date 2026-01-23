@@ -5,12 +5,15 @@ from different LLM providers into a consistent StreamChunk format.
 """
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 from .metrics import TokenCount
 from .streaming import StreamChunk
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -30,6 +33,9 @@ class StreamState:
     current_mcp_tool_use: Optional[Dict[str, Any]] = None
     accumulated_mcp_tool_json: str = ""
     mcp_tool_results: List[Dict[str, Any]] = field(default_factory=list)
+    # Content block tracking to prevent interleaving of different block types
+    current_block_index: int = -1
+    current_block_type: Optional[str] = None  # "text", "thinking", "tool_use", etc.
 
 
 class BaseStreamNormalizer(ABC):
@@ -241,8 +247,18 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         - mcp_tool_use: Native MCP tool invocation
         - mcp_tool_result: Result from MCP tool (content extracted as text)
         """
+        # Track the current block index and type to prevent interleaving
+        if hasattr(chunk, "index"):
+            self._state.current_block_index = chunk.index
+
         if hasattr(chunk, "content_block") and hasattr(chunk.content_block, "type"):
             block_type = chunk.content_block.type
+            self._state.current_block_type = block_type
+
+            logger.debug(
+                f"content_block_start: index={self._state.current_block_index}, "
+                f"type={block_type}"
+            )
 
             if block_type == "tool_use":
                 tool_name = chunk.content_block.name
@@ -289,7 +305,27 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         """Handle content_block_delta event.
 
         Handles deltas for text, tool_use JSON, MCP tool_use JSON, and MCP tool results.
+        Filters out thinking blocks to prevent them from mixing with answer content.
         """
+        # Validate block index to prevent interleaving from concurrent blocks
+        delta_index = getattr(chunk, "index", -1)
+        if delta_index != -1 and delta_index != self._state.current_block_index:
+            logger.warning(
+                f"Block index mismatch: expected {self._state.current_block_index}, "
+                f"got {delta_index}. Skipping delta to prevent interleaving."
+            )
+            return ""
+
+        # Skip thinking blocks - don't mix thinking content with answer content
+        if self._state.current_block_type == "thinking":
+            # Log for debugging but don't return the content
+            if hasattr(chunk.delta, "thinking"):
+                logger.debug(
+                    f"Filtering thinking block content (index={delta_index}): "
+                    f"{getattr(chunk.delta, 'thinking', '')[:50]}..."
+                )
+            return ""
+
         if hasattr(chunk.delta, "text"):
             return chunk.delta.text
 
@@ -334,7 +370,18 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         """Handle content_block_stop event.
 
         Handles both regular tool_use and MCP tool_use blocks.
+        Resets block tracking state to prevent state leakage between blocks.
         """
+        # Log the block stop for debugging
+        logger.debug(
+            f"content_block_stop: index={self._state.current_block_index}, "
+            f"type={self._state.current_block_type}"
+        )
+
+        # Reset block tracking state
+        self._state.current_block_index = -1
+        self._state.current_block_type = None
+
         # Handle regular tool_use block completion
         if self._state.current_tool_use:
             if self._state.accumulated_tool_json:

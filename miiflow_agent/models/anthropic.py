@@ -4,7 +4,6 @@ from typing import Dict
 
 from .base import ModelConfig, ParameterConfig, ParameterType
 
-
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-4.5": ModelConfig(
         model_identifier="claude-sonnet-4-5-20250929",
@@ -171,16 +170,6 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
 def _get_thinking_models() -> list[str]:
     """Get list of models that support extended thinking (reasoning=True)."""
     return [name for name, config in ANTHROPIC_MODELS.items() if config.reasoning]
-
-
-def _get_structured_output_models() -> list[str]:
-    """Get list of models that support structured outputs."""
-    models = []
-    for name, config in ANTHROPIC_MODELS.items():
-        if config.supports_structured_outputs:
-            models.append(name)
-            models.append(config.model_identifier)
-    return models
 
 
 # Add thinking_enabled parameter with dynamically derived supported models

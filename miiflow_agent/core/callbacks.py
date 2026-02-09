@@ -39,6 +39,8 @@ class CallbackEventType(Enum):
     AGENT_RUN_START = "agent_run_start"  # When agent execution begins
     AGENT_RUN_END = "agent_run_end"  # When agent execution completes
     TOOL_EXECUTED = "tool_executed"  # After a tool is executed (with tool info)
+    PRE_TOOL_USE = "pre_tool_use"  # Before a tool is executed (can block/modify)
+    POST_TOOL_USE = "post_tool_use"  # After a tool is executed (can transform result)
 
 
 @dataclass
@@ -93,17 +95,26 @@ class CallbackEvent:
     agent_type: Optional[str] = None
     query: Optional[str] = None
 
-    # Tool execution information (for TOOL_EXECUTED)
+    # Tool execution information (for TOOL_EXECUTED, PRE_TOOL_USE, POST_TOOL_USE)
     tool_name: Optional[str] = None
     tool_inputs: Optional[Dict[str, Any]] = None
     tool_output: Optional[Any] = None
     tool_execution_time_ms: Optional[float] = None
+    tool_id: Optional[str] = None
 
     # Context from caller
     context: Optional[CallbackContext] = None
 
     # Success flag
     success: bool = True
+
+    # PRE_TOOL_USE: set to True in callback to block tool execution
+    blocked: bool = False
+    block_reason: Optional[str] = None
+
+    # POST_TOOL_USE: set this in callback to replace the tool output
+    transformed_output: Optional[Any] = None
+    output_transformed: bool = False
 
 
 # Type alias for callback functions
@@ -265,4 +276,42 @@ def on_agent_run_end(callback: CallbackFn) -> CallbackFn:
 def on_tool_executed(callback: CallbackFn) -> CallbackFn:
     """Decorator to register a TOOL_EXECUTED callback."""
     register(CallbackEventType.TOOL_EXECUTED, callback)
+    return callback
+
+
+def on_pre_tool_use(callback: CallbackFn) -> CallbackFn:
+    """Decorator to register a PRE_TOOL_USE callback.
+
+    PRE_TOOL_USE callbacks fire before a tool is executed. They can:
+    - Inspect tool_name and tool_inputs
+    - Block execution by setting event.blocked = True and event.block_reason
+    - Modify tool_inputs before execution
+
+    Example:
+        @on_pre_tool_use
+        async def approve_dangerous_tools(event: CallbackEvent):
+            if event.tool_name in DANGEROUS_TOOLS:
+                event.blocked = True
+                event.block_reason = "Tool requires approval"
+    """
+    register(CallbackEventType.PRE_TOOL_USE, callback)
+    return callback
+
+
+def on_post_tool_use(callback: CallbackFn) -> CallbackFn:
+    """Decorator to register a POST_TOOL_USE callback.
+
+    POST_TOOL_USE callbacks fire after a tool has executed. They can:
+    - Inspect tool_output
+    - Transform the output by setting event.transformed_output and event.output_transformed = True
+    - Enrich output with additional metadata (e.g., source references for citations)
+
+    Example:
+        @on_post_tool_use
+        async def enrich_kb_results(event: CallbackEvent):
+            if event.tool_name.startswith("retrieve_data_from_"):
+                event.transformed_output = add_source_metadata(event.tool_output)
+                event.output_transformed = True
+    """
+    register(CallbackEventType.POST_TOOL_USE, callback)
     return callback

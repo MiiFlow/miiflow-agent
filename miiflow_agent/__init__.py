@@ -52,6 +52,8 @@ from .core.callbacks import (
     on_agent_run_start,
     on_error,
     on_post_call,
+    on_pre_tool_use,
+    on_post_tool_use,
     register,
     unregister,
 )
@@ -116,6 +118,8 @@ __all__ = [
     "on_agent_run_start",
     "on_error",
     "on_post_call",
+    "on_pre_tool_use",
+    "on_post_tool_use",
     "register",
     "reset_callback_context",
     "set_callback_context",

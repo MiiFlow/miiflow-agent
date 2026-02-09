@@ -41,6 +41,19 @@ def _strip_xml_tags_from_answer(content: str) -> str:
     return content.strip()
 
 
+def _observation_with_citation_ref(output: Any) -> str:
+    """Convert tool output to observation string, extracting citation ref from dicts.
+
+    If the output is a dict containing a '_citation_ref' key, pop it and prepend
+    [ref:label] to the stringified result so the LLM can cite it by label.
+    For string results, the label is already prepended by the tool wrapper.
+    """
+    if isinstance(output, dict) and "_citation_ref" in output:
+        ref = output.pop("_citation_ref")
+        return f"[ref:{ref}]\n{str(output)}"
+    return str(output)
+
+
 def _sanitize_error_message(error_msg: str) -> str:
     """Sanitize error messages by removing stack traces and technical details.
 
@@ -774,9 +787,9 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                         )
                     else:
                         # Extraction failed, fall back to string
-                        step.observation = str(result.output)
+                        step.observation = _observation_with_citation_ref(result.output)
                 else:
-                    step.observation = str(result.output)
+                    step.observation = _observation_with_citation_ref(result.output)
 
                 # Check if this is a clarification request
                 from ..tools.clarification import is_clarification_result, extract_clarification_data

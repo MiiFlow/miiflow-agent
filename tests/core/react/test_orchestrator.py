@@ -596,7 +596,8 @@ class TestResultBuilding:
             max_steps=10,
         )
 
-    def test_build_result_with_final_answer(self, orchestrator):
+    @pytest.mark.asyncio
+    async def test_build_result_with_final_answer(self, orchestrator):
         """Test building result when final answer is present."""
         state = ExecutionState()
         state.steps = [
@@ -604,14 +605,15 @@ class TestResultBuilding:
         ]
         state.final_answer = "The answer"
 
-        result = orchestrator._build_result(state)
+        result = await orchestrator._build_result(state)
 
         assert result.final_answer == "The answer"
         assert result.stop_reason == StopReason.ANSWER_COMPLETE
         assert result.steps_count == 1
         assert result.total_tokens == 100
 
-    def test_build_result_generates_fallback(self, orchestrator):
+    @pytest.mark.asyncio
+    async def test_build_result_generates_fallback(self, orchestrator):
         """Test building result generates fallback when no answer."""
         state = ExecutionState()
         state.steps = [
@@ -619,7 +621,7 @@ class TestResultBuilding:
         ]
         state.final_answer = None
 
-        result = orchestrator._build_result(state)
+        result = await orchestrator._build_result(state)
 
         assert result.stop_reason == StopReason.FORCED_STOP
         assert "Some observation" in result.final_answer

@@ -38,7 +38,7 @@ class ParallelPlanOrchestrator(PlanAndExecuteOrchestrator):
         safety_manager: SafetyManager,
         subtask_orchestrator: Optional[ReActOrchestrator] = None,
         max_replans: int = 2,
-        subtask_timeout_seconds: float = 120.0,
+        subtask_timeout_seconds: float = 360.0,
         max_parallel_subtasks: int = 5,
     ):
         """Initialize Parallel Plan orchestrator.

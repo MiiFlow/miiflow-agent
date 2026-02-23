@@ -44,7 +44,7 @@ class PlanAndExecuteOrchestrator:
         safety_manager: SafetyManager,
         subtask_orchestrator: Optional[ReActOrchestrator] = None,
         max_replans: int = 2,
-        subtask_timeout_seconds: float = 120.0,
+        subtask_timeout_seconds: float = 360.0,
         parallel_execution: bool = False,
         max_parallel_subtasks: int = 5,
     ):
@@ -56,7 +56,7 @@ class PlanAndExecuteOrchestrator:
             safety_manager: Safety condition checker
             subtask_orchestrator: ReAct orchestrator for subtask execution (required)
             max_replans: Maximum number of re-planning attempts
-            subtask_timeout_seconds: Timeout for each subtask execution (default 120s)
+            subtask_timeout_seconds: Timeout for each subtask execution (default 360s)
             parallel_execution: Whether to execute independent subtasks in parallel waves
             max_parallel_subtasks: Maximum subtasks to run in parallel per wave (when parallel_execution=True)
         """

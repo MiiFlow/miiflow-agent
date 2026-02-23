@@ -131,7 +131,7 @@ class MultiAgentOrchestrator:
         safety_manager: SafetyManager,
         subagent_orchestrator: Optional[ReActOrchestrator] = None,
         max_subagents: int = 5,
-        subagent_timeout_seconds: float = 120.0,
+        subagent_timeout_seconds: float = 360.0,
         subagent_registry: Optional[SubAgentRegistry] = None,
         model_selector: Optional[ModelSelector] = None,
         orchestrator_factory: Optional[Callable] = None,

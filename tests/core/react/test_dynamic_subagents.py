@@ -59,7 +59,7 @@ class TestDynamicSubAgentConfig:
         assert config.tools is None  # Default
         assert config.model is None  # Default
         assert config.max_steps == 10  # Default
-        assert config.timeout_seconds == 120.0  # Default
+        assert config.timeout_seconds == 360.0  # Default
         assert config.can_spawn_subagents is False  # Default
 
     def test_full_creation(self):

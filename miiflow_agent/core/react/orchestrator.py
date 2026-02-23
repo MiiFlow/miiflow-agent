@@ -145,7 +145,7 @@ class ReActOrchestrator:
                 # if step.is_error_step:
                 #     break
 
-            return self._build_result(execution_state)
+            return await self._build_result(execution_state)
 
         except Exception as e:
             logger.error(f"ReAct execution failed: {e}", exc_info=True)
@@ -919,7 +919,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
         if step.answer:
             await self.event_bus.publish(EventFactory.final_answer(state.current_step, step.answer))
 
-    def _build_result(self, state: "ExecutionState") -> ReActResult:
+    async def _build_result(self, state: "ExecutionState") -> ReActResult:
         """Build successful result."""
         # Determine stop reason
         if getattr(state, "needs_clarification", False):
@@ -931,6 +931,11 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
         else:
             stop_reason = StopReason.FORCED_STOP
             state.final_answer = self._generate_fallback_answer(state.steps)
+            # Publish fallback as FINAL_ANSWER event so streaming_service captures it
+            if state.final_answer:
+                await self.event_bus.publish(
+                    EventFactory.final_answer(state.current_step, state.final_answer)
+                )
 
         # Calculate totals
         total_time = time.time() - state.start_time

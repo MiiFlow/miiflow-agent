@@ -104,17 +104,23 @@ class OpenAIClient(ModelClient):
                     )
                 elif isinstance(block, DocumentBlock):
                     try:
-                        from ..utils.pdf_extractor import extract_pdf_text_simple
-
-                        pdf_text = extract_pdf_text_simple(block.document_url)
-
                         filename_info = f" [{block.filename}]" if block.filename else ""
-                        pdf_content = f"[PDF Document{filename_info}]\n\n{pdf_text}"
+                        if block.document_type == "pdf":
+                            from ..utils.pdf_extractor import extract_pdf_text_simple
 
-                        content_list.append({"type": "text", "text": pdf_content})
+                            text = extract_pdf_text_simple(block.document_url)
+                            doc_content = f"[PDF Document{filename_info}]\n\n{text}"
+                        else:
+                            import httpx
+
+                            resp = httpx.get(block.document_url, timeout=30, follow_redirects=True)
+                            resp.raise_for_status()
+                            text = resp.content.decode("utf-8", errors="replace")
+                            doc_content = f"[Document{filename_info}]\n\n{text}"
+                        content_list.append({"type": "text", "text": doc_content})
                     except Exception as e:
                         filename_info = f" {block.filename}" if block.filename else ""
-                        error_content = f"[Error processing PDF{filename_info}: {str(e)}]"
+                        error_content = f"[Error processing document{filename_info}: {str(e)}]"
                         content_list.append({"type": "text", "text": error_content})
 
             openai_message["content"] = content_list

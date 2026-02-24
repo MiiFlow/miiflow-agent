@@ -199,22 +199,27 @@ class GeminiClient(ModelClient):
                                 )
                         elif isinstance(block, DocumentBlock):
                             # Handle document blocks: extract text and add as text content
-                            # Gemini doesn't have native document support like Anthropic,
-                            # so we extract PDF text similar to OpenAI's approach
                             try:
-                                from ..utils.pdf_extractor import extract_pdf_text_simple
-
-                                pdf_text = extract_pdf_text_simple(block.document_url)
-
                                 filename_info = f" [{block.filename}]" if block.filename else ""
-                                pdf_content = f"[PDF Document{filename_info}]\n\n{pdf_text}"
+                                if block.document_type == "pdf":
+                                    from ..utils.pdf_extractor import extract_pdf_text_simple
 
-                                parts.append({"text": pdf_content})
+                                    text = extract_pdf_text_simple(block.document_url)
+                                    doc_content = f"[PDF Document{filename_info}]\n\n{text}"
+                                else:
+                                    import httpx
+
+                                    resp = httpx.get(
+                                        block.document_url, timeout=30, follow_redirects=True
+                                    )
+                                    resp.raise_for_status()
+                                    text = resp.content.decode("utf-8", errors="replace")
+                                    doc_content = f"[Document{filename_info}]\n\n{text}"
+                                parts.append({"text": doc_content})
                             except Exception as e:
-                                # If extraction fails, add error as text placeholder
                                 filename_info = f" {block.filename}" if block.filename else ""
                                 parts.append(
-                                    {"text": f"[Error processing PDF{filename_info}: {str(e)}]"}
+                                    {"text": f"[Error processing document{filename_info}: {str(e)}]"}
                                 )
 
                 # Consolidate consecutive USER messages (common pattern from LLMNode)

@@ -171,31 +171,55 @@ class AnthropicClient(ModelClient):
                             {"type": "image", "source": {"type": "url", "url": block.image_url}}
                         )
                 elif isinstance(block, DocumentBlock):
-                    if block.document_url.startswith("data:"):
-                        base64_content, media_type = data_uri_to_base64_and_mimetype(
-                            block.document_url
-                        )
-                        content_list.append(
-                            {
-                                "type": "document",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": base64_content,
-                                },
-                            }
-                        )
+                    # Claude document blocks only support PDF and plain text
+                    if block.document_type in ("pdf", "txt"):
+                        if block.document_url.startswith("data:"):
+                            base64_content, media_type = data_uri_to_base64_and_mimetype(
+                                block.document_url
+                            )
+                            content_list.append(
+                                {
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": base64_content,
+                                    },
+                                }
+                            )
+                        else:
+                            content_list.append(
+                                {
+                                    "type": "document",
+                                    "source": {
+                                        "type": "url",
+                                        "url": block.document_url,
+                                    },
+                                }
+                            )
                     else:
-                        # Fixed: url should be a string, not a dict
-                        content_list.append(
-                            {
-                                "type": "document",
-                                "source": {
-                                    "type": "url",
-                                    "url": block.document_url,
-                                },
-                            }
-                        )
+                        # For non-PDF/txt documents (csv, xlsx, xls, etc.),
+                        # download and send as text content
+                        try:
+                            import httpx
+
+                            resp = httpx.get(
+                                block.document_url, timeout=30, follow_redirects=True
+                            )
+                            resp.raise_for_status()
+                            text = resp.content.decode("utf-8", errors="replace")
+                            filename_info = f" [{block.filename}]" if block.filename else ""
+                            content_list.append(
+                                {"type": "text", "text": f"[Document{filename_info}]\n\n{text}"}
+                            )
+                        except Exception as e:
+                            filename_info = f" {block.filename}" if block.filename else ""
+                            content_list.append(
+                                {
+                                    "type": "text",
+                                    "text": f"[Error processing document{filename_info}: {str(e)}]",
+                                }
+                            )
 
             # Ensure content_list is not empty (after filtering whitespace-only blocks)
             if not content_list:

@@ -2,6 +2,18 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.1.0] - 2026-02-26
+
+### Added
+- **New OpenAI models**: o4-mini (200K context, $1.10/$4.40) and gpt-5-pro (400K context, $15.00/$120.00)
+- **New Anthropic models**: claude-opus-4.6 (200K context, 128K output, $5.00/$25.00), claude-sonnet-4.6 (200K context, 64K output, $3.00/$15.00), claude-opus-4.5 (200K context, 64K output, $5.00/$25.00)
+- **New Google models**: gemini-3.1-pro-preview (1M context, $2.00/$12.00) and gemini-3-flash-preview (1M context, $0.50/$3.00)
+
+### Changed
+- Updated GPT-5, GPT-5.1, GPT-5 Mini, and GPT-5 Nano context windows from 272K to 400K tokens
+- Updated o3 pricing from $1.10/$4.40 to $2.00/$8.00 and enabled streaming support
+- All new Anthropic models support extended thinking and structured outputs
+
 ## [1.0.0] - 2026-01-13
 
 ### Changed

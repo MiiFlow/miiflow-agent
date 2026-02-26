@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "miiflow-agent"
-version = "1.1.0"
+version = "1.1.1"
 description = "A lightweight Python SDK for building AI agents with unified LLM providers, ReAct orchestration, and tool calling"
 authors = [ "Yaozhong Kang <yaozhong@miiflow.ai>" , "Debjyoti Ray <dev@miiflow.ai>" ]
 maintainers = [ "Yaozhong Kang <yaozhong@miiflow.ai>" ]

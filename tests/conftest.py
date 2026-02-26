@@ -139,11 +139,14 @@ def mock_anthropic_stream_chunks():
     # Content block start
     chunk1 = MagicMock()
     chunk1.type = "content_block_start"
+    chunk1.index = 0
+    chunk1.content_block.type = "text"
     chunks.append(chunk1)
-    
+
     # Content block delta
     chunk2 = MagicMock()
     chunk2.type = "content_block_delta"
+    chunk2.index = 0
     chunk2.delta.text = "Hello! How are you?"
     chunks.append(chunk2)
     

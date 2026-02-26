@@ -81,8 +81,17 @@ class TestStreamNormalizers:
 
     def test_anthropic_chunk_normalization(self, anthropic_normalizer):
         """Test Anthropic chunk normalization."""
+        # Send content_block_start first to initialize block index
+        start_chunk = MagicMock()
+        start_chunk.type = "content_block_start"
+        start_chunk.index = 0
+        start_chunk.content_block.type = "text"
+        anthropic_normalizer.normalize_chunk(start_chunk)
+
+        # Then send content_block_delta with matching index
         chunk = MagicMock()
         chunk.type = "content_block_delta"
+        chunk.index = 0
         chunk.delta = MagicMock()
         chunk.delta.text = "Anthropic response"
         delattr(chunk.delta, 'partial_json') if hasattr(chunk.delta, 'partial_json') else None

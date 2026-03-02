@@ -498,9 +498,19 @@ class PlanAndExecuteOrchestrator:
         await self._publish_event(PlanExecuteEventType.PLANNING_START, {"goal": query})
 
         try:
-            # Use planning prompt directly - tool schemas are sent via API's tools parameter,
-            # so we don't need to include them in the system prompt
-            planning_prompt = PLANNING_WITH_TOOL_SYSTEM_PROMPT
+            # Build planning prompt with available tool names so the planner
+            # references real tools instead of hallucinating non-existent ones
+            available_tool_names = self.tool_executor.list_tools()
+            if available_tool_names:
+                tools_section = (
+                    "\n\nAvailable tools for subtask execution:\n"
+                    + "\n".join(f"- {name}" for name in sorted(available_tool_names))
+                    + "\n\nIMPORTANT: Only reference these tools in required_tools. "
+                    "Do NOT invent or hallucinate tool names."
+                )
+                planning_prompt = PLANNING_WITH_TOOL_SYSTEM_PROMPT + tools_section
+            else:
+                planning_prompt = PLANNING_WITH_TOOL_SYSTEM_PROMPT
 
             logger.info("Generating plan using tool call with streaming thinking")
 
@@ -1404,7 +1414,11 @@ class PlanAndExecuteOrchestrator:
                         "clarification_data": clarification_data,
                     }
 
-                subtask.result = result.final_answer
+                # Clean subtask result to strip any hallucinated XML tool calls
+                # (e.g., <function_calls>, <invoke>) that the LLM may have output as text
+                from .orchestrator import _strip_xml_tags_from_answer
+
+                subtask.result = _strip_xml_tags_from_answer(result.final_answer or "")
                 subtask.cost = result.total_cost
                 subtask.tokens_used = result.total_tokens
                 subtask.status = "completed"

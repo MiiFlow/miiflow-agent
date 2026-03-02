@@ -24,6 +24,8 @@ def _strip_xml_tags_from_answer(content: str) -> str:
 
     This handles cases where LLM outputs raw XML tags that weren't parsed properly
     during streaming, ensuring users see clean content without internal markup.
+    Also strips hallucinated XML tool call blocks (<function_calls>, <invoke>, etc.)
+    that some models emit as text when they don't use native tool calling.
     """
     if not content:
         return content
@@ -31,9 +33,23 @@ def _strip_xml_tags_from_answer(content: str) -> str:
     # Remove <thinking>...</thinking> blocks entirely
     content = re.sub(r"<thinking>.*?</thinking>", "", content, flags=re.DOTALL | re.IGNORECASE)
 
+    # Remove hallucinated XML-based tool call blocks
+    # These appear when LLMs output tool calls as text instead of native tool calling
+    content = re.sub(
+        r"<function_calls>.*?</function_calls>",
+        "",
+        content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
     # Remove standalone opening/closing tags that might remain
     content = re.sub(r"</?thinking>", "", content, flags=re.IGNORECASE)
     content = re.sub(r"</?answer>", "", content, flags=re.IGNORECASE)
+    content = re.sub(r"</?function_calls>", "", content, flags=re.IGNORECASE)
+    content = re.sub(r"<invoke\s+name=[^>]*>.*?</invoke>", "", content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r"</?invoke[^>]*>", "", content, flags=re.IGNORECASE)
+    content = re.sub(r"<parameter\s+name=[^>]*>.*?</parameter>", "", content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r"</?parameter[^>]*>", "", content, flags=re.IGNORECASE)
 
     # Clean up extra whitespace from removed tags
     content = re.sub(r"\n\s*\n\s*\n", "\n\n", content)
@@ -559,6 +575,15 @@ class ReActOrchestrator:
 
             # No tool calls - this is a final answer (with XML tags parsed)
             else:
+                # Detect hallucinated XML tool calls (model outputting tool calls as text
+                # instead of using native tool calling API)
+                if re.search(r"<function_calls>|<invoke\s+name=", assistant_content, re.IGNORECASE):
+                    logger.warning(
+                        f"Step {state.current_step} - LLM output hallucinated XML tool calls as text "
+                        f"instead of using native tool calling. Stripping XML and treating as answer. "
+                        f"Preview: {assistant_content[:200]}..."
+                    )
+
                 logger.debug(f"Step {state.current_step} - No tool calls, final answer provided")
 
                 # Add assistant message to context

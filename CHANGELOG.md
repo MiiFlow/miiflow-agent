@@ -2,6 +2,19 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.1.2] - 2026-03-02
+
+### Fixed
+- Fixed parallel plan execution: planner now includes available tool names in the planning prompt to prevent hallucinated tool references
+- Fixed subtask results being polluted with hallucinated XML tool call tags by stripping them from final answers
+- Provider clients (Groq, Mistral, OpenAI, OpenRouter, xAI) now respect `tool_choice` passed via kwargs instead of always defaulting to `"auto"`
+- Plan generation now forces the model to use the `create_plan` tool via provider-specific `tool_choice` format
+
+## [1.1.1] - 2026-02-26
+
+### Fixed
+- Fixed Anthropic stream normalizer test failures by adding proper `index` and `content_block.type` fields to mock chunks
+
 ## [1.1.0] - 2026-02-26
 
 ### Added

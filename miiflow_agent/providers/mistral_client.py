@@ -113,7 +113,7 @@ class MistralClient(ModelClient):
 
             if tools:
                 request_params["tools"] = tools
-                request_params["tool_choice"] = "auto"
+                request_params["tool_choice"] = kwargs.pop("tool_choice", "auto")
 
             # Add JSON schema support (OpenAI-compatible)
             if json_schema:
@@ -187,7 +187,7 @@ class MistralClient(ModelClient):
 
             if tools:
                 request_params["tools"] = tools
-                request_params["tool_choice"] = "auto"
+                request_params["tool_choice"] = kwargs.pop("tool_choice", "auto")
 
             # Add JSON schema support (OpenAI-compatible)
             if json_schema:

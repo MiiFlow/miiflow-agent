@@ -537,10 +537,19 @@ class PlanAndExecuteOrchestrator:
             last_emitted_length = 0  # Track for non-XML fallback
             xml_thinking_detected = False
 
+            # Force the model to use the create_plan tool (provider-specific format)
+            provider_name = getattr(self.tool_executor._client.client, "provider_name", "")
+            stream_kwargs = {}
+            if provider_name in ("anthropic", "bedrock"):
+                stream_kwargs["tool_choice"] = {"type": "tool", "name": "create_plan"}
+            elif provider_name in ("openai", "groq", "xai", "mistral", "openrouter"):
+                stream_kwargs["tool_choice"] = {"type": "function", "function": {"name": "create_plan"}}
+
             async for chunk in self.tool_executor._client.client.astream_chat(
                 messages=messages,
                 tools=[tool_schema],
                 temperature=0.2,
+                **stream_kwargs,
             ):
                 # Stream thinking text as it arrives
                 if chunk.delta:

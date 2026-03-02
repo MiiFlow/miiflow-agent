@@ -197,7 +197,8 @@ class OpenAIClient(ModelClient):
                 request_params[get_token_param_name(self.model)] = 16384
             if tools:
                 request_params["tools"] = tools
-                request_params["tool_choice"] = "auto"
+                if "tool_choice" not in request_params:
+                    request_params["tool_choice"] = "auto"
 
             if json_schema:
                 normalized_schema = normalize_json_schema(json_schema, SchemaMode.STRICT)
@@ -536,7 +537,8 @@ class OpenAIClient(ModelClient):
                 request_params[get_token_param_name(self.model)] = 16384
             if tools:
                 request_params["tools"] = tools
-                request_params["tool_choice"] = "auto"
+                if "tool_choice" not in request_params:
+                    request_params["tool_choice"] = "auto"
 
             if json_schema:
                 normalized_schema = normalize_json_schema(json_schema, SchemaMode.STRICT)

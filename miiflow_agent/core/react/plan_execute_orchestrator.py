@@ -498,9 +498,19 @@ class PlanAndExecuteOrchestrator:
         await self._publish_event(PlanExecuteEventType.PLANNING_START, {"goal": query})
 
         try:
-            # Use planning prompt directly - tool schemas are sent via API's tools parameter,
-            # so we don't need to include them in the system prompt
-            planning_prompt = PLANNING_WITH_TOOL_SYSTEM_PROMPT
+            # Build planning prompt with available tool names so the planner
+            # references real tools instead of hallucinating non-existent ones
+            available_tool_names = self.tool_executor.list_tools()
+            if available_tool_names:
+                tools_section = (
+                    "\n\nAvailable tools for subtask execution:\n"
+                    + "\n".join(f"- {name}" for name in sorted(available_tool_names))
+                    + "\n\nIMPORTANT: Only reference these tools in required_tools. "
+                    "Do NOT invent or hallucinate tool names."
+                )
+                planning_prompt = PLANNING_WITH_TOOL_SYSTEM_PROMPT + tools_section
+            else:
+                planning_prompt = PLANNING_WITH_TOOL_SYSTEM_PROMPT
 
             logger.info("Generating plan using tool call with streaming thinking")
 
@@ -537,10 +547,19 @@ class PlanAndExecuteOrchestrator:
             last_emitted_length = 0  # Track for non-XML fallback
             xml_thinking_detected = False
 
+            # Force the model to use the create_plan tool (provider-specific format)
+            provider_name = getattr(self.tool_executor._client.client, "provider_name", "")
+            stream_kwargs = {}
+            if provider_name in ("anthropic", "bedrock"):
+                stream_kwargs["tool_choice"] = {"type": "tool", "name": "create_plan"}
+            elif provider_name in ("openai", "groq", "xai", "mistral", "openrouter"):
+                stream_kwargs["tool_choice"] = {"type": "function", "function": {"name": "create_plan"}}
+
             async for chunk in self.tool_executor._client.client.astream_chat(
                 messages=messages,
                 tools=[tool_schema],
                 temperature=0.2,
+                **stream_kwargs,
             ):
                 # Stream thinking text as it arrives
                 if chunk.delta:
@@ -1395,7 +1414,11 @@ class PlanAndExecuteOrchestrator:
                         "clarification_data": clarification_data,
                     }
 
-                subtask.result = result.final_answer
+                # Clean subtask result to strip any hallucinated XML tool calls
+                # (e.g., <function_calls>, <invoke>) that the LLM may have output as text
+                from .orchestrator import _strip_xml_tags_from_answer
+
+                subtask.result = _strip_xml_tags_from_answer(result.final_answer or "")
                 subtask.cost = result.total_cost
                 subtask.tokens_used = result.total_tokens
                 subtask.status = "completed"

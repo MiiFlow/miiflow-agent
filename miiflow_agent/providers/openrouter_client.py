@@ -200,7 +200,7 @@ class OpenRouterClient(ModelClient):
 
             if tools:
                 payload["tools"] = tools
-                payload["tool_choice"] = "auto"
+                payload["tool_choice"] = kwargs.pop("tool_choice", "auto")
 
             # Add structured output support via response_format
             if json_schema:
@@ -299,7 +299,7 @@ class OpenRouterClient(ModelClient):
 
             if tools:
                 payload["tools"] = tools
-                payload["tool_choice"] = "auto"
+                payload["tool_choice"] = kwargs.pop("tool_choice", "auto")
 
             # Add structured output support via response_format
             if json_schema:

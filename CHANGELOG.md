@@ -2,6 +2,22 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.2.0] - 2026-03-03
+
+### Added
+- **Gemini REST API client**: Rewrote Gemini provider to use direct REST API calls (httpx SSE) instead of the google-generativeai SDK protobuf layer, preserving fields like `thoughtSignature` on `functionCall` parts that the SDK strips out
+- **Gemini tool call support**: `GeminiStreamNormalizer` now handles both REST API dict chunks and legacy protobuf chunks, with proper `function_call_metadata` propagation including `thought_signature`
+- **New OpenAI model**: o3-pro (200K context, 100K output, $20/$80) — OpenAI's premium reasoning model for maximum accuracy
+- ReAct orchestrator now preserves `function_call_metadata` on accumulated tool calls
+
+### Changed
+- Updated Anthropic model descriptions to mark older models (Claude Opus 4.5, 4.1, 4; Sonnet 4.5, 4; Claude 3.7 Sonnet; Claude 3.5 Haiku) as legacy with successor references
+- Updated Google model descriptions with deprecation/sunset dates (gemini-2.0-flash/flash-lite retiring June 1, 2026; gemini-2.5-pro/flash sunset June 17, 2026)
+- Updated OpenAI model descriptions to mark older models (GPT-5, GPT-4o, GPT-4 Turbo, o1, o1-pro, gpt-5-pro) as legacy with successor references
+
+### Removed
+- Removed `gemini-3-pro-preview` model (superseded by `gemini-3.1-pro-preview`)
+
 ## [1.1.2] - 2026-03-02
 
 ### Fixed

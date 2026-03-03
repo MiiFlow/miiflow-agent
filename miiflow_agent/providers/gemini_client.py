@@ -1,9 +1,18 @@
-"""Google Gemini client implementation."""
+"""Google Gemini client implementation.
 
-import asyncio
+Uses direct REST API calls via httpx instead of the google-generativeai SDK
+for API communication. This allows preserving fields like `thoughtSignature`
+on functionCall parts, which the SDK's protobuf layer strips out.
+
+The SDK is still imported for GEMINI_AVAILABLE detection only.
+"""
+
+import base64
+import json
 import re
-import warnings
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+
+import httpx
 
 
 def _sanitize_tool_name_for_gemini(name: str) -> str:
@@ -25,33 +34,18 @@ def _sanitize_tool_name_for_gemini(name: str) -> str:
     sanitized = sanitized.rstrip("_")[:64]
     return sanitized or "_unnamed"
 
+
 try:
-    import google.generativeai as genai
-    from google.generativeai.types import (
-        FunctionDeclaration,
-        HarmBlockThreshold,
-        HarmCategory,
-        Tool,
-    )
+    import google.generativeai as genai  # noqa: F401 – presence check only
 
     GEMINI_AVAILABLE = True
 except ImportError:
-    GEMINI_AVAILABLE = False
-
-# Suppress warnings about unrecognized FinishReason enum values from proto-plus.
-# Gemini 2.5 models return new enum values (like 12, 15) that aren't yet in the
-# google-generativeai SDK's protobuf definitions. Our code handles these gracefully
-# via _get_finish_reason_name(), so the warnings are just noise.
-# See: https://github.com/langchain-ai/langchain-google/issues/1268
-warnings.filterwarnings(
-    "ignore",
-    message=r"Unrecognized FinishReason enum value: \d+",
-    category=UserWarning,
-    module=r"proto\.marshal\.rules\.enums",
-)
+    # SDK is no longer required for API calls (we use httpx REST API directly),
+    # but we keep it as an install-time dependency marker.
+    GEMINI_AVAILABLE = True
 
 from ..core.client import ModelClient
-from ..core.exceptions import AuthenticationError, ModelError, ProviderError
+from ..core.exceptions import AuthenticationError, ProviderError
 from ..core.message import DocumentBlock, ImageBlock, Message, MessageRole, TextBlock
 from ..core.metrics import TokenCount
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
@@ -59,9 +53,118 @@ from ..core.stream_normalizer import GeminiStreamNormalizer
 from ..core.streaming import StreamChunk
 from ..utils.image import image_url_to_bytes
 
+# Base URL for Gemini REST API
+_GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+# Safety settings in REST format
+_SAFETY_SETTINGS_REST = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+]
+
+
+def _to_camel_case(snake_str: str) -> str:
+    """Convert snake_case to camelCase."""
+    parts = snake_str.split("_")
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+
+def _convert_to_rest_format(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert internal snake_case message dicts to REST API camelCase format.
+
+    Handles: function_call -> functionCall, function_response -> functionResponse,
+    inline_data -> inlineData, mime_type -> mimeType.
+    Preserves thought_signature -> thoughtSignature on functionCall parts.
+    """
+    rest_messages = []
+    for msg in messages:
+        rest_msg = {"role": msg["role"], "parts": []}
+        for part in msg.get("parts", []):
+            if "text" in part:
+                rest_msg["parts"].append({"text": part["text"]})
+            elif "function_call" in part:
+                fc = part["function_call"]
+                rest_fc: Dict[str, Any] = {"name": fc["name"], "args": fc.get("args", {})}
+                rest_part: Dict[str, Any] = {"functionCall": rest_fc}
+                # thoughtSignature is a sibling of functionCall in the part
+                if "thought_signature" in fc:
+                    rest_part["thoughtSignature"] = fc["thought_signature"]
+                rest_msg["parts"].append(rest_part)
+            elif "function_response" in part:
+                fr = part["function_response"]
+                rest_msg["parts"].append(
+                    {"functionResponse": {"name": fr["name"], "response": fr.get("response", {})}}
+                )
+            elif "inline_data" in part:
+                id_part = part["inline_data"]
+                rest_msg["parts"].append(
+                    {"inlineData": {"mimeType": id_part["mime_type"], "data": id_part["data"]}}
+                )
+            else:
+                # Pass through unknown parts as-is
+                rest_msg["parts"].append(part)
+        rest_messages.append(rest_msg)
+    return rest_messages
+
+
+def _parse_rest_response(
+    data: Dict[str, Any], tool_name_mapping: Dict[str, str]
+) -> Tuple[str, List[Dict[str, Any]], TokenCount, Optional[str]]:
+    """Parse REST API response JSON.
+
+    Returns (content, tool_calls, usage, finish_reason).
+    Extracts thoughtSignature from functionCall parts and stores in function_call_metadata.
+    """
+    content = ""
+    tool_calls: List[Dict[str, Any]] = []
+    finish_reason = None
+
+    candidates = data.get("candidates", [])
+    if candidates:
+        candidate = candidates[0]
+        parts = candidate.get("content", {}).get("parts", [])
+        for part in parts:
+            if "functionCall" in part:
+                fc = part["functionCall"]
+                gemini_name = fc.get("name", "")
+                original_name = tool_name_mapping.get(gemini_name, gemini_name)
+                tool_call: Dict[str, Any] = {
+                    "id": f"gemini_{original_name}",
+                    "type": "function",
+                    "function": {
+                        "name": original_name,
+                        "arguments": fc.get("args", {}),
+                    },
+                    "function_call_metadata": {
+                        "gemini_function_name": gemini_name,
+                    },
+                }
+                # thoughtSignature is a sibling of functionCall in the part,
+                # not nested inside functionCall.
+                if "thoughtSignature" in part:
+                    tool_call["function_call_metadata"]["thought_signature"] = part[
+                        "thoughtSignature"
+                    ]
+                tool_calls.append(tool_call)
+            elif "text" in part:
+                content += part["text"]
+
+        finish_reason = candidate.get("finishReason")
+
+    usage_meta = data.get("usageMetadata", {})
+    usage = TokenCount(
+        prompt_tokens=usage_meta.get("promptTokenCount", 0) or 0,
+        completion_tokens=usage_meta.get("candidatesTokenCount", 0) or 0,
+        total_tokens=usage_meta.get("totalTokenCount", 0) or 0,
+    )
+
+    return content, tool_calls, usage, finish_reason
+
 
 class GeminiClient(ModelClient):
-    """Google Gemini client implementation."""
+    """Google Gemini client implementation using direct REST API calls."""
 
     def __init__(
         self,
@@ -83,22 +186,6 @@ class GeminiClient(ModelClient):
         if not api_key:
             raise AuthenticationError("Gemini API key is required")
 
-        # Configure Gemini with REST transport (avoids gRPC connection issues)
-        genai.configure(api_key=api_key, transport="rest")
-
-        # Initialize the model
-        try:
-            self.client = genai.GenerativeModel(model_name=model)
-        except Exception as e:
-            raise ModelError(f"Failed to initialize Gemini model {model}: {e}")
-
-        self.safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        }
-
         self.provider_name = "gemini"
 
         # Stream normalizer for unified streaming handling
@@ -107,26 +194,111 @@ class GeminiClient(ModelClient):
         # Tool name mapping: sanitized_name -> original_name
         self._tool_name_mapping: Dict[str, str] = {}
 
-    def _get_finish_reason_name(self, finish_reason: Any) -> Optional[str]:
-        """Safely extract finish_reason name, handling both enum and int values.
+    # ------------------------------------------------------------------
+    # REST API URL builders
+    # ------------------------------------------------------------------
 
-        Gemini 2.5 models may return new undocumented finish_reason enum values
-        (like 12) that come as raw integers instead of enum objects.
-        """
+    def _build_rest_url(self, streaming: bool = False) -> str:
+        """Build the REST API endpoint URL."""
+        # Strip "models/" prefix if present — the SDK accepted both formats
+        # but the REST URL already includes /models/ in the path.
+        model = self.model
+        if model.startswith("models/"):
+            model = model[len("models/"):]
+        if streaming:
+            return (
+                f"{_GEMINI_API_BASE}/models/{model}:streamGenerateContent"
+                f"?alt=sse&key={self.api_key}"
+            )
+        return (
+            f"{_GEMINI_API_BASE}/models/{model}:generateContent"
+            f"?key={self.api_key}"
+        )
+
+    # ------------------------------------------------------------------
+    # Request body builders
+    # ------------------------------------------------------------------
+
+    def _build_generation_config_rest(
+        self,
+        temperature: float,
+        max_tokens: Optional[int],
+        json_schema: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build generationConfig in REST format."""
+        config: Dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens or 8192,
+        }
+        if json_schema:
+            config["responseMimeType"] = "application/json"
+            config["responseSchema"] = normalize_json_schema(json_schema, SchemaMode.GEMINI_COMPAT)
+        return config
+
+    def _build_tools_rest(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Build tools/functionDeclarations in REST format."""
+        self._tool_name_mapping.clear()
+
+        function_declarations = []
+        for tool in tools:
+            original_name = tool["name"]
+            sanitized_name = _sanitize_tool_name_for_gemini(original_name)
+            if sanitized_name != original_name:
+                self._tool_name_mapping[sanitized_name] = original_name
+
+            normalized_parameters = normalize_json_schema(
+                tool["parameters"], SchemaMode.GEMINI_COMPAT
+            )
+            function_declarations.append(
+                {
+                    "name": sanitized_name,
+                    "description": tool["description"],
+                    "parameters": normalized_parameters,
+                }
+            )
+        return [{"functionDeclarations": function_declarations}]
+
+    def _build_rest_request_body(
+        self,
+        gemini_messages: List[Dict[str, Any]],
+        generation_config: Dict[str, Any],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        system_instruction: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build the full REST API request body."""
+        rest_contents = _convert_to_rest_format(gemini_messages)
+
+        body: Dict[str, Any] = {
+            "contents": rest_contents,
+            "generationConfig": generation_config,
+            "safetySettings": _SAFETY_SETTINGS_REST,
+        }
+        if tools:
+            body["tools"] = tools
+        if system_instruction:
+            body["systemInstruction"] = {
+                "parts": [{"text": system_instruction}]
+            }
+        return body
+
+    # ------------------------------------------------------------------
+    # Helpers shared between achat/astream_chat
+    # ------------------------------------------------------------------
+
+    def _get_finish_reason_name(self, finish_reason: Any) -> Optional[str]:
+        """Safely extract finish_reason name, handling both enum and string values."""
         if finish_reason is None:
             return None
-        # If it's an enum with a name attribute, use that
+        if isinstance(finish_reason, str):
+            return finish_reason
         if hasattr(finish_reason, "name"):
             return finish_reason.name
-        # If it's an integer (unrecognized enum value), convert to string
         if isinstance(finish_reason, int):
             return f"UNKNOWN_{finish_reason}"
-        # Fallback: convert to string
         return str(finish_reason)
 
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to Gemini format."""
-        # Normalize parameters to remove unsupported fields (default, additionalProperties, etc.)
         normalized_parameters = normalize_json_schema(schema["parameters"], SchemaMode.GEMINI_COMPAT)
         return {
             "name": schema["name"],
@@ -135,11 +307,7 @@ class GeminiClient(ModelClient):
         }
 
     def _extract_system_instruction(self, messages: List[Message]) -> Optional[str]:
-        """Extract system instruction from messages.
-
-        Gemini supports system instructions via the system_instruction parameter.
-        This extracts and combines all system messages into a single instruction.
-        """
+        """Extract system instruction from messages."""
         system_parts = []
         for message in messages:
             if message.role == MessageRole.SYSTEM:
@@ -149,7 +317,6 @@ class GeminiClient(ModelClient):
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             system_parts.append(block.text)
-
         if system_parts:
             return "\n\n".join(system_parts)
         return None
@@ -162,17 +329,19 @@ class GeminiClient(ModelClient):
         Consolidates consecutive USER messages into a single message, ensuring images
         come before text (as required by Gemini API).
 
+        Image data is base64-encoded for the REST API.
+
         Note: System messages are handled separately via _extract_system_instruction()
-        and passed to the model via the system_instruction parameter.
+        and passed to the model via the systemInstruction parameter.
         """
-        gemini_messages = []
+        gemini_messages: List[Dict[str, Any]] = []
 
         for message in messages:
             # Skip system messages - they're handled via system_instruction parameter
             if message.role == MessageRole.SYSTEM:
                 continue
             elif message.role == MessageRole.USER:
-                parts = []
+                parts: List[Dict[str, Any]] = []
 
                 if isinstance(message.content, str):
                     parts.append({"text": message.content})
@@ -181,24 +350,22 @@ class GeminiClient(ModelClient):
                         if isinstance(block, TextBlock):
                             parts.append({"text": block.text})
                         elif isinstance(block, ImageBlock):
-                            # Handle image blocks: convert to bytes for Gemini API
                             try:
-                                # Use unified utility to convert any image URL format to bytes
                                 image_bytes, mime_type = await image_url_to_bytes(
                                     block.image_url, timeout=self.timeout
                                 )
+                                # REST API needs base64 string
+                                b64_data = base64.b64encode(image_bytes).decode("utf-8")
                                 parts.append(
-                                    {"inline_data": {"mime_type": mime_type, "data": image_bytes}}
+                                    {"inline_data": {"mime_type": mime_type, "data": b64_data}}
                                 )
                             except Exception as e:
-                                # If conversion fails, add as text placeholder
                                 parts.append(
                                     {
                                         "text": f"[Image failed to load: {block.image_url}. Error: {str(e)}]"
                                     }
                                 )
                         elif isinstance(block, DocumentBlock):
-                            # Handle document blocks: extract text and add as text content
                             try:
                                 filename_info = f" [{block.filename}]" if block.filename else ""
                                 if block.document_type == "pdf":
@@ -207,8 +374,6 @@ class GeminiClient(ModelClient):
                                     text = extract_pdf_text_simple(block.document_url)
                                     doc_content = f"[PDF Document{filename_info}]\n\n{text}"
                                 else:
-                                    import httpx
-
                                     resp = httpx.get(
                                         block.document_url, timeout=30, follow_redirects=True
                                     )
@@ -222,28 +387,20 @@ class GeminiClient(ModelClient):
                                     {"text": f"[Error processing document{filename_info}: {str(e)}]"}
                                 )
 
-                # Consolidate consecutive USER messages (common pattern from LLMNode)
-                # Gemini requires images before text in the same message
+                # Consolidate consecutive USER messages
                 if gemini_messages and gemini_messages[-1]["role"] == "user":
-                    # Merge with previous user message: images first, then text
                     existing_parts = gemini_messages[-1]["parts"]
-
-                    # Separate images and text from both messages
                     all_images = [p for p in existing_parts if "inline_data" in p]
                     all_text = [p for p in existing_parts if "text" in p]
                     all_images.extend([p for p in parts if "inline_data" in p])
                     all_text.extend([p for p in parts if "text" in p])
-
-                    # Combine: images first, then text
                     gemini_messages[-1]["parts"] = all_images + all_text
                 else:
-                    # New user message
                     gemini_messages.append({"role": "user", "parts": parts})
 
             elif message.role == MessageRole.ASSISTANT:
                 parts = []
 
-                # Add text content if present
                 if message.content:
                     if isinstance(message.content, str):
                         parts.append({"text": message.content})
@@ -255,67 +412,59 @@ class GeminiClient(ModelClient):
                 # Add function calls if present (for multi-turn with tool use)
                 if message.tool_calls:
                     for tool_call in message.tool_calls:
-                        # Handle both dict format and object format
                         if isinstance(tool_call, dict):
-                            func_name = tool_call.get("function", {}).get("name") or tool_call.get(
+                            func_name = tool_call.get("function", {}).get(
                                 "name"
-                            )
+                            ) or tool_call.get("name")
                             func_args = tool_call.get("function", {}).get(
                                 "arguments"
                             ) or tool_call.get("arguments", {})
-                            # Parse arguments if they're a string
                             if isinstance(func_args, str):
-                                import json
-
                                 try:
                                     func_args = json.loads(func_args)
                                 except json.JSONDecodeError:
                                     func_args = {}
+
+                            # Use gemini_function_name from metadata if available
+                            metadata = tool_call.get("function_call_metadata", {})
+                            gemini_name = metadata.get("gemini_function_name", func_name)
                         else:
-                            # Object with attributes
                             func_name = getattr(tool_call, "name", None) or getattr(
                                 getattr(tool_call, "function", None), "name", None
                             )
                             func_args = getattr(tool_call, "arguments", {}) or getattr(
                                 getattr(tool_call, "function", None), "arguments", {}
                             )
+                            metadata = {}
+                            gemini_name = func_name
 
                         if func_name:
-                            parts.append(
-                                {
-                                    "function_call": {
-                                        "name": func_name,
-                                        "args": func_args if isinstance(func_args, dict) else {},
-                                    }
-                                }
-                            )
+                            fc_part: Dict[str, Any] = {
+                                "name": gemini_name,
+                                "args": func_args if isinstance(func_args, dict) else {},
+                            }
+                            # Preserve thought_signature from metadata
+                            thought_sig = metadata.get("thought_signature")
+                            if thought_sig:
+                                fc_part["thought_signature"] = thought_sig
+                            parts.append({"function_call": fc_part})
 
-                # Only add if we have parts
                 if parts:
                     gemini_messages.append({"role": "model", "parts": parts})
                 elif not message.content and not message.tool_calls:
-                    # Empty assistant message - add placeholder
                     gemini_messages.append({"role": "model", "parts": [{"text": ""}]})
 
             elif message.role == MessageRole.TOOL:
-                # Tool results need to be sent as function_response with role "user"
-                # Extract tool name from tool_call_id or use a default
                 tool_name = getattr(message, "name", None) or "tool_result"
-
-                # Parse the content as the result
                 result_content = (
                     message.content if isinstance(message.content, str) else str(message.content)
                 )
 
-                # Gemini expects function responses as user messages with function_response parts
-                # Check if last message was also a tool response - consolidate them
                 if gemini_messages and gemini_messages[-1]["role"] == "user":
-                    # Check if it contains function_response parts
                     has_function_response = any(
                         "function_response" in p for p in gemini_messages[-1]["parts"]
                     )
                     if has_function_response:
-                        # Add to existing function response message
                         gemini_messages[-1]["parts"].append(
                             {
                                 "function_response": {
@@ -325,7 +474,6 @@ class GeminiClient(ModelClient):
                             }
                         )
                     else:
-                        # New message for function response
                         gemini_messages.append(
                             {
                                 "role": "user",
@@ -356,6 +504,10 @@ class GeminiClient(ModelClient):
 
         return gemini_messages
 
+    # ------------------------------------------------------------------
+    # achat – non-streaming
+    # ------------------------------------------------------------------
+
     async def achat(
         self,
         messages: List[Message],
@@ -365,144 +517,44 @@ class GeminiClient(ModelClient):
         json_schema: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
-        """Send chat completion request to Gemini."""
+        """Send chat completion request to Gemini via REST API."""
         try:
-            # Extract system instruction from messages
             system_instruction = self._extract_system_instruction(messages)
-
-            # Convert remaining messages to Gemini format
             gemini_messages = await self._convert_messages_to_gemini_format(messages)
 
-            # Determine if we have multimodal content
-            has_multimodal = False
-            for msg in gemini_messages:
-                for part in msg.get("parts", []):
-                    if "inline_data" in part:
-                        has_multimodal = True
-                        break
-                if has_multimodal:
-                    break
-
-            # Prepare content for API call
-            # Gemini's generate_content supports multi-turn by passing list of messages
-            # with 'role' ('user' or 'model') and 'parts' keys
-            if len(gemini_messages) == 0:
+            if not gemini_messages:
                 raise ProviderError(
                     "No user or assistant messages provided to Gemini", provider="gemini"
                 )
-            elif len(gemini_messages) == 1:
-                # Single message - can pass just the parts for simplicity
-                parts = gemini_messages[0]["parts"]
-                if has_multimodal:
-                    prompt = parts
-                elif len(parts) == 1:
-                    # Single text part - can pass as string
-                    prompt = parts[0]["text"]
-                else:
-                    # Multiple text parts - join them together
-                    prompt = "\n\n".join(p["text"] for p in parts if "text" in p)
-            else:
-                # Multiple messages - pass as list for proper multi-turn conversation
-                # Gemini expects: [{'role': 'user'|'model', 'parts': [...]}]
-                prompt = gemini_messages
 
-            # Build generation config
-            generation_config_params = {
-                "temperature": temperature,
-                "max_output_tokens": max_tokens or 8192,
-            }
-
-            # Add JSON schema support (CANNOT be used with tools!)
-            if json_schema:
-                if tools:
-                    raise ProviderError(
-                        "Gemini does not support JSON schema with function calling. "
-                        "Use either json_schema OR tools, not both.",
-                        provider="gemini",
-                    )
-                generation_config_params["response_mime_type"] = "application/json"
-                # Normalize schema for Gemini compatibility
-                generation_config_params["response_schema"] = normalize_json_schema(
-                    json_schema, SchemaMode.GEMINI_COMPAT
+            # Validate json_schema + tools mutual exclusivity
+            if json_schema and tools:
+                raise ProviderError(
+                    "Gemini does not support JSON schema with function calling. "
+                    "Use either json_schema OR tools, not both.",
+                    provider="gemini",
                 )
 
-            generation_config = genai.GenerationConfig(**generation_config_params)
-
-            # Prepare tools for Gemini (if provided)
-            gemini_tools = None
-            if tools:
-                # Clear previous mapping
-                self._tool_name_mapping.clear()
-
-                # Gemini expects tools wrapped in a Tool object
-                function_declarations = []
-                for tool in tools:
-                    original_name = tool["name"]
-                    sanitized_name = _sanitize_tool_name_for_gemini(original_name)
-
-                    # Store mapping if name was changed
-                    if sanitized_name != original_name:
-                        self._tool_name_mapping[sanitized_name] = original_name
-
-                    # Normalize parameters to remove unsupported fields (minimum, maximum, etc.)
-                    normalized_parameters = normalize_json_schema(
-                        tool["parameters"], SchemaMode.GEMINI_COMPAT
-                    )
-                    func_decl = FunctionDeclaration(
-                        name=sanitized_name,
-                        description=tool["description"],
-                        parameters=normalized_parameters,
-                    )
-                    function_declarations.append(func_decl)
-                gemini_tools = [Tool(function_declarations=function_declarations)]
-
-            # Create model with system instruction if provided
-            # Gemini requires system_instruction to be set at model creation time
-            if system_instruction:
-                model = genai.GenerativeModel(
-                    model_name=self.model,
-                    system_instruction=system_instruction,
-                )
-            else:
-                model = self.client
-
-            response = await asyncio.to_thread(
-                model.generate_content,
-                prompt,
-                generation_config=generation_config,
-                safety_settings=self.safety_settings,
-                tools=gemini_tools,
+            gen_config = self._build_generation_config_rest(temperature, max_tokens, json_schema)
+            rest_tools = self._build_tools_rest(tools) if tools else None
+            body = self._build_rest_request_body(
+                gemini_messages, gen_config, rest_tools, system_instruction
             )
 
-            content = ""
-            tool_calls = []
+            url = self._build_rest_url(streaming=False)
 
-            if response.candidates and response.candidates[0].content.parts:
-                for part in response.candidates[0].content.parts:
-                    if hasattr(part, "function_call") and part.function_call:
-                        func_call = part.function_call
-                        # Map sanitized name back to original
-                        tool_name = self._tool_name_mapping.get(func_call.name, func_call.name)
-                        # Format as OpenAI-compatible tool call structure
-                        tool_call = {
-                            "id": f"gemini_{tool_name}",
-                            "type": "function",
-                            "function": {
-                                "name": tool_name,
-                                "arguments": dict(func_call.args) if func_call.args else {},
-                            },
-                        }
-                        tool_calls.append(tool_call)
-                    elif hasattr(part, "text") and part.text:
-                        content += part.text
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, json=body)
+                if resp.status_code != 200:
+                    raise ProviderError(
+                        f"Gemini API error ({resp.status_code}): {resp.text}",
+                        provider="gemini",
+                    )
+                data = resp.json()
 
-            usage = TokenCount()
-            if hasattr(response, "usage_metadata") and response.usage_metadata:
-                usage = TokenCount(
-                    prompt_tokens=getattr(response.usage_metadata, "prompt_token_count", 0),
-                    completion_tokens=getattr(response.usage_metadata, "candidates_token_count", 0),
-                    total_tokens=getattr(response.usage_metadata, "total_token_count", 0),
-                )
+            content, tool_calls, usage, finish_reason = _parse_rest_response(
+                data, self._tool_name_mapping
+            )
 
             response_message = Message(
                 role=MessageRole.ASSISTANT,
@@ -517,15 +569,17 @@ class GeminiClient(ModelClient):
                 usage=usage,
                 model=self.model,
                 provider=self.provider_name,
-                finish_reason=(
-                    self._get_finish_reason_name(response.candidates[0].finish_reason)
-                    if response.candidates
-                    else None
-                ),
+                finish_reason=self._get_finish_reason_name(finish_reason),
             )
 
+        except ProviderError:
+            raise
         except Exception as e:
             raise ProviderError(f"Gemini API error: {e}", provider="gemini")
+
+    # ------------------------------------------------------------------
+    # astream_chat – SSE streaming
+    # ------------------------------------------------------------------
 
     async def astream_chat(
         self,
@@ -536,157 +590,92 @@ class GeminiClient(ModelClient):
         json_schema: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> AsyncIterator:
-        """Send streaming chat completion request to Gemini."""
+        """Send streaming chat completion request to Gemini via REST SSE API."""
         try:
-            # Extract system instruction from messages
             system_instruction = self._extract_system_instruction(messages)
-
-            # Convert remaining messages to Gemini format
             gemini_messages = await self._convert_messages_to_gemini_format(messages)
 
-            # Determine if we have multimodal content
-            has_multimodal = False
-            for msg in gemini_messages:
-                for part in msg.get("parts", []):
-                    if "inline_data" in part:
-                        has_multimodal = True
-                        break
-                if has_multimodal:
-                    break
-
-            # Prepare content for API call
-            # Gemini's generate_content supports multi-turn by passing list of messages
-            # with 'role' ('user' or 'model') and 'parts' keys
-            if len(gemini_messages) == 0:
+            if not gemini_messages:
                 raise ProviderError(
                     "No user or assistant messages provided to Gemini", provider="gemini"
                 )
-            elif len(gemini_messages) == 1:
-                # Single message - can pass just the parts for simplicity
-                parts = gemini_messages[0]["parts"]
-                if has_multimodal:
-                    prompt = parts
-                elif len(parts) == 1:
-                    # Single text part - can pass as string
-                    prompt = parts[0]["text"]
-                else:
-                    # Multiple text parts - join them together
-                    prompt = "\n\n".join(p["text"] for p in parts if "text" in p)
-            else:
-                # Multiple messages - pass as list for proper multi-turn conversation
-                # Gemini expects: [{'role': 'user'|'model', 'parts': [...]}]
-                prompt = gemini_messages
 
-            # Build generation config
-            generation_config_params = {
-                "temperature": temperature,
-                "max_output_tokens": max_tokens or 8192,
-            }
-            if json_schema:
-                if tools:
-                    raise ProviderError(
-                        "Gemini does not support JSON mode with function calling. "
-                        "Use either json_mode/json_schema OR tools, not both.",
-                        provider="gemini",
-                    )
-                generation_config_params["response_mime_type"] = "application/json"
-                # Normalize schema for Gemini compatibility
-                generation_config_params["response_schema"] = normalize_json_schema(
-                    json_schema, SchemaMode.GEMINI_COMPAT
-                )
-
-            generation_config = genai.GenerationConfig(**generation_config_params)
-
-            # Prepare tools for Gemini (if provided)
-            gemini_tools = None
-            if tools:
-                # Clear previous mapping
-                self._tool_name_mapping.clear()
-
-                function_declarations = []
-                for tool in tools:
-                    original_name = tool["name"]
-                    sanitized_name = _sanitize_tool_name_for_gemini(original_name)
-
-                    # Store mapping if name was changed
-                    if sanitized_name != original_name:
-                        self._tool_name_mapping[sanitized_name] = original_name
-
-                    # Normalize parameters to remove unsupported fields (minimum, maximum, etc.)
-                    normalized_parameters = normalize_json_schema(
-                        tool["parameters"], SchemaMode.GEMINI_COMPAT
-                    )
-                    func_decl = FunctionDeclaration(
-                        name=sanitized_name,
-                        description=tool["description"],
-                        parameters=normalized_parameters,
-                    )
-                    function_declarations.append(func_decl)
-                gemini_tools = [Tool(function_declarations=function_declarations)]
-
-            # Create model with system instruction if provided
-            # Gemini requires system_instruction to be set at model creation time
-            if system_instruction:
-                model = genai.GenerativeModel(
-                    model_name=self.model,
-                    system_instruction=system_instruction,
-                )
-            else:
-                model = self.client
-
-            # Build kwargs for generate_content - only include tools if provided
-            generate_kwargs = {
-                "generation_config": generation_config,
-                "safety_settings": self.safety_settings,
-                "stream": True,
-            }
-            if gemini_tools:
-                generate_kwargs["tools"] = gemini_tools
-
-            try:
-                response_stream = await asyncio.to_thread(
-                    model.generate_content,
-                    prompt,
-                    **generate_kwargs,
-                )
-            except Exception as stream_error:
-                # Streaming failed - try non-streaming to get actual error message
-                try:
-                    generate_kwargs["stream"] = False
-                    await asyncio.to_thread(
-                        model.generate_content,
-                        prompt,
-                        **generate_kwargs,
-                    )
-                except Exception as detail_error:
-                    raise ProviderError(
-                        f"Gemini API error: {detail_error}", provider="gemini"
-                    )
-                # If non-streaming succeeds, re-raise original streaming error
+            if json_schema and tools:
                 raise ProviderError(
-                    f"Gemini streaming error: {stream_error}", provider="gemini"
+                    "Gemini does not support JSON mode with function calling. "
+                    "Use either json_mode/json_schema OR tools, not both.",
+                    provider="gemini",
                 )
+
+            gen_config = self._build_generation_config_rest(temperature, max_tokens, json_schema)
+            rest_tools = self._build_tools_rest(tools) if tools else None
+            body = self._build_rest_request_body(
+                gemini_messages, gen_config, rest_tools, system_instruction
+            )
+
+            url = self._build_rest_url(streaming=True)
 
             # Reset stream state for new streaming session
             self._stream_normalizer.reset_state()
 
-            for chunk in response_stream:
-                normalized_chunk = self._stream_normalizer.normalize_chunk(chunk)
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream("POST", url, json=body) as resp:
+                    if resp.status_code != 200:
+                        error_body = await resp.aread()
+                        raise ProviderError(
+                            f"Gemini API error ({resp.status_code}): {error_body.decode()}",
+                            provider="gemini",
+                        )
 
-                # Map tool names back to original names
-                if normalized_chunk.tool_calls:
-                    for tool_call in normalized_chunk.tool_calls:
-                        # Name is inside the "function" object
-                        func_data = tool_call.get("function", {})
-                        if func_data.get("name"):
-                            original_name = self._tool_name_mapping.get(
-                                func_data["name"], func_data["name"]
-                            )
-                            func_data["name"] = original_name
+                    async for chunk_dict in self._parse_sse_stream(resp):
+                        # Feed dict chunks to normalizer
+                        normalized_chunk = self._stream_normalizer.normalize_chunk(chunk_dict)
 
-                yield normalized_chunk
+                        # Map tool names back to original names
+                        if normalized_chunk.tool_calls:
+                            for tool_call in normalized_chunk.tool_calls:
+                                func_data = tool_call.get("function", {})
+                                if func_data.get("name"):
+                                    original_name = self._tool_name_mapping.get(
+                                        func_data["name"], func_data["name"]
+                                    )
+                                    func_data["name"] = original_name
+
+                        yield normalized_chunk
 
         except ProviderError:
             raise
         except Exception as e:
             raise ProviderError(f"Gemini streaming error: {e}", provider="gemini")
+
+    async def _parse_sse_stream(
+        self, response: httpx.Response
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Parse SSE stream from Gemini REST API.
+
+        Yields parsed JSON dicts from `data: {...}` lines.
+        """
+        buffer = ""
+        async for line in response.aiter_lines():
+            line = line.strip()
+            if line.startswith("data: "):
+                json_str = line[6:]  # strip "data: " prefix
+                if json_str:
+                    try:
+                        yield json.loads(json_str)
+                    except json.JSONDecodeError:
+                        # Accumulate partial JSON across lines (shouldn't happen
+                        # with Gemini SSE, but be defensive)
+                        buffer += json_str
+                        try:
+                            yield json.loads(buffer)
+                            buffer = ""
+                        except json.JSONDecodeError:
+                            pass
+            elif not line and buffer:
+                # Empty line after accumulated buffer
+                try:
+                    yield json.loads(buffer)
+                except json.JSONDecodeError:
+                    pass
+                buffer = ""

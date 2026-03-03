@@ -437,11 +437,78 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
 class GeminiStreamNormalizer(BaseStreamNormalizer):
     """Stream normalizer for Google Gemini API.
 
-    Handles the candidates/parts streaming format.
+    Handles both:
+    - dict chunks from REST API (httpx SSE streaming)
+    - protobuf chunks from the SDK (legacy fallback)
     """
 
     def normalize_chunk(self, chunk: Any) -> StreamChunk:
         """Normalize Gemini streaming format to unified StreamChunk."""
+        # Route dict chunks (from REST API) to dedicated handler
+        if isinstance(chunk, dict):
+            return self._normalize_dict_chunk(chunk)
+
+        # Legacy protobuf path (SDK objects)
+        return self._normalize_protobuf_chunk(chunk)
+
+    def _normalize_dict_chunk(self, chunk: dict) -> StreamChunk:
+        """Normalize a REST API JSON dict chunk to StreamChunk.
+
+        Handles camelCase keys from the Gemini REST API and preserves
+        thoughtSignature on functionCall parts.
+        """
+        delta = ""
+        finish_reason = None
+        usage = None
+        tool_calls = None
+
+        candidates = chunk.get("candidates", [])
+        if candidates:
+            candidate = candidates[0]
+            parts = candidate.get("content", {}).get("parts", [])
+
+            for part in parts:
+                if "functionCall" in part:
+                    fc = part["functionCall"]
+                    func_name = fc.get("name", "")
+                    if func_name:
+                        tool_call: Dict[str, Any] = {
+                            "id": f"gemini_{func_name}",
+                            "type": "function",
+                            "function": {
+                                "name": func_name,
+                                "arguments": fc.get("args", {}),
+                            },
+                            "function_call_metadata": {
+                                "gemini_function_name": func_name,
+                            },
+                        }
+                        # thoughtSignature is a sibling of functionCall in the part
+                        if "thoughtSignature" in part:
+                            tool_call["function_call_metadata"]["thought_signature"] = part[
+                                "thoughtSignature"
+                            ]
+                        if tool_calls is None:
+                            tool_calls = []
+                        tool_calls.append(tool_call)
+
+                if "text" in part:
+                    delta += part["text"]
+
+            finish_reason = candidate.get("finishReason")
+
+        usage_meta = chunk.get("usageMetadata")
+        if usage_meta:
+            usage = TokenCount(
+                prompt_tokens=usage_meta.get("promptTokenCount", 0) or 0,
+                completion_tokens=usage_meta.get("candidatesTokenCount", 0) or 0,
+                total_tokens=usage_meta.get("totalTokenCount", 0) or 0,
+            )
+
+        return self._build_chunk(delta, finish_reason, usage, tool_calls)
+
+    def _normalize_protobuf_chunk(self, chunk: Any) -> StreamChunk:
+        """Normalize a protobuf SDK chunk to StreamChunk (legacy path)."""
         delta = ""
         finish_reason = None
         usage = None
@@ -496,7 +563,7 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
                 if hasattr(candidate, "finish_reason") and candidate.finish_reason:
                     finish_reason = self._get_finish_reason_name(candidate.finish_reason)
 
-            usage = self._extract_usage(chunk)
+            usage = self._extract_protobuf_usage(chunk)
 
         except AttributeError:
             if hasattr(chunk, "text"):
@@ -520,8 +587,8 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
             return f"UNKNOWN_{finish_reason}"
         return str(finish_reason)
 
-    def _extract_usage(self, chunk: Any) -> Optional[TokenCount]:
-        """Extract usage information from chunk."""
+    def _extract_protobuf_usage(self, chunk: Any) -> Optional[TokenCount]:
+        """Extract usage information from protobuf chunk."""
         if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
             return TokenCount(
                 prompt_tokens=getattr(chunk.usage_metadata, "prompt_token_count", 0) or 0,

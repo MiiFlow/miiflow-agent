@@ -350,6 +350,12 @@ class ReActOrchestrator:
                         if tool_call_dict.get("type") is not None:
                             accumulated_tool_calls[idx]["type"] = tool_call_dict.get("type")
 
+                        # Preserve function_call_metadata (e.g. Gemini thought_signature)
+                        if tool_call_dict.get("function_call_metadata"):
+                            accumulated_tool_calls[idx]["function_call_metadata"] = (
+                                tool_call_dict["function_call_metadata"]
+                            )
+
                         # Update function name if present
                         function_data = tool_call_dict.get("function", {})
                         if function_data.get("name") is not None:

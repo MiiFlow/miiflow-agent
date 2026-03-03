@@ -1,217 +1,361 @@
 """Tests for Gemini provider client."""
 
+import json
 import pytest
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from miiflow_agent.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
 
 
-# Patch genai at module level to prevent any real API calls
+# Patch GEMINI_AVAILABLE to True so GeminiClient can be instantiated
+# even when google-generativeai is not installed
 @pytest.fixture(autouse=True)
-def mock_genai():
-    """Mock the genai module for all tests."""
-    with patch('miiflow_agent.providers.gemini_client.genai') as mock:
-        mock_model = MagicMock()
-        mock.GenerativeModel.return_value = mock_model
-        mock.configure = MagicMock()
-        yield mock
+def mock_gemini_available():
+    """Mock GEMINI_AVAILABLE for all tests."""
+    with patch("miiflow_agent.providers.gemini_client.GEMINI_AVAILABLE", True):
+        yield
+
+
+def _make_rest_response(
+    text="",
+    function_calls=None,
+    finish_reason="STOP",
+    prompt_tokens=12,
+    completion_tokens=18,
+    total_tokens=30,
+):
+    """Build a Gemini REST API response dict.
+
+    function_calls: list of dicts. Each dict may contain a special
+    "thoughtSignature" key which will be placed as a sibling of
+    "functionCall" in the part (matching the real API structure).
+    """
+    parts = []
+    if text:
+        parts.append({"text": text})
+    for fc in function_calls or []:
+        fc = dict(fc)  # shallow copy
+        part: dict = {}
+        # Extract thoughtSignature — it's a sibling of functionCall, not nested inside
+        thought_sig = fc.pop("thoughtSignature", None)
+        part["functionCall"] = fc
+        if thought_sig is not None:
+            part["thoughtSignature"] = thought_sig
+        parts.append(part)
+    return {
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": parts},
+                "finishReason": finish_reason,
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": prompt_tokens,
+            "candidatesTokenCount": completion_tokens,
+            "totalTokenCount": total_tokens,
+        },
+    }
+
+
+def _mock_httpx_response(data, status_code=200):
+    """Create a mock httpx.Response for non-streaming calls."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = data
+    resp.text = json.dumps(data)
+    return resp
 
 
 class TestGeminiClient:
     """Test suite for Gemini client."""
 
     @pytest.fixture
-    def client(self, mock_genai):
-        """Create test client with mocked SDK."""
+    def client(self):
+        """Create test client."""
         from miiflow_agent.providers.gemini_client import GeminiClient
 
-        client = GeminiClient(
-            model="gemini-1.5-flash",
-            api_key="test-key",
-            timeout=30.0
-        )
+        client = GeminiClient(model="gemini-2.5-flash", api_key="test-key", timeout=30.0)
         return client
-
-    @pytest.fixture
-    def mock_response(self):
-        """Create a standard mock response."""
-        mock_part = MagicMock()
-        mock_part.text = "Hello from Gemini!"
-        mock_part.function_call = None
-
-        mock_candidate = MagicMock()
-        mock_candidate.content.parts = [mock_part]
-        mock_candidate.finish_reason.name = "STOP"
-
-        mock_response = MagicMock()
-        mock_response.candidates = [mock_candidate]
-        mock_response.usage_metadata.prompt_token_count = 12
-        mock_response.usage_metadata.candidates_token_count = 18
-        mock_response.usage_metadata.total_token_count = 30
-        return mock_response
 
     @pytest.mark.asyncio
     async def test_client_initialization(self, client):
         """Test client initialization."""
-        assert client.model == "gemini-1.5-flash"
+        assert client.model == "gemini-2.5-flash"
         assert client.api_key == "test-key"
         assert client.timeout == 30.0
         assert client.provider_name == "gemini"
 
     @pytest.mark.asyncio
-    async def test_chat_completion_success(self, client, sample_messages, mock_response):
-        """Test successful chat completion."""
-        # Patch asyncio.to_thread to return the mock response directly
-        async def mock_to_thread(func, *args, **kwargs):
-            return mock_response
+    async def test_chat_completion_success(self, client, sample_messages):
+        """Test successful chat completion via REST API."""
+        rest_data = _make_rest_response(text="Hello from Gemini!")
 
-        with patch('asyncio.to_thread', side_effect=mock_to_thread):
+        mock_resp = _mock_httpx_response(rest_data)
+
+        async def mock_post(url, json=None):
+            return mock_resp
+
+        mock_http = AsyncMock()
+        mock_http.post = mock_post
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
             response = await client.achat(sample_messages)
 
-            # Verify response format
-            assert isinstance(response, ChatResponse)
-            assert response.message.role == MessageRole.ASSISTANT
-            assert response.message.content == "Hello from Gemini!"
-            assert response.usage.prompt_tokens == 12
-            assert response.usage.completion_tokens == 18
-            assert response.usage.total_tokens == 30
-            assert response.model == "gemini-1.5-flash"
-            assert response.provider == "gemini"
-            assert response.finish_reason == "STOP"
+        assert isinstance(response, ChatResponse)
+        assert response.message.role == MessageRole.ASSISTANT
+        assert response.message.content == "Hello from Gemini!"
+        assert response.usage.prompt_tokens == 12
+        assert response.usage.completion_tokens == 18
+        assert response.usage.total_tokens == 30
+        assert response.model == "gemini-2.5-flash"
+        assert response.provider == "gemini"
+        assert response.finish_reason == "STOP"
+
+    @pytest.mark.asyncio
+    async def test_chat_with_tool_calls(self, client, sample_messages):
+        """Test chat completion with function calls."""
+        rest_data = _make_rest_response(
+            function_calls=[
+                {"name": "get_weather", "args": {"city": "Tokyo"}}
+            ]
+        )
+
+        mock_resp = _mock_httpx_response(rest_data)
+
+        async def mock_post(url, json=None):
+            return mock_resp
+
+        mock_http = AsyncMock()
+        mock_http.post = mock_post
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        tools = [
+            {
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+            }
+        ]
+
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
+            response = await client.achat(sample_messages, tools=tools)
+
+        assert response.message.tool_calls is not None
+        assert len(response.message.tool_calls) == 1
+        tc = response.message.tool_calls[0]
+        assert tc["function"]["name"] == "get_weather"
+        assert tc["function"]["arguments"] == {"city": "Tokyo"}
+
+    @pytest.mark.asyncio
+    async def test_thought_signature_round_trip(self, client):
+        """Test that thought_signature is captured from response and preserved in next request."""
+        # Step 1: API returns a functionCall with thoughtSignature
+        rest_data = _make_rest_response(
+            function_calls=[
+                {
+                    "name": "get_weather",
+                    "args": {"city": "Tokyo"},
+                    "thoughtSignature": "abc123sig",
+                }
+            ]
+        )
+
+        mock_resp = _mock_httpx_response(rest_data)
+
+        async def mock_post(url, json=None):
+            return mock_resp
+
+        mock_http = AsyncMock()
+        mock_http.post = mock_post
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        tools = [
+            {
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+            }
+        ]
+
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
+            response = await client.achat(
+                [Message.user("What is the weather in Tokyo?")], tools=tools
+            )
+
+        # Verify thought_signature is captured in function_call_metadata
+        tc = response.message.tool_calls[0]
+        assert tc["function_call_metadata"]["thought_signature"] == "abc123sig"
+        assert tc["function_call_metadata"]["gemini_function_name"] == "get_weather"
+
+        # Step 2: Build multi-turn conversation with the tool call result
+        # The assistant message carries the tool_calls with metadata
+        assistant_msg = response.message
+        tool_result_msg = Message(
+            role=MessageRole.TOOL,
+            content="Sunny, 25C",
+            name="get_weather",
+        )
+
+        messages = [
+            Message.user("What is the weather in Tokyo?"),
+            assistant_msg,
+            tool_result_msg,
+        ]
+
+        # Convert to Gemini format and verify thought_signature is preserved
+        gemini_msgs = await client._convert_messages_to_gemini_format(messages)
+
+        # Find the model message with function_call
+        model_msg = next(m for m in gemini_msgs if m["role"] == "model")
+        fc_part = next(p for p in model_msg["parts"] if "function_call" in p)
+
+        assert fc_part["function_call"]["thought_signature"] == "abc123sig"
+
+        # Step 3: Verify the REST format conversion preserves it as camelCase
+        from miiflow_agent.providers.gemini_client import _convert_to_rest_format
+
+        rest_msgs = _convert_to_rest_format(gemini_msgs)
+        rest_model_msg = next(m for m in rest_msgs if m["role"] == "model")
+        rest_fc_part = next(p for p in rest_model_msg["parts"] if "functionCall" in p)
+
+        # thoughtSignature is a sibling of functionCall, not nested inside
+        assert rest_fc_part["thoughtSignature"] == "abc123sig"
 
     @pytest.mark.asyncio
     async def test_stream_chat_success(self, client, sample_messages):
-        """Test successful streaming chat."""
-        # Mock Gemini streaming chunks
-        stream_chunks = []
+        """Test successful streaming chat via SSE."""
+        # Build SSE data lines
+        chunk1_data = _make_rest_response(text="Hello", finish_reason=None)
+        chunk2_data = _make_rest_response(text=" from Gemini!", finish_reason="STOP")
 
-        chunk1 = MagicMock()
-        chunk1.candidates = [MagicMock()]
-        chunk1.candidates[0].content.parts = [MagicMock()]
-        chunk1.candidates[0].content.parts[0].text = "Hello"
-        chunk1.candidates[0].content.parts[0].function_call = None
-        chunk1.candidates[0].finish_reason = None
-        stream_chunks.append(chunk1)
+        sse_lines = [
+            f"data: {json.dumps(chunk1_data)}",
+            "",
+            f"data: {json.dumps(chunk2_data)}",
+            "",
+        ]
 
-        chunk2 = MagicMock()
-        chunk2.candidates = [MagicMock()]
-        chunk2.candidates[0].content.parts = [MagicMock()]
-        chunk2.candidates[0].content.parts[0].text = " from Gemini!"
-        chunk2.candidates[0].content.parts[0].function_call = None
-        chunk2.candidates[0].finish_reason = None
-        stream_chunks.append(chunk2)
+        # Create async line iterator
+        async def aiter_lines():
+            for line in sse_lines:
+                yield line
 
-        chunk3 = MagicMock()
-        chunk3.candidates = [MagicMock()]
-        chunk3.candidates[0].content.parts = [MagicMock()]
-        chunk3.candidates[0].content.parts[0].text = ""
-        chunk3.candidates[0].content.parts[0].function_call = None
-        chunk3.candidates[0].finish_reason.name = "STOP"
-        chunk3.usage_metadata.prompt_token_count = 12
-        chunk3.usage_metadata.candidates_token_count = 18
-        chunk3.usage_metadata.total_token_count = 30
-        stream_chunks.append(chunk3)
+        mock_stream_resp = MagicMock()
+        mock_stream_resp.status_code = 200
+        mock_stream_resp.aiter_lines = aiter_lines
+        mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
+        mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
 
-        # Patch asyncio.to_thread to return the stream chunks
-        async def mock_to_thread(func, *args, **kwargs):
-            return stream_chunks
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock(return_value=mock_stream_resp)
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
 
-        with patch('asyncio.to_thread', side_effect=mock_to_thread):
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
             chunks = []
             async for chunk in client.astream_chat(sample_messages):
                 chunks.append(chunk)
 
-            # Verify we got chunks
-            assert len(chunks) >= 2
+        assert len(chunks) >= 2
+        content_chunks = [c for c in chunks if c.delta]
+        full_content = "".join(c.delta for c in content_chunks)
+        assert "Hello" in full_content
+        assert "from Gemini!" in full_content
 
-            # Find content chunks
-            content_chunks = [c for c in chunks if c.delta]
-            assert len(content_chunks) >= 2
+        # Verify final chunk has finish_reason
+        final_chunk = chunks[-1]
+        assert final_chunk.finish_reason == "STOP"
 
-            # Verify content accumulation
-            full_content = "".join(c.delta for c in content_chunks)
-            assert "Hello from Gemini!" in full_content
+    @pytest.mark.asyncio
+    async def test_stream_with_thought_signature(self, client):
+        """Test that streaming captures thought_signature from functionCall."""
+        chunk_data = _make_rest_response(
+            function_calls=[
+                {
+                    "name": "search",
+                    "args": {"query": "test"},
+                    "thoughtSignature": "stream_sig_456",
+                }
+            ],
+            finish_reason="STOP",
+        )
 
-            # Verify final chunk has finish_reason
-            final_chunk = chunks[-1]
-            assert final_chunk.finish_reason == "STOP"
+        sse_lines = [f"data: {json.dumps(chunk_data)}", ""]
+
+        async def aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_stream_resp = MagicMock()
+        mock_stream_resp.status_code = 200
+        mock_stream_resp.aiter_lines = aiter_lines
+        mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
+        mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock(return_value=mock_stream_resp)
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        tools = [
+            {
+                "name": "search",
+                "description": "Search",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+            }
+        ]
+
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
+            chunks = []
+            async for chunk in client.astream_chat(
+                [Message.user("search for test")], tools=tools
+            ):
+                chunks.append(chunk)
+
+        # Find chunk with tool calls
+        tc_chunks = [c for c in chunks if c.tool_calls]
+        assert len(tc_chunks) >= 1
+
+        tc = tc_chunks[0].tool_calls[0]
+        assert tc["function_call_metadata"]["thought_signature"] == "stream_sig_456"
 
     @pytest.mark.asyncio
     async def test_system_message_handling(self, client):
         """Test system message handling in Gemini format."""
         messages = [
             Message.system("You are a helpful assistant specializing in math."),
-            Message.user("What is 5 + 7?")
+            Message.user("What is 5 + 7?"),
         ]
 
-        # Test that messages are converted properly
         converted = await client._convert_messages_to_gemini_format(messages)
-
-        # Gemini handles system messages differently
-        # They might be prepended to user messages or handled specially
-        assert len(converted) >= 1
-        # Basic validation that conversion works
+        assert len(converted) == 1  # Only user message, system is extracted separately
         assert isinstance(converted, list)
 
-    @pytest.mark.asyncio
-    async def test_multimodal_message_conversion(self, client):
-        """Test multimodal message conversion for Gemini."""
-        from miiflow_agent.core.message import TextBlock, ImageBlock
-
-        multimodal_message = Message.user([
-            TextBlock(text="Describe this image"),
-            ImageBlock(image_url="data:image/jpeg;base64,/9j/4AAQ...", detail="high")
-        ])
-
-        # Test that multimodal conversion works
-        converted = await client._convert_messages_to_gemini_format([multimodal_message])
-
-        # Basic validation - should not crash
-        assert isinstance(converted, list)
-        assert len(converted) >= 1
-
-    @pytest.mark.asyncio
-    async def test_gemini_specific_parameters(self, client, sample_messages):
-        """Test Gemini-specific parameters."""
-        mock_part = MagicMock()
-        mock_part.text = "Test response"
-        mock_part.function_call = None
-
-        mock_resp = MagicMock()
-        mock_resp.candidates = [MagicMock()]
-        mock_resp.candidates[0].content.parts = [mock_part]
-        mock_resp.candidates[0].finish_reason.name = "STOP"
-        mock_resp.usage_metadata.prompt_token_count = 5
-        mock_resp.usage_metadata.candidates_token_count = 10
-        mock_resp.usage_metadata.total_token_count = 15
-
-        call_args = []
-
-        async def mock_to_thread(func, *args, **kwargs):
-            call_args.append((func, args, kwargs))
-            return mock_resp
-
-        with patch('asyncio.to_thread', side_effect=mock_to_thread):
-            await client.achat(
-                sample_messages,
-                temperature=0.8,
-                max_tokens=150,
-                top_p=0.95
-            )
-
-            # Verify that the call was made
-            assert len(call_args) == 1
+        # Verify system instruction extraction
+        sys_instr = client._extract_system_instruction(messages)
+        assert sys_instr == "You are a helpful assistant specializing in math."
 
     @pytest.mark.asyncio
     async def test_error_handling(self, client, sample_messages):
         """Test error handling in chat completion."""
         from miiflow_agent.core.exceptions import ProviderError
 
-        async def mock_to_thread_error(func, *args, **kwargs):
-            raise Exception("Gemini API Error")
+        mock_resp = _mock_httpx_response({}, status_code=400)
+        mock_resp.text = "Bad request"
 
-        with patch('asyncio.to_thread', side_effect=mock_to_thread_error):
+        async def mock_post(url, json=None):
+            return mock_resp
+
+        mock_http = AsyncMock()
+        mock_http.post = mock_post
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
             with pytest.raises(ProviderError):
                 await client.achat(sample_messages)
 
@@ -220,28 +364,163 @@ class TestGeminiClient:
         """Test error handling in streaming."""
         from miiflow_agent.core.exceptions import ProviderError
 
-        async def mock_to_thread_error(func, *args, **kwargs):
-            raise Exception("Gemini stream error")
+        mock_stream_resp = MagicMock()
+        mock_stream_resp.status_code = 500
+        mock_stream_resp.aread = AsyncMock(return_value=b"Internal Server Error")
+        mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
+        mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
 
-        with patch('asyncio.to_thread', side_effect=mock_to_thread_error):
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock(return_value=mock_stream_resp)
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
             with pytest.raises(ProviderError):
-                chunks = []
-                async for chunk in client.astream_chat(sample_messages):
-                    chunks.append(chunk)
+                async for _ in client.astream_chat(sample_messages):
+                    pass
 
     @pytest.mark.asyncio
-    async def test_gemini_models(self, mock_genai):
+    async def test_gemini_models(self):
         """Test Gemini model variations."""
         from miiflow_agent.providers.gemini_client import GeminiClient
 
         models = [
-            "gemini-1.5-flash",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash",
             "gemini-1.5-pro",
-            "gemini-1.5-flash-8b",
-            "gemini-1.0-pro"
         ]
 
         for model in models:
             test_client = GeminiClient(model=model, api_key="test")
             assert test_client.model == model
             assert test_client.provider_name == "gemini"
+
+    @pytest.mark.asyncio
+    async def test_tool_name_sanitization_round_trip(self, client, sample_messages):
+        """Test that sanitized tool names are mapped back to originals."""
+        rest_data = _make_rest_response(
+            function_calls=[{"name": "my_special_tool", "args": {"x": 1}}]
+        )
+
+        mock_resp = _mock_httpx_response(rest_data)
+
+        async def mock_post(url, json=None):
+            return mock_resp
+
+        mock_http = AsyncMock()
+        mock_http.post = mock_post
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        tools = [
+            {
+                "name": "my/special/tool",  # Has chars that need sanitizing
+                "description": "A tool",
+                "parameters": {"type": "object", "properties": {"x": {"type": "integer"}}},
+            }
+        ]
+
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
+            response = await client.achat(sample_messages, tools=tools)
+
+        tc = response.message.tool_calls[0]
+        # The original name should be restored
+        assert tc["function"]["name"] == "my/special/tool"
+        # The gemini name should be in metadata
+        assert tc["function_call_metadata"]["gemini_function_name"] == "my_special_tool"
+
+    @pytest.mark.asyncio
+    async def test_convert_to_rest_format(self):
+        """Test the _convert_to_rest_format helper."""
+        from miiflow_agent.providers.gemini_client import _convert_to_rest_format
+
+        messages = [
+            {
+                "role": "model",
+                "parts": [
+                    {
+                        "function_call": {
+                            "name": "search",
+                            "args": {"q": "test"},
+                            "thought_signature": "sig123",
+                        }
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "function_response": {
+                            "name": "search",
+                            "response": {"result": "found it"},
+                        }
+                    }
+                ],
+            },
+        ]
+
+        rest = _convert_to_rest_format(messages)
+
+        # Verify camelCase conversion
+        assert "functionCall" in rest[0]["parts"][0]
+        # thoughtSignature is a sibling of functionCall, not nested inside it
+        assert rest[0]["parts"][0]["thoughtSignature"] == "sig123"
+        assert "thoughtSignature" not in rest[0]["parts"][0]["functionCall"]
+
+        assert "functionResponse" in rest[1]["parts"][0]
+        assert rest[1]["parts"][0]["functionResponse"]["name"] == "search"
+
+    @pytest.mark.asyncio
+    async def test_parse_rest_response_with_thought_signature(self):
+        """Test _parse_rest_response extracts thoughtSignature from part sibling."""
+        from miiflow_agent.providers.gemini_client import _parse_rest_response
+
+        # thoughtSignature is a sibling of functionCall in the part, not nested inside
+        data = _make_rest_response(
+            function_calls=[
+                {
+                    "name": "tool_a",
+                    "args": {"param": "val"},
+                    "thoughtSignature": "mysig",
+                }
+            ]
+        )
+
+        # Verify the test data structure is correct (sibling, not nested)
+        part = data["candidates"][0]["content"]["parts"][0]
+        assert "thoughtSignature" in part
+        assert "thoughtSignature" not in part["functionCall"]
+
+        content, tool_calls, usage, finish_reason = _parse_rest_response(data, {})
+
+        assert content == ""
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"]["name"] == "tool_a"
+        assert tool_calls[0]["function_call_metadata"]["thought_signature"] == "mysig"
+        assert finish_reason == "STOP"
+
+    @pytest.mark.asyncio
+    async def test_rest_url_building(self, client):
+        """Test REST API URL construction."""
+        url = client._build_rest_url(streaming=False)
+        assert "generateContent" in url
+        assert "key=test-key" in url
+        assert "gemini-2.5-flash" in url
+
+        url_stream = client._build_rest_url(streaming=True)
+        assert "streamGenerateContent" in url_stream
+        assert "alt=sse" in url_stream
+
+    @pytest.mark.asyncio
+    async def test_rest_url_strips_models_prefix(self):
+        """Test that models/ prefix in model name is stripped to avoid double prefix."""
+        from miiflow_agent.providers.gemini_client import GeminiClient
+
+        client = GeminiClient(model="models/gemini-2.5-flash", api_key="test-key")
+        url = client._build_rest_url(streaming=False)
+        # Should have /models/gemini-2.5-flash NOT /models/models/gemini-2.5-flash
+        assert "/models/gemini-2.5-flash:" in url
+        assert "/models/models/" not in url

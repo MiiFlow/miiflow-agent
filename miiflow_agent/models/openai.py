@@ -9,6 +9,7 @@ _REASONING_MODELS = {
     "o1",
     "o1-pro",
     "o3",
+    "o3-pro",
     "o3-mini",
     "o4-mini",
 }
@@ -68,7 +69,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.1": ModelConfig(
         model_identifier="gpt-5.1",
         name="gpt-5.1",
-        description="GPT-5.1 offers improved conversational quality and instruction-following with 400K context.",
+        description="GPT-5.1 model with 400K context window and improved instruction-following.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -85,7 +86,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5": ModelConfig(
         model_identifier="gpt-5",
         name="gpt-5",
-        description="GPT-5 is OpenAI's most advanced flagship model for enterprise AI, automation, and agentic tasks.",
+        description="Previous generation GPT-5 model. Succeeded by GPT-5.1 and GPT-5.2.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -137,7 +138,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4o": ModelConfig(
         model_identifier="gpt-4o",
         name="gpt-4o",
-        description="GPT-4o is OpenAI's flagship multimodal model with advanced vision, audio, and reasoning capabilities.",
+        description="GPT-4o is a legacy multimodal model with vision, audio, and reasoning capabilities. Retired from ChatGPT, still available via API.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -224,7 +225,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4-turbo": ModelConfig(
         model_identifier="gpt-4-turbo",
         name="gpt-4-turbo",
-        description="GPT-4 Turbo is an advanced model with 128K context window and vision capabilities.",
+        description="GPT-4 Turbo is a legacy model with 128K context. Superseded by GPT-4.1 and GPT-5 series.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -242,7 +243,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "o1": ModelConfig(
         model_identifier="o1",
         name="o1",
-        description="OpenAI's full production reasoning model with function calling and structured outputs.",
+        description="Legacy reasoning model with function calling and structured outputs. Succeeded by o3.",
         support_images=True,
         support_files=True,
         support_streaming=False,
@@ -259,7 +260,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "o1-pro": ModelConfig(
         model_identifier="o1-pro",
         name="o1-pro",
-        description="OpenAI's most advanced reasoning model for maximum accuracy on complex tasks.",
+        description="Legacy premium reasoning model. Succeeded by o3-pro at significantly lower cost.",
         support_images=True,
         support_files=True,
         support_streaming=False,
@@ -276,7 +277,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "o3": ModelConfig(
         model_identifier="o3",
         name="o3",
-        description="OpenAI's most advanced reasoning model with exceptional performance across math, science, coding.",
+        description="OpenAI's advanced reasoning model with strong math, science, and coding performance.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -307,6 +308,23 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=1.10,
         output_cost_hint=4.40,
     ),
+    "o3-pro": ModelConfig(
+        model_identifier="o3-pro",
+        name="o3-pro",
+        description="OpenAI's premium reasoning model for maximum accuracy on the hardest problems in math, science, and coding.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        reasoning=True,
+        maximum_context_tokens=200000,
+        maximum_output_tokens=100000,
+        token_param_name="max_completion_tokens",
+        supports_temperature=False,
+        input_cost_hint=20.00,
+        output_cost_hint=80.00,
+    ),
     "o4-mini": ModelConfig(
         model_identifier="o4-mini",
         name="o4-mini",
@@ -328,7 +346,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5-pro": ModelConfig(
         model_identifier="gpt-5-pro",
         name="gpt-5-pro",
-        description="GPT-5 Pro is OpenAI's highest-accuracy GPT-5 variant for mission-critical enterprise tasks requiring maximum reliability.",
+        description="GPT-5 Pro is a high-accuracy GPT-5 variant for mission-critical tasks. Succeeded by GPT-5.2 Pro.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -391,6 +409,7 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
             "o1": 100000,
             "o1-pro": 100000,
             "o3": 100000,
+            "o3-pro": 100000,
             "o3-mini": 100000,
             "o4-mini": 100000,
             "default": 100000,

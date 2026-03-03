@@ -44,7 +44,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.5": ModelConfig(
         model_identifier="claude-opus-4-5-20251101",
         name="claude-opus-4.5",
-        description="Exceptional model for specialized complex tasks with deep reasoning capabilities and structured outputs support.",
+        description="Legacy model for specialized complex tasks. Succeeded by Claude Opus 4.6.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -62,7 +62,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-4.5": ModelConfig(
         model_identifier="claude-sonnet-4-5-20250929",
         name="claude-sonnet-4.5",
-        description="Anthropic's best model for complex agents and coding. Highest intelligence across most tasks with extended thinking capabilities.",
+        description="Legacy model for complex agents and coding. Succeeded by Claude Sonnet 4.6.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -98,7 +98,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.1": ModelConfig(
         model_identifier="claude-opus-4-1-20250805",
         name="claude-opus-4.1",
-        description="Exceptional model for specialized complex tasks. Superior reasoning capabilities for advanced coding projects and deep research tasks.",
+        description="Legacy model with advanced reasoning. Succeeded by Claude Opus 4.5 and 4.6 series.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -116,7 +116,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4": ModelConfig(
         model_identifier="claude-opus-4-20250514",
         name="claude-opus-4",
-        description="Highly capable model with exceptional reasoning and advanced coding capabilities. Sets new standards in complex reasoning.",
+        description="Legacy model with advanced reasoning and coding. Succeeded by Claude Opus 4.1 and newer.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -134,7 +134,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-4": ModelConfig(
         model_identifier="claude-sonnet-4-20250514",
         name="claude-sonnet-4",
-        description="High-performance model with exceptional reasoning capabilities and efficiency. Excellent for coding and complex reasoning tasks.",
+        description="Legacy high-performance model. Succeeded by Claude Sonnet 4.5 and 4.6.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -152,7 +152,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-3-7-sonnet": ModelConfig(
         model_identifier="claude-3-7-sonnet-20250219",
         name="claude-3-7-sonnet",
-        description="High-performance model with extended thinking capabilities. Excellent balance of intelligence and speed.",
+        description="Deprecated model. Succeeded by Claude Sonnet 4 and newer. May be removed in future.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -170,7 +170,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-3-5-haiku": ModelConfig(
         model_identifier="claude-3-5-haiku-20241022",
         name="claude-3-5-haiku",
-        description="Fast model with intelligence at blazing speeds. Optimized for quick responses and cost-efficiency with vision support.",
+        description="Legacy fast model. Succeeded by Claude Haiku 4.5.",
         support_images=True,
         support_files=True,
         support_streaming=True,

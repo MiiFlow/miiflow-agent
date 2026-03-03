@@ -26,24 +26,6 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=2.0,
         output_cost_hint=12.0,
     ),
-    "gemini-3-pro-preview": ModelConfig(
-        model_identifier="models/gemini-3-pro-preview",
-        name="gemini-3-pro-preview",
-        description="Google's most advanced multimodal AI model released November 2025. Features state-of-the-art reasoning, agentic capabilities, and 1M token context. Leads in math, science, and multimodal benchmarks. Preview version.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=True,
-        maximum_context_tokens=1000000,
-        maximum_output_tokens=64000,
-        token_param_name="max_output_tokens",
-        supports_temperature=True,
-        input_cost_hint=2.0,
-        output_cost_hint=12.0,
-    ),
     "gemini-3-flash-preview": ModelConfig(
         model_identifier="models/gemini-3-flash-preview",
         name="gemini-3-flash-preview",
@@ -65,7 +47,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-2.5-pro": ModelConfig(
         model_identifier="models/gemini-2.5-pro",
         name="gemini-2.5-pro",
-        description="Google's highly capable thinking model with state-of-the-art reasoning for complex problems in code, math, and STEM. Supports 1M token context window.",
+        description="Google's capable thinking model for complex problems. Earliest possible sunset June 17, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -83,7 +65,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-2.5-flash": ModelConfig(
         model_identifier="models/gemini-2.5-flash",
         name="gemini-2.5-flash",
-        description="Best model for price-performance with thinking capabilities. Optimized for large-scale processing, low-latency applications, and agentic use cases. Faster than 2.5 Pro with excellent efficiency.",
+        description="Best price-performance model with thinking capabilities. Earliest possible sunset June 17, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -119,7 +101,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-2.0-flash": ModelConfig(
         model_identifier="models/gemini-2.0-flash",
         name="gemini-2.0-flash",
-        description="Fast, efficient Gemini model with native tool use and multimodal capabilities (text, images, video). Strong performance for everyday tasks at low cost.",
+        description="Deprecated model retiring June 1, 2026. Migrate to gemini-2.5-flash-lite.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -137,7 +119,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-2.0-flash-lite": ModelConfig(
         model_identifier="models/gemini-2.0-flash-lite",
         name="gemini-2.0-flash-lite",
-        description="Ultra cost-efficient Gemini model for high-volume applications. Simplified pricing with strong multimodal performance for routine tasks.",
+        description="Deprecated model retiring June 1, 2026. Migrate to gemini-2.5-flash-lite.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -195,7 +177,6 @@ GOOGLE_PARAMETERS: list[ParameterConfig] = [
         min_value=1,
         max_value={
             "gemini-3.1-pro-preview": 64000,
-            "gemini-3-pro-preview": 64000,
             "gemini-3-flash-preview": 64000,
             "gemini-2.5-pro": 65536,
             "gemini-2.5-flash": 65536,

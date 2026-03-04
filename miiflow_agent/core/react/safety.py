@@ -67,7 +67,7 @@ class StopCondition(ABC):
 class MaxStepsCondition(StopCondition):
     """Stop after maximum number of steps."""
 
-    max_steps: int = 10
+    max_steps: int = 25
 
     def should_stop(self, steps: List[ReActStep], current_step: int) -> bool:
         return current_step >= self.max_steps
@@ -291,7 +291,7 @@ class SafetyManager:
 
     def __init__(
         self,
-        max_steps: int = 10,
+        max_steps: int = 25,
         max_budget: Optional[float] = None,
         max_time_seconds: Optional[float] = None,
         max_repeated_actions: int = 3,

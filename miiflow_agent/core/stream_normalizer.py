@@ -83,6 +83,7 @@ class BaseStreamNormalizer(ABC):
     def _build_chunk(
         self,
         delta: str = "",
+        thinking_delta: Optional[str] = None,
         finish_reason: Optional[str] = None,
         usage: Optional[TokenCount] = None,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
@@ -98,6 +99,7 @@ class BaseStreamNormalizer(ABC):
         return StreamChunk(
             content=self._state.accumulated_content,
             delta=delta,
+            thinking_delta=thinking_delta,
             finish_reason=finish_reason,
             usage=usage,
             tool_calls=tool_calls,
@@ -143,7 +145,7 @@ class OpenAIStreamNormalizer(BaseStreamNormalizer):
         except AttributeError:
             delta = str(chunk) if chunk else ""
 
-        return self._build_chunk(delta, finish_reason, usage, tool_calls)
+        return self._build_chunk(delta=delta, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
 
     def _accumulate_tool_calls(self, tool_call_deltas: List[Any]) -> List[Dict[str, Any]]:
         """Accumulate tool call deltas into complete tool calls."""
@@ -210,6 +212,7 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         - mcp_tool_result: Result from MCP tool execution
         """
         delta = ""
+        thinking_delta = None
         finish_reason = None
         usage = None
         tool_calls = None
@@ -220,7 +223,11 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
                     tool_calls = self._handle_content_block_start(chunk)
 
                 elif chunk.type == "content_block_delta":
-                    delta = self._handle_content_block_delta(chunk)
+                    result = self._handle_content_block_delta(chunk)
+                    if isinstance(result, tuple):
+                        delta, thinking_delta = result
+                    else:
+                        delta = result
 
                 elif chunk.type == "content_block_stop":
                     tool_calls = self._handle_content_block_stop()
@@ -237,7 +244,7 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         except AttributeError:
             delta = str(chunk) if chunk else ""
 
-        return self._build_chunk(delta, finish_reason, usage, tool_calls)
+        return self._build_chunk(delta=delta, thinking_delta=thinking_delta, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
 
     def _handle_content_block_start(self, chunk: Any) -> Optional[List[Dict[str, Any]]]:
         """Handle content_block_start event.
@@ -301,11 +308,15 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
 
         return None
 
-    def _handle_content_block_delta(self, chunk: Any) -> str:
+    def _handle_content_block_delta(self, chunk: Any):
         """Handle content_block_delta event.
 
         Handles deltas for text, tool_use JSON, MCP tool_use JSON, and MCP tool results.
-        Filters out thinking blocks to prevent them from mixing with answer content.
+        Returns thinking block content via thinking_delta (as a tuple) instead of filtering.
+
+        Returns:
+            str: text delta for regular content
+            tuple[str, str]: (delta, thinking_delta) when thinking content is present
         """
         # Validate block index to prevent interleaving from concurrent blocks
         delta_index = getattr(chunk, "index", -1)
@@ -316,14 +327,11 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             )
             return ""
 
-        # Skip thinking blocks - don't mix thinking content with answer content
+        # Emit thinking blocks via thinking_delta instead of filtering
         if self._state.current_block_type == "thinking":
-            # Log for debugging but don't return the content
-            if hasattr(chunk.delta, "thinking"):
-                logger.debug(
-                    f"Filtering thinking block content (index={delta_index}): "
-                    f"{getattr(chunk.delta, 'thinking', '')[:50]}..."
-                )
+            thinking_text = getattr(chunk.delta, "thinking", None) or ""
+            if thinking_text:
+                return ("", thinking_text)
             return ""
 
         if hasattr(chunk.delta, "text"):
@@ -505,7 +513,7 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
                 total_tokens=usage_meta.get("totalTokenCount", 0) or 0,
             )
 
-        return self._build_chunk(delta, finish_reason, usage, tool_calls)
+        return self._build_chunk(delta=delta, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
 
     def _normalize_protobuf_chunk(self, chunk: Any) -> StreamChunk:
         """Normalize a protobuf SDK chunk to StreamChunk (legacy path)."""
@@ -571,7 +579,7 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
             else:
                 delta = str(chunk) if chunk else ""
 
-        return self._build_chunk(delta, finish_reason, usage, tool_calls)
+        return self._build_chunk(delta=delta, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
 
     def _get_finish_reason_name(self, finish_reason: Any) -> Optional[str]:
         """Safely extract finish_reason name.
@@ -625,7 +633,7 @@ class OllamaStreamNormalizer(BaseStreamNormalizer):
         except (AttributeError, TypeError):
             delta = str(chunk) if chunk else ""
 
-        return self._build_chunk(delta, finish_reason, None, None)
+        return self._build_chunk(delta=delta, finish_reason=finish_reason)
 
 
 class MistralStreamNormalizer(BaseStreamNormalizer):
@@ -656,7 +664,7 @@ class MistralStreamNormalizer(BaseStreamNormalizer):
         except AttributeError:
             delta = str(chunk) if chunk else ""
 
-        return self._build_chunk(delta, finish_reason, usage, tool_calls)
+        return self._build_chunk(delta=delta, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
 
     def _extract_usage(self, chunk: Any) -> Optional[TokenCount]:
         """Extract usage information from chunk."""

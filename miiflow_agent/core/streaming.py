@@ -17,6 +17,7 @@ class StreamChunk:
     """Chunk from a streaming response."""
     content: str
     delta: str
+    thinking_delta: Optional[str] = None
     finish_reason: Optional[str] = None
     usage: Optional[TokenCount] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None

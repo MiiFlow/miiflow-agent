@@ -104,7 +104,7 @@ class DynamicSubAgentConfig:
     system_prompt: str
     tools: Optional[List[str]] = None  # None means all available tools
     model: Optional[str] = None  # None means use default model
-    max_steps: int = 10
+    max_steps: int = 25
     timeout_seconds: float = 360.0
     can_spawn_subagents: bool = False
     output_schema: Optional[Dict[str, Any]] = None
@@ -138,7 +138,7 @@ class DynamicSubAgentConfig:
             system_prompt=data["system_prompt"],
             tools=data.get("tools"),
             model=data.get("model"),
-            max_steps=data.get("max_steps", 10),
+            max_steps=data.get("max_steps", 25),
             timeout_seconds=data.get("timeout_seconds", 360.0),
             can_spawn_subagents=data.get("can_spawn_subagents", False),
             output_schema=data.get("output_schema"),

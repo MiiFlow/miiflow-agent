@@ -58,7 +58,7 @@ class TestDynamicSubAgentConfig:
         assert config.system_prompt == "You are a test agent."
         assert config.tools is None  # Default
         assert config.model is None  # Default
-        assert config.max_steps == 10  # Default
+        assert config.max_steps == 25  # Default
         assert config.timeout_seconds == 360.0  # Default
         assert config.can_spawn_subagents is False  # Default
 
@@ -105,7 +105,7 @@ class TestDynamicSubAgentConfig:
         assert data["system_prompt"] == "Prompt"
         assert data["tools"] == ["Read"]
         assert data["model"] == "haiku"
-        assert data["max_steps"] == 10
+        assert data["max_steps"] == 25
         assert data["can_spawn_subagents"] is False
 
     def test_from_dict(self):
@@ -147,7 +147,7 @@ class TestDynamicSubAgentConfig:
         # Original unchanged
         assert original.model == "haiku"
         assert original.can_spawn_subagents is True
-        assert original.max_steps == 10
+        assert original.max_steps == 25
 
         # Copy has overrides
         assert copy.name == "original"  # Preserved

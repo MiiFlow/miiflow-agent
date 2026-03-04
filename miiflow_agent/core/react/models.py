@@ -380,7 +380,7 @@ class SubAgentConfig:
 
     # Optional customization
     system_prompt: Optional[str] = None
-    max_steps: int = 10
+    max_steps: int = 25
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""

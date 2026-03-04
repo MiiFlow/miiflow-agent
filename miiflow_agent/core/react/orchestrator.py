@@ -202,13 +202,13 @@ class ReActOrchestrator:
             msg for msg in context.messages if msg.role == MessageRole.SYSTEM
         ]
         if existing_system_prompts:
-            # Merge assistant's system prompt with ReAct prompt instead of having two separate ones
+            # Framework prompt first (higher priority), assistant prompt second (context)
             assistant_prompt = existing_system_prompts[0].content
-            merged_prompt = f"""{assistant_prompt}
+            merged_prompt = f"""{system_prompt}
 
 ---
 
-{system_prompt}"""
+{assistant_prompt}"""
             # Remove existing system prompts from context
             context_messages_without_system = [
                 msg for msg in context.messages if msg.role != MessageRole.SYSTEM
@@ -248,10 +248,8 @@ class ReActOrchestrator:
     ) -> ReActStep:
         """Execute a single reasoning step with native tool calling.
 
-        Native tool calling uses a single LLM call where the model:
-        1. Generates thinking/reasoning text in <thinking> tags
-        2. Decides whether to call tools (optional)
-        3. Provides final answer in <answer> tags when ready
+        The model either calls tools (continue loop) or responds with
+        plain text (final answer). No explicit thinking mechanism needed.
         """
         step = ReActStep(step_number=state.current_step, thought="")
         step_start_time = time.time()
@@ -321,6 +319,14 @@ class ReActOrchestrator:
                     # Note: If chunk was not parsed (no XML tags), we accumulate in buffer
                     # but don't emit yet since we can't distinguish thinking from answer
                     # without XML tags. We'll classify and emit after streaming completes.
+
+                # Handle native extended thinking (e.g. Anthropic thinking blocks)
+                if getattr(chunk, "thinking_delta", None):
+                    await self.event_bus.publish(
+                        EventFactory.thinking_chunk(
+                            state.current_step, chunk.thinking_delta, buffer
+                        )
+                    )
 
                 # Accumulate tool calls if present in chunk
                 # All providers now normalize to dict format via stream normalizers
@@ -432,8 +438,19 @@ class ReActOrchestrator:
             # This preserves the complete response including XML tags for context
             assistant_content = buffer.strip()
 
-            # Handle accumulated tool calls
+            # === TOOL CALL ROUTING ===
+            # Tool calls present = continue loop (execute tool)
+            # No tool calls = final answer
+
             if accumulated_tool_calls:
+                # Emit text alongside tool calls as thinking for visibility
+                if assistant_content:
+                    await self.event_bus.publish(
+                        EventFactory.thinking_chunk(
+                            state.current_step, assistant_content, buffer
+                        )
+                    )
+                # --- OTHER TOOLS: Execute normally ---
                 # Take first tool call (ReAct is single-action per step)
                 tool_call_data = accumulated_tool_calls.get(0)
                 if not tool_call_data:
@@ -579,7 +596,8 @@ class ReActOrchestrator:
                     )
                     context.messages.append(response_message)
 
-            # No tool calls - this is a final answer (with XML tags parsed)
+            # No tool calls = final answer
+            # Any text-only response (no tool calls) is the answer.
             else:
                 # Detect hallucinated XML tool calls (model outputting tool calls as text
                 # instead of using native tool calling API)
@@ -590,25 +608,29 @@ class ReActOrchestrator:
                         f"Preview: {assistant_content[:200]}..."
                     )
 
-                logger.debug(f"Step {state.current_step} - No tool calls, final answer provided")
+                logger.debug(f"Step {state.current_step} - No tool calls, treating as final answer")
 
                 # Add assistant message to context
                 response_message = Message(role=MessageRole.ASSISTANT, content=assistant_content)
                 context.messages.append(response_message)
 
-                # If we parsed an answer from <answer> tags, it's already set
-                # If not parsed but we have content, it might be a direct answer
-                if not step.answer:
-                    # Check step.thought first (XML-parsed thinking)
-                    if step.thought and await self._is_final_answer(step.thought):
-                        step.answer = _strip_xml_tags_from_answer(step.thought)
-                    # If no thought but we have buffer content, check if it's a final answer
-                    elif not step.thought and assistant_content:
-                        if await self._is_final_answer(assistant_content):
-                            # Sanitize to remove any <thinking> tags that weren't parsed
-                            step.answer = _strip_xml_tags_from_answer(assistant_content)
-                            # Note: Chunks were already emitted in real-time during streaming
-                            # No need to emit again here
+                # If answer was already parsed from <answer> XML tags during streaming, use it.
+                # Otherwise, the entire text content IS the answer.
+                if not step.answer and assistant_content:
+                    # Safety net: strip any residual XML tags that might have leaked
+                    step.answer = _strip_xml_tags_from_answer(assistant_content)
+
+                    # Emit answer chunks for plain text responses (no XML tags were used)
+                    # The XML parser only emits ANSWER_CHUNK when <answer> tags are present,
+                    # so we need to emit the full answer here for streaming consumers
+                    if not getattr(state, "accumulated_answer", None) and step.answer:
+                        await self.event_bus.publish(
+                            EventFactory.final_answer_chunk(
+                                state.current_step, step.answer, step.answer
+                            )
+                        )
+
+                # step.answer is now set, so is_final_step property returns True
 
         except Exception as e:
             self._handle_step_error(step, e, state)

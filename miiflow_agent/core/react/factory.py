@@ -1,5 +1,6 @@
 """Simple factory for ReAct components."""
 
+import logging
 from typing import Optional, Literal
 
 from .events import EventBus, EventFormat
@@ -8,6 +9,8 @@ from .parser import ReActParser
 from .safety import SafetyManager
 from .tool_executor import AgentToolExecutor
 
+logger = logging.getLogger(__name__)
+
 
 class ReActFactory:
     """Simple factory for creating ReAct orchestrators."""
@@ -15,7 +18,7 @@ class ReActFactory:
     @staticmethod
     def create_orchestrator(
         agent,
-        max_steps: int = 10,
+        max_steps: int = 25,
         max_budget: Optional[float] = None,
         max_time_seconds: Optional[float] = None,
         event_format: EventFormat = "react",

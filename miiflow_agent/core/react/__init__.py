@@ -3,7 +3,7 @@
 Usage - ReAct:
     from miiflow_agent.core.react import ReActOrchestrator, ReActFactory
 
-    orchestrator = ReActFactory.create_orchestrator(agent, max_steps=10)
+    orchestrator = ReActFactory.create_orchestrator(agent, max_steps=25)
     result = await orchestrator.execute("Find today's top news", context)
 
 Usage - Plan & Execute:

@@ -136,22 +136,28 @@ Testing the wrapper
 
 
 def test_system_prompt():
-    """Test that system prompt uses XML format."""
+    """Test that system prompt uses simplified approach (no think tool)."""
     print("=" * 80)
     print("TEST 4: System Prompt Format (Native Tool Calling)")
     print("=" * 80)
 
-    # Check for XML tags in native system prompt
-    assert "<thinking>" in REACT_NATIVE_SYSTEM_PROMPT
-    assert "</thinking>" in REACT_NATIVE_SYSTEM_PROMPT
-    assert "<answer>" in REACT_NATIVE_SYSTEM_PROMPT
-    assert "</answer>" in REACT_NATIVE_SYSTEM_PROMPT
-    print("✓ Native system prompt uses XML thinking/answer tags")
+    # Check prompt contains tool usage and plain text answer instructions
+    assert "tool" in REACT_NATIVE_SYSTEM_PROMPT.lower()
+    assert "plain text" in REACT_NATIVE_SYSTEM_PROMPT.lower()
+    print("✓ Native system prompt references tools and plain text answers")
 
-    # Check it doesn't contain JSON artifacts
+    # Check it does NOT reference think tool
+    assert "think tool" not in REACT_NATIVE_SYSTEM_PROMPT.lower()
+    assert "`think`" not in REACT_NATIVE_SYSTEM_PROMPT
+    assert "think(" not in REACT_NATIVE_SYSTEM_PROMPT
+    print("✓ No think tool references in system prompt")
+
+    # Check it doesn't contain JSON artifacts or XML tags
     assert 'REACT_RESPONSE_SCHEMA' not in REACT_NATIVE_SYSTEM_PROMPT
     assert '"action_type"' not in REACT_NATIVE_SYSTEM_PROMPT
-    print("✓ No JSON artifacts in system prompt")
+    assert '<thinking>' not in REACT_NATIVE_SYSTEM_PROMPT
+    assert '<answer>' not in REACT_NATIVE_SYSTEM_PROMPT
+    print("✓ No JSON artifacts or XML tags in system prompt")
 
     # Show a snippet
     lines = REACT_NATIVE_SYSTEM_PROMPT.split('\n')

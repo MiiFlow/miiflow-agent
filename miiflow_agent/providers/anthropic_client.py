@@ -16,7 +16,7 @@ from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import AnthropicStreamNormalizer
 from ..core.streaming import StreamChunk
-from ..models.anthropic import supports_native_mcp, supports_structured_outputs
+from ..models.anthropic import supports_native_mcp, supports_structured_outputs, supports_thinking
 from ..utils.image import data_uri_to_base64_and_mimetype
 
 if TYPE_CHECKING:
@@ -275,6 +275,10 @@ class AnthropicClient(ModelClient):
 
             system_content, anthropic_messages = self._prepare_messages(messages)
 
+            # Extract thinking parameters from kwargs (won't be passed to API directly)
+            thinking_enabled = kwargs.pop("thinking_enabled", False)
+            budget_tokens = kwargs.pop("budget_tokens", 32000)
+
             # Check for native MCP
             use_native_mcp = mcp_servers and len(mcp_servers) > 0 and self._supports_native_mcp()
 
@@ -356,6 +360,19 @@ class AnthropicClient(ModelClient):
                 request_params["system"] = system_content
             if tools:
                 request_params["tools"] = tools
+
+            # Enable extended thinking if requested and model supports it
+            if thinking_enabled and supports_thinking(self.model):
+                request_params["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": budget_tokens,
+                }
+                # Extended thinking requires temperature=1
+                request_params["temperature"] = 1
+                logger.debug(
+                    f"Extended thinking enabled for {self.model} "
+                    f"with budget_tokens={budget_tokens}"
+                )
                 logger.debug(
                     f"Anthropic tools parameter:\n{json.dumps(tools, indent=2, default=str)}"
                 )
@@ -535,6 +552,10 @@ class AnthropicClient(ModelClient):
         try:
             system_content, anthropic_messages = self._prepare_messages(messages)
 
+            # Extract thinking parameters from kwargs (won't be passed to API directly)
+            thinking_enabled = kwargs.pop("thinking_enabled", False)
+            budget_tokens = kwargs.pop("budget_tokens", 32000)
+
             logger.debug(f"Streaming request to Anthropic with {len(anthropic_messages)} messages:")
             for idx, msg in enumerate(anthropic_messages):
                 logger.debug(
@@ -633,6 +654,19 @@ class AnthropicClient(ModelClient):
             if tools:
                 request_params["tools"] = tools
 
+            # Enable extended thinking if requested and model supports it
+            if thinking_enabled and supports_thinking(self.model):
+                request_params["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": budget_tokens,
+                }
+                # Extended thinking requires temperature=1
+                request_params["temperature"] = 1
+                logger.debug(
+                    f"Extended thinking enabled for {self.model} "
+                    f"with budget_tokens={budget_tokens}"
+                )
+
             # Handle native MCP servers
             if use_native_mcp:
                 # Convert NativeMCPServerConfig to Anthropic format
@@ -681,6 +715,7 @@ class AnthropicClient(ModelClient):
                 # Only yield if there's actual content or metadata to send
                 if (
                     normalized_chunk.delta
+                    or normalized_chunk.thinking_delta
                     or normalized_chunk.tool_calls
                     or normalized_chunk.finish_reason
                 ):

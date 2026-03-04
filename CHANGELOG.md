@@ -2,6 +2,17 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.3.0] - 2026-03-04
+
+### Added
+- Anthropic extended thinking support (`thinking_enabled`, `budget_tokens` kwargs, `thinking_delta` streaming field)
+
+### Changed
+- Simplified ReAct prompts: removed XML `<thinking>`/`<answer>` tags, plain text final answers
+- Default `max_steps` increased from 10 to 25
+- System prompt priority: framework prompt now takes precedence over user system prompt
+- Stream normalizers use keyword arguments for `_build_chunk()`
+
 ## [1.2.0] - 2026-03-03
 
 ### Added

@@ -1,0 +1,62 @@
+name: Sync to monorepo
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync:
+    if: "!contains(github.event.head_commit.message, '[skip-reverse-sync]')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout standalone repo
+        uses: actions/checkout@v4
+        with:
+          path: standalone
+
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          repository: MiiFlow/miiflow-web
+          token: ${{ secrets.SYNC_PAT }}
+          path: monorepo
+
+      - name: Create sync branch and copy files
+        run: |
+          SHORT_SHA=$(cd standalone && git rev-parse --short HEAD)
+          BRANCH="sync/miiflow-agent-${SHORT_SHA}"
+
+          cd monorepo
+          git checkout -b "$BRANCH"
+
+          # Clear target directory and copy standalone contents
+          rm -rf packages/miiflow-agent/*
+          rm -rf packages/miiflow-agent/.[!.]* 2>/dev/null || true
+          cp -r ../standalone/. packages/miiflow-agent/
+
+          # Check for changes
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to sync"
+            exit 0
+          fi
+
+          COMMIT_SUBJECT=$(cd ../standalone && git log -1 --format='%s')
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "sync(miiflow-agent): ${COMMIT_SUBJECT}" -m "[skip-forward-sync]"
+          git push origin "$BRANCH"
+
+          # Create PR
+          gh pr create \
+            --repo MiiFlow/miiflow-web \
+            --base main \
+            --head "$BRANCH" \
+            --title "sync(miiflow-agent): ${COMMIT_SUBJECT}" \
+            --body "Automated sync from [miiflow-agent](https://github.com/MiiFlow/miiflow-agent) commit ${SHORT_SHA}.
+
+          [skip-forward-sync]" \
+            --label "automated-sync"
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}

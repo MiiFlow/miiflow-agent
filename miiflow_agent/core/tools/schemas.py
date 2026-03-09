@@ -39,8 +39,9 @@ class ParameterSchema:
         if self.type == ParameterType.MEDIA:
             prop["format"] = "uri"
             prop["description"] += (
-                " Pass the image URL directly (from the conversation or a"
-                " previously generated image). Do NOT pass base64-encoded image data."
+                " Pass the image URL from the conversation, or use media_ref:<id>"
+                " to reference a previously generated image (the id is shown in"
+                " the generation result). Do NOT pass base64-encoded image data."
             )
 
         if self.default is not None:

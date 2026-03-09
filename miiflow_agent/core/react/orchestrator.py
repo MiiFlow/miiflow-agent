@@ -817,7 +817,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
 
         # Execute tool
         try:
-            result = await self._execute_tool(step, context)
+            result = await self._execute_tool(step, context, state)
 
             if result.success:
                 # Check if this is a visualization result BEFORE stringification
@@ -831,19 +831,33 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                     await self.event_bus.publish(
                         EventFactory.media(state.current_step, media_data, step.action)
                     )
-                    # Use marker as observation — include URL when available so
-                    # subsequent tool calls (e.g. image editing) can reference it
+                    media_id = media_data['id']
                     media_url = media_data.get('url', '')
+
+                    # Store media URL in execution state so subsequent tool calls
+                    # (e.g. image editing) can resolve media_ref:<id> to actual URL.
+                    # Only store actual URLs, not data URIs (which can be MBs of base64).
+                    # System tools already persist to S3 before reaching here, so
+                    # media_url should be an S3 URL for normal image gen flows.
+                    if media_url and not media_url.startswith('data:'):
+                        state.media_store[media_id] = media_url
+
+                    # Always include media_ref so LLM can reference this image
+                    # in subsequent tool calls (e.g. edit_gpt_image_1)
                     if media_url and not media_url.startswith('data:'):
                         step.observation = (
-                            f"[MEDIA:{media_data['id']}] Image generated successfully. "
+                            f"[MEDIA:{media_id}] Image generated successfully. "
+                            f"To edit this image, use media_ref:{media_id} as the image parameter. "
                             f"Image URL: {media_url}"
                         )
                     else:
-                        step.observation = f"[MEDIA:{media_data['id']}] Image generated successfully."
+                        step.observation = (
+                            f"[MEDIA:{media_id}] Image generated successfully. "
+                            f"To edit this image, use media_ref:{media_id} as the image parameter."
+                        )
                     logger.info(
                         f"Step {state.current_step} - Emitted media event: "
-                        f"id={media_data.get('id')}, type={media_data.get('media_type')}"
+                        f"id={media_id}, type={media_data.get('media_type')}"
                     )
                 elif is_visualization_result(result.output):
                     viz_data = extract_visualization_data(result.output)
@@ -941,7 +955,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                     f"Step {state.current_step} - Added error tool result to context with ID: {tool_call_id}"
                 )
 
-    async def _execute_tool(self, step: ReActStep, context: RunContext):
+    async def _execute_tool(self, step: ReActStep, context: RunContext, state: "ExecutionState" = None):
         """Execute tool with proper context injection."""
         # Tool name should already be resolved by _handle_tool_action
         # Just verify it exists (fuzzy matching was already done if needed)
@@ -966,6 +980,11 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                     f"Tool '{step.action}' expects dict input but got: {step.action_input}"
                 )
 
+        # Resolve media_ref:<id> references in tool inputs to actual URLs
+        # This enables image editing tools to reference previously generated images
+        if isinstance(step.action_input, dict) and state:
+            step.action_input = self._resolve_media_refs(step.action_input, state)
+
         # Determine if tool needs context injection
         needs_context = self.tool_executor.tool_needs_context(step.action)
 
@@ -973,6 +992,81 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
         return await self.tool_executor.execute_tool(
             step.action, step.action_input, context=context if needs_context else None
         )
+
+    def _resolve_media_refs(self, inputs: dict, state: "ExecutionState") -> dict:
+        """Resolve media references in tool inputs to actual URLs.
+
+        Handles multiple reference formats:
+        - media_ref:<id>  — explicit reference (preferred)
+        - /mnt/data/<uuid>.png — hallucinated sandbox paths (common with GPT-based models)
+        - Any non-URL string containing a UUID that matches a stored media ID
+
+        When image generation tools produce media results, the URLs are stored
+        in execution state's media_store. This method resolves those references
+        to the actual image URLs before tool execution.
+        """
+        import re
+
+        media_store = state.media_store
+        if not media_store:
+            return inputs
+
+        resolved = {}
+        media_ref_pattern = re.compile(r'^media_ref:(.+)$')
+        # Match UUIDs in hallucinated file paths like /mnt/data/<uuid>.png
+        uuid_pattern = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE)
+
+        for key, value in inputs.items():
+            if isinstance(value, str):
+                stripped = value.strip()
+
+                # 1. Explicit media_ref:<id>
+                match = media_ref_pattern.match(stripped)
+                if match:
+                    media_id = match.group(1)
+                    stored_url = media_store.get(media_id)
+                    if stored_url:
+                        resolved[key] = stored_url
+                        logger.info(f"Resolved media_ref:{media_id} to stored URL")
+                        continue
+                    else:
+                        logger.warning(f"media_ref:{media_id} not found in media store")
+
+                # 2. Non-URL string (hallucinated path like /mnt/data/..., or bare filename)
+                #    Try to find a UUID in the string that matches a stored media ID
+                if not stripped.startswith(('http://', 'https://', 'data:')):
+                    uuid_matches = uuid_pattern.findall(stripped)
+                    resolved_from_uuid = False
+                    for uuid_str in uuid_matches:
+                        stored_url = media_store.get(uuid_str)
+                        if stored_url:
+                            resolved[key] = stored_url
+                            logger.info(
+                                f"Resolved hallucinated path '{stripped}' to stored URL "
+                                f"via media ID {uuid_str}"
+                            )
+                            resolved_from_uuid = True
+                            break
+                    if resolved_from_uuid:
+                        continue
+
+                    # 3. If only one media exists and the value looks like a file path,
+                    #    assume it refers to the most recent generated image
+                    if len(media_store) == 1 and (
+                        stripped.startswith('/') or stripped.startswith('file://')
+                    ):
+                        only_url = next(iter(media_store.values()))
+                        resolved[key] = only_url
+                        logger.info(
+                            f"Resolved file path '{stripped}' to only available media URL"
+                        )
+                        continue
+
+                resolved[key] = value
+            else:
+                resolved[key] = value
+
+        return resolved
 
     def _handle_step_error(self, step: ReActStep, error: Exception, state: "ExecutionState"):
         """Handle step execution errors."""

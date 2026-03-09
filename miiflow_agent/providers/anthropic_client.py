@@ -167,9 +167,30 @@ class AnthropicClient(ModelClient):
                             }
                         )
                     else:
-                        content_list.append(
-                            {"type": "image", "source": {"type": "url", "url": block.image_url}}
-                        )
+                        # Anthropic API doesn't support URL image sources for most models.
+                        # Download the image and convert to base64.
+                        try:
+                            from ..utils.image import url_to_base64_and_mimetype
+                            base64_content, media_type = url_to_base64_and_mimetype(
+                                block.image_url
+                            )
+                            content_list.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": base64_content,
+                                    },
+                                }
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to download image from URL, falling back to URL source: {e}"
+                            )
+                            content_list.append(
+                                {"type": "image", "source": {"type": "url", "url": block.image_url}}
+                            )
                 elif isinstance(block, DocumentBlock):
                     # Claude document blocks only support PDF and plain text
                     if block.document_type in ("pdf", "txt"):

@@ -38,6 +38,10 @@ class ExecutionState:
     needs_clarification: bool = False
     clarification_data: Optional[Dict[str, Any]] = None
 
+    # Media store - maps media IDs to their URLs so subsequent tool calls
+    # (e.g. image editing) can reference generated images via media_ref:<id>
+    media_store: Dict[str, str] = field(default_factory=dict)
+
     def increment_step(self) -> int:
         """Increment and return the new step number."""
         self.current_step += 1

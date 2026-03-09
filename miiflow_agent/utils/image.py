@@ -208,6 +208,45 @@ async def url_to_bytes_and_mimetype(
         return response.content, content_type
 
 
+def url_to_base64_and_mimetype(url: str, timeout: float = 30.0) -> Tuple[str, str]:
+    """
+    Download an image from URL and return base64 string with MIME type.
+
+    Synchronous version for use in message formatting (e.g. Anthropic client
+    which requires base64 image sources, not URLs).
+
+    Args:
+        url: HTTP(S) URL to download
+        timeout: Request timeout in seconds
+
+    Returns:
+        Tuple of (base64_string, mimetype)
+
+    Raises:
+        ImportError: If httpx is not available
+        Exception: If download fails
+    """
+    if not HTTPX_AVAILABLE:
+        raise ImportError(
+            "httpx is required to download images from URLs. "
+            "Install with: pip install httpx"
+        )
+
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.get(url)
+        response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "")
+        if ";" in content_type:
+            content_type = content_type.split(";")[0].strip()
+
+        if not content_type or content_type == "application/octet-stream":
+            content_type = detect_mimetype_from_bytes(response.content)
+
+        base64_str = base64.b64encode(response.content).decode("utf-8")
+        return base64_str, content_type
+
+
 def detect_mimetype_from_bytes(file_bytes: bytes) -> str:
     """
     Detect MIME type from raw bytes using filetype library.

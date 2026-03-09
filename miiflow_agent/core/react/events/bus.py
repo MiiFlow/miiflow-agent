@@ -540,3 +540,24 @@ class EventFactory:
                 "action": action,
             }
         )
+
+    @staticmethod
+    def media(step_number: int, media_data: dict, action: str) -> ReActEvent:
+        """Create media event for inline image/video/audio rendering.
+
+        Args:
+            step_number: Current step number
+            media_data: The media data dict (from MediaResult.to_dict())
+            action: The name of the tool that produced the media
+
+        Returns:
+            ReActEvent with MEDIA type
+        """
+        return ReActEvent(
+            event_type=ReActEventType.MEDIA,
+            step_number=step_number,
+            data={
+                "media": media_data,
+                "action": action,
+            }
+        )

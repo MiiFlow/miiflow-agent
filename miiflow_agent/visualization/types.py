@@ -132,6 +132,49 @@ class VisualizationResult:
         return f"VisualizationResult(type={self.type!r}, id={self.id!r}, title={self.title!r})"
 
 
+@dataclass
+class MediaResult:
+    """Result containing media (image/video/audio) that should render inline."""
+    url: str  # URL or data URI of the media
+    media_type: str = "image"  # "image", "video", "audio"
+    alt_text: str = ""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def to_dict(self) -> dict:
+        return {
+            "__media__": True,
+            "id": self.id,
+            "url": self.url,
+            "media_type": self.media_type,
+            "alt_text": self.alt_text,
+        }
+
+    def __str__(self) -> str:
+        """Return marker for observation text (what gets sent to LLM context)."""
+        return f"[MEDIA:{self.id}]"
+
+    def __repr__(self) -> str:
+        return f"MediaResult(media_type={self.media_type!r}, id={self.id!r}, alt_text={self.alt_text!r})"
+
+
+def is_media_result(value: Any) -> bool:
+    """Check if a value is a MediaResult."""
+    if isinstance(value, MediaResult):
+        return True
+    if isinstance(value, dict):
+        return value.get("__media__") is True
+    return False
+
+
+def extract_media_data(value: Any) -> Optional[Dict[str, Any]]:
+    """Extract media data from a MediaResult or its dict representation."""
+    if isinstance(value, MediaResult):
+        return value.to_dict()
+    if isinstance(value, dict) and value.get("__media__"):
+        return value
+    return None
+
+
 def is_visualization_result(value: Any) -> bool:
     """
     Check if a value is a VisualizationResult.

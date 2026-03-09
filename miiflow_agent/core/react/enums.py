@@ -19,6 +19,7 @@ class ReActEventType(Enum):
     STOP_CONDITION = "stop_condition"
     CLARIFICATION_NEEDED = "clarification_needed"  # Agent needs user input
     VISUALIZATION = "visualization"  # Tool returned a visualization result
+    MEDIA = "media"  # Tool returned a media result (image/video/audio)
 
 
 class StopReason(Enum):

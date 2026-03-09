@@ -305,8 +305,19 @@ class Agent(Generic[Deps, Result]):
 
     async def _execute_tool_calls(
         self, tool_calls: List[Dict[str, Any]], context: RunContext[Deps]
-    ) -> None:
-        """Execute tool calls with dependency injection."""
+    ) -> List[Dict[str, Any]]:
+        """Execute tool calls with dependency injection.
+
+        Returns:
+            List of special result dicts (media/visualization) detected during execution.
+            Each entry has {"type": "media"|"visualization", "data": ..., "tool_name": ...}.
+        """
+        from miiflow_agent.visualization.types import (
+            is_media_result, extract_media_data,
+            is_visualization_result, extract_visualization_data,
+        )
+
+        special_results = []
         logger.debug(f"About to execute {len(tool_calls)} tool calls")
 
         for i, tool_call in enumerate(tool_calls):
@@ -363,6 +374,25 @@ class Agent(Generic[Deps, Result]):
                 f"Tool '{tool_name}' execution result: success={observation.success}, output='{observation.output}'"
             )
 
+            # Detect special results (media/visualization) before stringification
+            if observation.success and observation.output is not None:
+                if is_media_result(observation.output):
+                    media_data = extract_media_data(observation.output)
+                    if media_data:
+                        special_results.append({
+                            "type": "media",
+                            "data": media_data,
+                            "tool_name": tool_name,
+                        })
+                elif is_visualization_result(observation.output):
+                    viz_data = extract_visualization_data(observation.output)
+                    if viz_data:
+                        special_results.append({
+                            "type": "visualization",
+                            "data": viz_data,
+                            "tool_name": tool_name,
+                        })
+
             # Add tool result message
             context.messages.append(
                 Message(
@@ -371,6 +401,8 @@ class Agent(Generic[Deps, Result]):
                     tool_call_id=tool_call.id if hasattr(tool_call, "id") else tool_call.get("id"),
                 )
             )
+
+        return special_results
 
     async def stream(
         self,
@@ -948,7 +980,16 @@ class Agent(Generic[Deps, Result]):
             if final_tool_calls:
                 yield {"event": "tools_start", "data": {"tool_count": len(final_tool_calls)}}
 
-                await self._execute_tool_calls(final_tool_calls, context)
+                special_results = await self._execute_tool_calls(final_tool_calls, context)
+
+                # Emit media/visualization events detected during tool execution
+                # (single_hop doesn't go through ReAct orchestrator which normally handles this)
+                from miiflow_agent.core.react.events.bus import EventFactory
+                for sr in special_results:
+                    if sr["type"] == "media":
+                        yield EventFactory.media(0, sr["data"], sr["tool_name"])
+                    elif sr["type"] == "visualization":
+                        yield EventFactory.visualization(0, sr["data"], sr["tool_name"])
 
                 yield {"event": "tools_complete", "data": {}}
                 # Re-filter messages after tool execution (tool results added to context.messages)

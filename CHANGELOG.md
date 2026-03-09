@@ -2,6 +2,24 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.5.0] - 2026-03-08
+
+### Added
+- **`MediaResult` type**: New dataclass for image/media tool results that renders as inline markdown (`![alt](url)`) in agent chat, while preserving structured dict output for workflow mode
+- **`is_media_result()` helper**: Detection function for `MediaResult` instances and dicts with `__media__` marker
+
+### Changed
+- ReAct orchestrator now detects `MediaResult` tool outputs and uses markdown rendering instead of raw `str()` conversion, so generated images display inline in the chat UI
+- OpenAI image tool (`OpenAIImageTool`) returns `MediaResult` instead of plain dict
+- Stability AI image tool (`StabilityImageTool`) returns `MediaResult` instead of plain dict
+
+## [1.4.0] - 2026-03-04
+
+### Changed
+- Bumped `aiohttp` dependency from `^3.9.0` to `^3.13.3` to fix vulnerable dependencies
+- Bumped `mcp` optional dependency from `^1.0.0` to `^1.23.0`
+- Added CI-based bidirectional sync workflows for standalone repo
+
 ## [1.3.0] - 2026-03-04
 
 ### Added

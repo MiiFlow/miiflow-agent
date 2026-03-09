@@ -34,6 +34,10 @@ class ExecutionState:
     ready_for_answer: bool = False
     accumulated_answer: str = ""
 
+    # Clarification state - set when a tool requests user clarification
+    needs_clarification: bool = False
+    clarification_data: Optional[Dict[str, Any]] = None
+
     def increment_step(self) -> int:
         """Increment and return the new step number."""
         self.current_step += 1

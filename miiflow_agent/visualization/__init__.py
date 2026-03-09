@@ -39,8 +39,11 @@ Usage (in APPLICATION code):
 """
 
 from .types import (
+    MediaResult,
     VisualizationConfig,
     VisualizationResult,
+    extract_media_data,
+    is_media_result,
     is_visualization_result,
     extract_visualization_data,
 )
@@ -53,8 +56,11 @@ from .registry import (
 
 __all__ = [
     # Types
+    "MediaResult",
     "VisualizationConfig",
     "VisualizationResult",
+    "extract_media_data",
+    "is_media_result",
     "is_visualization_result",
     "extract_visualization_data",
     # Registry

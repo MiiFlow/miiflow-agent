@@ -147,7 +147,7 @@ class ReActOrchestrator:
                 execution_state.steps.append(step)
 
                 # Check if clarification was requested during this step
-                if getattr(execution_state, "needs_clarification", False):
+                if execution_state.needs_clarification:
                     logger.info("Breaking execution loop - clarification requested")
                     break
 
@@ -824,8 +824,20 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                 # This is critical because str(VisualizationResult) returns [VIZ:uuid]
                 # which loses the actual chart data
                 from miiflow_agent.visualization import is_visualization_result, extract_visualization_data
+                from miiflow_agent.visualization.types import is_media_result, extract_media_data
 
-                if is_visualization_result(result.output):
+                if is_media_result(result.output):
+                    media_data = extract_media_data(result.output)
+                    await self.event_bus.publish(
+                        EventFactory.media(state.current_step, media_data, step.action)
+                    )
+                    # Use marker as observation — matches visualization pattern
+                    step.observation = f"[MEDIA:{media_data['id']}]"
+                    logger.info(
+                        f"Step {state.current_step} - Emitted media event: "
+                        f"id={media_data.get('id')}, type={media_data.get('media_type')}"
+                    )
+                elif is_visualization_result(result.output):
                     viz_data = extract_visualization_data(result.output)
                     if viz_data:
                         # Emit visualization event with full data BEFORE stringification
@@ -975,7 +987,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
     async def _build_result(self, state: "ExecutionState") -> ReActResult:
         """Build successful result."""
         # Determine stop reason
-        if getattr(state, "needs_clarification", False):
+        if state.needs_clarification:
             stop_reason = StopReason.NEEDS_CLARIFICATION
             # Don't generate fallback - we're waiting for user input
             state.final_answer = ""
@@ -1005,7 +1017,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
         )
 
         # Attach clarification data if present
-        if getattr(state, "clarification_data", None):
+        if state.clarification_data:
             result.clarification_data = state.clarification_data
 
         return result

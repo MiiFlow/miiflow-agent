@@ -32,3 +32,5 @@ class ParameterType(Enum):
     ARRAY = "array"
     OBJECT = "object"
     NULL = "null"
+    MEDIA = "media"
+    TEXT = "text"

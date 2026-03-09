@@ -25,10 +25,23 @@ class ParameterSchema:
     
     def to_json_schema_property(self) -> Dict[str, Any]:
         """Convert to JSON Schema property format."""
+        json_type = self.type.value
+        # Map custom types to valid JSON Schema types
+        if self.type in (ParameterType.MEDIA, ParameterType.TEXT):
+            json_type = "string"
+
         prop = {
-            "type": self.type.value,
-            "description": self.description
+            "type": json_type,
+            "description": self.description,
         }
+
+        # For MEDIA params, add format hint and URL instruction
+        if self.type == ParameterType.MEDIA:
+            prop["format"] = "uri"
+            prop["description"] += (
+                " Pass the image URL directly (from the conversation or a"
+                " previously generated image). Do NOT pass base64-encoded image data."
+            )
 
         if self.default is not None:
             prop["default"] = self.default

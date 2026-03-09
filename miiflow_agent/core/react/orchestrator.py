@@ -831,8 +831,16 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                     await self.event_bus.publish(
                         EventFactory.media(state.current_step, media_data, step.action)
                     )
-                    # Use marker as observation — matches visualization pattern
-                    step.observation = f"[MEDIA:{media_data['id']}]"
+                    # Use marker as observation — include URL when available so
+                    # subsequent tool calls (e.g. image editing) can reference it
+                    media_url = media_data.get('url', '')
+                    if media_url and not media_url.startswith('data:'):
+                        step.observation = (
+                            f"[MEDIA:{media_data['id']}] Image generated successfully. "
+                            f"Image URL: {media_url}"
+                        )
+                    else:
+                        step.observation = f"[MEDIA:{media_data['id']}] Image generated successfully."
                     logger.info(
                         f"Step {state.current_step} - Emitted media event: "
                         f"id={media_data.get('id')}, type={media_data.get('media_type')}"

@@ -2,6 +2,17 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.5.1] - 2026-03-16
+
+### Added
+- **User cancellation support**: `RunContext` now includes a `cancel_event` field and `is_cancelled` property for cooperative cancellation
+- **`USER_CANCELLED` stop reason**: New `StopReason` enum value for distinguishing user-initiated stops from other termination conditions
+
+### Changed
+- ReAct orchestrator checks for cancellation at each step and exits gracefully
+- Plan-and-execute orchestrator checks for cancellation between subtasks and waves
+- Multi-agent orchestrator checks for cancellation before subagent launch and before synthesis
+
 ## [1.5.0] - 2026-03-08
 
 ### Added

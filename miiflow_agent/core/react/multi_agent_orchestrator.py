@@ -200,6 +200,15 @@ class MultiAgentOrchestrator:
                 },
             )
 
+            # Check for user cancellation before execution
+            if context.is_cancelled:
+                logger.info("Multi-agent execution cancelled by user before subagent launch")
+                return MultiAgentResult(
+                    subagent_results=[],
+                    final_answer="",
+                    stop_reason=StopReason.USER_CANCELLED,
+                )
+
             # Phase 2: Spawn and execute subagents in parallel
             await self._publish_event(
                 MultiAgentEventType.EXECUTION_START,
@@ -234,6 +243,21 @@ class MultiAgentOrchestrator:
                     clarification_data=clarification_data,
                 )
                 return result
+
+            # Check for user cancellation before synthesis
+            if context.is_cancelled:
+                logger.info("Multi-agent execution cancelled by user before synthesis")
+                total_time = time.time() - start_time
+                total_cost = sum(r.cost for r in subagent_results)
+                total_tokens = sum(r.tokens_used for r in subagent_results)
+                return MultiAgentResult(
+                    subagent_results=subagent_results,
+                    final_answer="",
+                    stop_reason=StopReason.USER_CANCELLED,
+                    total_cost=total_cost,
+                    total_execution_time=total_time,
+                    total_tokens=total_tokens,
+                )
 
             # Phase 3: Synthesize results
             await self._publish_event(

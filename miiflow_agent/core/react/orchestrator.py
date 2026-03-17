@@ -138,6 +138,13 @@ class ReActOrchestrator:
             self._setup_context(query, context)
             while execution_state.is_running:
                 execution_state.current_step += 1
+
+                # Check for user cancellation
+                if context.is_cancelled:
+                    logger.info("Execution cancelled by user")
+                    execution_state.final_answer = self.full_response if hasattr(self, 'full_response') else ""
+                    break
+
                 if await self._should_stop(execution_state):
                     break
 
@@ -161,7 +168,7 @@ class ReActOrchestrator:
                 # if step.is_error_step:
                 #     break
 
-            return await self._build_result(execution_state)
+            return await self._build_result(execution_state, context)
 
         except Exception as e:
             logger.error(f"ReAct execution failed: {e}", exc_info=True)
@@ -1086,13 +1093,15 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
         if step.answer:
             await self.event_bus.publish(EventFactory.final_answer(state.current_step, step.answer))
 
-    async def _build_result(self, state: "ExecutionState") -> ReActResult:
+    async def _build_result(self, state: "ExecutionState", context: RunContext = None) -> ReActResult:
         """Build successful result."""
         # Determine stop reason
         if state.needs_clarification:
             stop_reason = StopReason.NEEDS_CLARIFICATION
             # Don't generate fallback - we're waiting for user input
             state.final_answer = ""
+        elif context is not None and context.is_cancelled:
+            stop_reason = StopReason.USER_CANCELLED
         elif state.final_answer:
             stop_reason = StopReason.ANSWER_COMPLETE
         else:

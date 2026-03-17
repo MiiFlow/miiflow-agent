@@ -396,6 +396,11 @@ class PlanAndExecuteOrchestrator:
 
             # Phase 2: Execute plan with re-planning on failures
             while replans <= self.max_replans:
+                # Check for user cancellation
+                if context.is_cancelled:
+                    logger.info("Plan execution cancelled by user")
+                    break
+
                 execution_success = await self._execute_plan(plan, context)
 
                 # Check for clarification request - skip re-planning and synthesis
@@ -438,7 +443,9 @@ class PlanAndExecuteOrchestrator:
             total_tokens = sum(st.tokens_used for st in plan.subtasks)
 
             # Determine stop reason
-            if plan.failed_subtasks == 0:
+            if context.is_cancelled:
+                stop_reason = StopReason.USER_CANCELLED
+            elif plan.failed_subtasks == 0:
                 stop_reason = StopReason.ANSWER_COMPLETE
             elif replans >= self.max_replans:
                 stop_reason = StopReason.MAX_STEPS  # Reusing enum value
@@ -895,6 +902,11 @@ class PlanAndExecuteOrchestrator:
         completed_ids: Set[int] = set()
 
         for i, subtask in enumerate(plan.subtasks):
+            # Check for user cancellation
+            if context.is_cancelled:
+                logger.info("Plan execution cancelled by user")
+                break
+
             # Check dependencies are satisfied
             if not self._dependencies_met(subtask, completed_ids):
                 logger.error(
@@ -964,6 +976,11 @@ class PlanAndExecuteOrchestrator:
         completed_ids: Set[int] = set()
 
         for wave in waves:
+            # Check for user cancellation
+            if context.is_cancelled:
+                logger.info("Parallel plan execution cancelled by user")
+                break
+
             # Emit wave start event
             await self._publish_parallel_event(
                 ParallelPlanEventType.WAVE_START,

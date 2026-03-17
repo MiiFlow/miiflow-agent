@@ -60,6 +60,11 @@ class RunContext(Generic[Deps]):
     messages: List[Message] = field(default_factory=list)
     retry: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    cancel_event: Optional[asyncio.Event] = None
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self.cancel_event is not None and self.cancel_event.is_set()
 
     def last_user_message(self) -> Optional[Message]:
         """Get the last user message."""

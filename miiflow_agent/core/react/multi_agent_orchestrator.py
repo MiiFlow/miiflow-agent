@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from ..message import Message, MessageRole
-from .enums import MultiAgentEventType, StopReason
+from .enums import MultiAgentEventType, ReActEventType, StopReason
 from .events import EventBus
 from .models import MultiAgentResult, SubAgentConfig, SubAgentPlan, SubAgentResult
 from .orchestrator import ReActOrchestrator
@@ -483,12 +483,42 @@ Task: {config.query}
 
 Complete this specific task. Stay focused on your assigned area."""
 
+                # Forward media/visualization events from subagent's ReAct loop
+                async def forward_subagent_react_event(react_event):
+                    """Forward media/visualization ReAct events as MultiAgent events."""
+                    try:
+                        if react_event.event_type == ReActEventType.MEDIA:
+                            await self._publish_event(
+                                MultiAgentEventType.SUBAGENT_MEDIA,
+                                {
+                                    "subagent_name": config.name,
+                                    "media": react_event.data.get("media"),
+                                    "action": react_event.data.get("action", "unknown"),
+                                },
+                            )
+                        elif react_event.event_type == ReActEventType.VISUALIZATION:
+                            await self._publish_event(
+                                MultiAgentEventType.SUBAGENT_VISUALIZATION,
+                                {
+                                    "subagent_name": config.name,
+                                    "visualization": react_event.data.get("visualization"),
+                                    "action": react_event.data.get("action", "unknown"),
+                                },
+                            )
+                    except Exception as e:
+                        logger.error(f"Error forwarding ReAct event from subagent {config.name}: {e}")
+
+                self.subagent_orchestrator.event_bus.subscribe(forward_subagent_react_event)
+
                 # Execute with ReAct orchestrator (with timeout)
                 # Uses isolated_context to prevent message contamination in parallel execution
-                result = await asyncio.wait_for(
-                    self.subagent_orchestrator.execute(subagent_query, isolated_context),
-                    timeout=self.subagent_timeout_seconds,
-                )
+                try:
+                    result = await asyncio.wait_for(
+                        self.subagent_orchestrator.execute(subagent_query, isolated_context),
+                        timeout=self.subagent_timeout_seconds,
+                    )
+                finally:
+                    self.subagent_orchestrator.event_bus.unsubscribe(forward_subagent_react_event)
 
                 execution_time = time.time() - start_time
 
@@ -773,11 +803,41 @@ Complete this specific task. Stay focused on your assigned area."""
             # Build the subagent prompt
             subagent_prompt = self._build_dynamic_subagent_prompt(config, query)
 
+            # Forward media/visualization events from subagent's ReAct loop
+            async def forward_subagent_react_event(react_event):
+                """Forward media/visualization ReAct events as MultiAgent events."""
+                try:
+                    if react_event.event_type == ReActEventType.MEDIA:
+                        await self._publish_event(
+                            MultiAgentEventType.SUBAGENT_MEDIA,
+                            {
+                                "subagent_name": config.name,
+                                "media": react_event.data.get("media"),
+                                "action": react_event.data.get("action", "unknown"),
+                            },
+                        )
+                    elif react_event.event_type == ReActEventType.VISUALIZATION:
+                        await self._publish_event(
+                            MultiAgentEventType.SUBAGENT_VISUALIZATION,
+                            {
+                                "subagent_name": config.name,
+                                "visualization": react_event.data.get("visualization"),
+                                "action": react_event.data.get("action", "unknown"),
+                            },
+                        )
+                except Exception as e:
+                    logger.error(f"Error forwarding ReAct event from subagent {config.name}: {e}")
+
+            orchestrator.event_bus.subscribe(forward_subagent_react_event)
+
             # Execute with timeout
-            result = await asyncio.wait_for(
-                orchestrator.execute(subagent_prompt, context),
-                timeout=config.timeout_seconds,
-            )
+            try:
+                result = await asyncio.wait_for(
+                    orchestrator.execute(subagent_prompt, context),
+                    timeout=config.timeout_seconds,
+                )
+            finally:
+                orchestrator.event_bus.unsubscribe(forward_subagent_react_event)
 
             execution_time = time.time() - start_time
 

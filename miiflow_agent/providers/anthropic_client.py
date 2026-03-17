@@ -120,12 +120,20 @@ class AnthropicClient(ModelClient):
             for tool_call in message.tool_calls:
                 import json
 
+                args = tool_call.get("function", {}).get("arguments", {})
+                # Normalize: OpenAI-style string arguments → dict for Anthropic API
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+
                 content_list.append(
                     {
                         "type": "tool_use",
                         "id": tool_call.get("id", ""),
                         "name": tool_call.get("function", {}).get("name", ""),
-                        "input": tool_call.get("function", {}).get("arguments", {}),
+                        "input": args,
                     }
                 )
 

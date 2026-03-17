@@ -137,6 +137,10 @@ class OpenAIClient(ModelClient):
                 if isinstance(sanitized_tc, dict) and "function" in sanitized_tc:
                     original_name = sanitized_tc["function"].get("name", "")
                     sanitized_tc["function"]["name"] = _sanitize_tool_name(original_name)
+                    # Normalize: Anthropic-style dict arguments → JSON string for OpenAI API
+                    args = sanitized_tc["function"].get("arguments")
+                    if isinstance(args, dict):
+                        sanitized_tc["function"]["arguments"] = json.dumps(args)
                 sanitized_tool_calls.append(sanitized_tc)
             openai_message["tool_calls"] = sanitized_tool_calls
 

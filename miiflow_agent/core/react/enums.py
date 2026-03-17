@@ -81,6 +81,8 @@ class MultiAgentEventType(Enum):
     SUBAGENT_PROGRESS = "subagent_progress"  # Subagent making progress
     SUBAGENT_COMPLETE = "subagent_complete"  # Subagent finished successfully
     SUBAGENT_FAILED = "subagent_failed"  # Subagent failed
+    SUBAGENT_MEDIA = "subagent_media"  # Subagent produced media (image/video/audio)
+    SUBAGENT_VISUALIZATION = "subagent_visualization"  # Subagent produced visualization
 
     SYNTHESIS_START = "multi_agent_synthesis_start"  # Starting result synthesis
     FINAL_ANSWER = "multi_agent_final_answer"  # Final synthesized answer

@@ -1414,6 +1414,11 @@ class PlanAndExecuteOrchestrator:
                     clarification_data = getattr(result, "clarification_data", None) or {}
                     clarification_data["subtask_id"] = subtask.id
                     clarification_data["subtask_description"] = subtask.description
+                    # Propagate tool_call_id if available from the sub-orchestrator
+                    if not clarification_data.get("tool_call_id"):
+                        sub_clarification = getattr(result, "clarification_data", None) or {}
+                        if sub_clarification.get("tool_call_id"):
+                            clarification_data["tool_call_id"] = sub_clarification["tool_call_id"]
 
                     # Emit clarification event
                     await self._publish_event(

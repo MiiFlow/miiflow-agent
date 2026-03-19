@@ -894,6 +894,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                         # Mark state for clarification
                         state.needs_clarification = True
                         state.clarification_data = clarification.to_dict()
+                        state.clarification_data["tool_call_id"] = tool_call_id
                         logger.info(
                             f"Clarification requested: {clarification.question}"
                         )
@@ -909,6 +910,7 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                                     "options": clarification.options,
                                     "context": clarification.context,
                                     "allow_free_text": clarification.allow_free_text,
+                                    "tool_call_id": tool_call_id,
                                 },
                             )
                         )

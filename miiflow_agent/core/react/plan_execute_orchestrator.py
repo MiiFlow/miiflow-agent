@@ -1377,6 +1377,13 @@ class PlanAndExecuteOrchestrator:
                                 "success": react_event.data.get("success", True),
                             },
                         )
+                    elif react_event.event_type in (
+                        ReActEventType.VISUALIZATION,
+                        ReActEventType.MEDIA,
+                    ):
+                        # Forward visualization/media events directly so the streaming
+                        # service can emit them as SSE events (e.g. auth_prompt, charts)
+                        await self.event_bus.publish(react_event)
                 except Exception as e:
                     logger.error(f"Error forwarding ReAct event: {e}")
 

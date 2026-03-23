@@ -271,6 +271,7 @@ class ReActOrchestrator:
             cost = 0.0
             # Accumulate tool calls during streaming
             accumulated_tool_calls = {}  # index -> {id, function: {name, arguments}}
+            finish_reason = None
 
             # Reset parser for new response
             self.parser.reset()
@@ -408,6 +409,8 @@ class ReActOrchestrator:
                     tokens_used = chunk.usage.total_tokens
                 if hasattr(chunk, "cost"):
                     cost += chunk.cost
+                if getattr(chunk, "finish_reason", None):
+                    finish_reason = chunk.finish_reason
 
             step.tokens_used = tokens_used
             step.cost = cost
@@ -450,6 +453,9 @@ class ReActOrchestrator:
             # No tool calls = final answer
 
             if accumulated_tool_calls:
+                # Reset consecutive thinking counter — tool call present
+                state._consecutive_thinking_steps = 0
+
                 # Emit text alongside tool calls as thinking for visibility
                 if assistant_content:
                     await self.event_bus.publish(
@@ -603,8 +609,17 @@ class ReActOrchestrator:
                     )
                     context.messages.append(response_message)
 
-            # No tool calls = final answer
-            # Any text-only response (no tool calls) is the answer.
+            # No tool calls — check if this is truly a final answer or an incomplete response
+            elif finish_reason == "length":
+                # Response was truncated by max_tokens — LLM was likely about to call a tool
+                logger.warning(
+                    f"Step {state.current_step} - Response truncated (finish_reason='length'). "
+                    f"Continuing loop to give LLM another turn. Preview: {assistant_content[:200]}..."
+                )
+                response_message = Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                context.messages.append(response_message)
+                # Don't set step.answer — loop will continue
+
             else:
                 # Detect hallucinated XML tool calls (model outputting tool calls as text
                 # instead of using native tool calling API)
@@ -615,29 +630,55 @@ class ReActOrchestrator:
                         f"Preview: {assistant_content[:200]}..."
                     )
 
-                logger.debug(f"Step {state.current_step} - No tool calls, treating as final answer")
-
-                # Add assistant message to context
-                response_message = Message(role=MessageRole.ASSISTANT, content=assistant_content)
-                context.messages.append(response_message)
-
-                # If answer was already parsed from <answer> XML tags during streaming, use it.
-                # Otherwise, the entire text content IS the answer.
-                if not step.answer and assistant_content:
-                    # Safety net: strip any residual XML tags that might have leaked
-                    step.answer = _strip_xml_tags_from_answer(assistant_content)
-
-                    # Emit answer chunks for plain text responses (no XML tags were used)
-                    # The XML parser only emits ANSWER_CHUNK when <answer> tags are present,
-                    # so we need to emit the full answer here for streaming consumers
-                    if not getattr(state, "accumulated_answer", None) and step.answer:
-                        await self.event_bus.publish(
-                            EventFactory.final_answer_chunk(
-                                state.current_step, step.answer, step.answer
+                # Check if this text-only response is actually thinking/planning
+                # rather than a final answer (e.g. "Let me check that:" without a tool call)
+                treat_as_final = True
+                if assistant_content and not step.answer:
+                    # Only attempt classification if we haven't exceeded consecutive thinking limit
+                    consecutive_thinking = getattr(state, "_consecutive_thinking_steps", 0)
+                    if consecutive_thinking < 2:
+                        is_final = await self._is_final_answer(assistant_content)
+                        if not is_final:
+                            treat_as_final = False
+                            state._consecutive_thinking_steps = consecutive_thinking + 1
+                            logger.info(
+                                f"Step {state.current_step} - Text-only response classified as THINKING "
+                                f"(consecutive={state._consecutive_thinking_steps}), continuing loop. "
+                                f"Preview: {assistant_content[:200]}..."
                             )
+                            response_message = Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                            context.messages.append(response_message)
+                            # Don't set step.answer — loop will continue
+                    else:
+                        logger.warning(
+                            f"Step {state.current_step} - Exceeded consecutive thinking limit "
+                            f"({consecutive_thinking}), forcing final answer"
                         )
 
-                # step.answer is now set, so is_final_step property returns True
+                if treat_as_final:
+                    logger.debug(f"Step {state.current_step} - No tool calls, treating as final answer")
+
+                    # Add assistant message to context
+                    response_message = Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                    context.messages.append(response_message)
+
+                    # If answer was already parsed from <answer> XML tags during streaming, use it.
+                    # Otherwise, the entire text content IS the answer.
+                    if not step.answer and assistant_content:
+                        # Safety net: strip any residual XML tags that might have leaked
+                        step.answer = _strip_xml_tags_from_answer(assistant_content)
+
+                        # Emit answer chunks for plain text responses (no XML tags were used)
+                        # The XML parser only emits ANSWER_CHUNK when <answer> tags are present,
+                        # so we need to emit the full answer here for streaming consumers
+                        if not getattr(state, "accumulated_answer", None) and step.answer:
+                            await self.event_bus.publish(
+                                EventFactory.final_answer_chunk(
+                                    state.current_step, step.answer, step.answer
+                                )
+                            )
+
+                    # step.answer is now set, so is_final_step property returns True
 
         except Exception as e:
             self._handle_step_error(step, e, state)
@@ -874,7 +915,17 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                             EventFactory.visualization(state.current_step, viz_data, step.action)
                         )
                         # Store marker for observation (what gets sent to LLM context)
-                        step.observation = f"[VIZ:{viz_data['id']}]"
+                        # For auth_prompt visualizations, include context so LLM knows tool was blocked
+                        if viz_data.get("type") == "auth_prompt":
+                            provider_name = viz_data.get("data", {}).get("providerName", "the provider")
+                            step.observation = (
+                                f"[VIZ:{viz_data['id']}] "
+                                f"Tool was blocked: authentication required for {provider_name}. "
+                                f"A connect prompt has been shown to the user. "
+                                f"Do not proceed with this provider's tools until the user connects their account."
+                            )
+                        else:
+                            step.observation = f"[VIZ:{viz_data['id']}]"
                         logger.info(
                             f"Step {state.current_step} - Emitted visualization event: "
                             f"type={viz_data.get('type')}, id={viz_data.get('id')}"

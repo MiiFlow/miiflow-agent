@@ -181,8 +181,12 @@ class TestReActAuthPromptVisualization:
         assert viz_data["type"] == "auth_prompt"
         assert viz_data["data"]["providerName"] == "Google Ads"
 
-        # Observation should be the VIZ marker
-        assert step.observation == "[VIZ:test-viz-id]"
+        # Observation should be the VIZ marker with auth block context
+        assert step.observation == (
+            "[VIZ:test-viz-id] Tool was blocked: authentication required for Google Ads. "
+            "A connect prompt has been shown to the user. "
+            "Do not proceed with this provider's tools until the user connects their account."
+        )
 
     @pytest.mark.asyncio
     async def test_non_viz_tool_result_does_not_emit_visualization(

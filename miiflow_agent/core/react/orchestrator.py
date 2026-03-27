@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from ..agent import RunContext
 from ..message import Message, MessageRole
 from .enums import ReActEventType, StopReason
+from .exceptions import ToolApprovalRequired
 from .events import EventBus, EventFactory
 from .react_events import ReActEvent
 from .execution import ExecutionState
@@ -991,6 +992,44 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                 logger.debug(
                     f"Step {state.current_step} - Added tool result to context with ID: {tool_call_id}"
                 )
+
+        except ToolApprovalRequired as e:
+            # Tool requires user approval before execution
+            # NOTE: __description was already popped from action_input at line 523
+            # and stored in `tool_description`, so use that instead of re-popping
+            state.needs_clarification = True  # Reuse existing pause mechanism
+            state.clarification_data = {
+                "type": "tool_approval",
+                "tool_name": e.tool_name,
+                "tool_inputs": e.tool_inputs or {},
+                "tool_description": tool_description or "",
+                "tool_schema": self.tool_executor.get_tool_schema(e.tool_name),
+                "tool_call_id": tool_call_id,
+                "reason": e.reason,
+            }
+
+            # Emit approval event for SSE
+            await self.event_bus.publish(
+                ReActEvent(
+                    event_type=ReActEventType.TOOL_APPROVAL_NEEDED,
+                    step_number=state.current_step,
+                    data=state.clarification_data,
+                )
+            )
+
+            logger.info(
+                f"Tool '{e.tool_name}' requires approval - pausing execution"
+            )
+
+            # CRITICAL: Must add a tool result to context, otherwise Anthropic API
+            # rejects with "tool_use ids were found without tool_result blocks"
+            if tool_call_id:
+                observation_message = Message(
+                    role=MessageRole.TOOL,
+                    content="Tool execution paused - waiting for user approval.",
+                    tool_call_id=tool_call_id,
+                )
+                context.messages.append(observation_message)
 
         except Exception as e:
             # Sanitize error message for LLM consumption

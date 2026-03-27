@@ -96,6 +96,9 @@ class ToolSchema:
     headers: Dict[str, str] = field(default_factory=dict)
     timeout: float = 30.0
     
+    # Tool-level default for requiring user approval before execution
+    require_approval: bool = False
+
     # Add metadata for arbitrary data
     metadata: Dict[str, Any] = field(default_factory=dict)
     

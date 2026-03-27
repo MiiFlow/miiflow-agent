@@ -18,6 +18,7 @@ class ReActEventType(Enum):
     ERROR = "error"
     STOP_CONDITION = "stop_condition"
     CLARIFICATION_NEEDED = "clarification_needed"  # Agent needs user input
+    TOOL_APPROVAL_NEEDED = "tool_approval_needed"  # Tool requires user approval before execution
     VISUALIZATION = "visualization"  # Tool returned a visualization result
     MEDIA = "media"  # Tool returned a media result (image/video/audio)
 

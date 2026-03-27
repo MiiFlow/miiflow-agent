@@ -21,7 +21,8 @@ def tool(
     tags: Optional[List[str]] = None,
     parameters: Optional[Dict[str, ParameterSchema]] = None,
     return_schema: Optional[Dict[str, Any]] = None,
-    strict: bool = False
+    strict: bool = False,
+    require_approval: bool = False,
 ) -> Callable[[F], F]:
     """
     Decorator to mark a function as a tool with optional explicit schema.
@@ -34,6 +35,7 @@ def tool(
         parameters: Explicit parameter schemas (overrides reflection)
         return_schema: Explicit return type schema
         strict: Enable strict mode for type-safe function calling (for supported models)
+        require_approval: If True, tool requires user approval before execution (default: False)
 
     Example with automatic reflection:
         @tool(description="Add two numbers")
@@ -113,7 +115,8 @@ def tool(
             name=tool_name,
             description=tool_description or f"Function {tool_name}",
             tool_type=ToolType.FUNCTION,
-            parameters=param_schemas
+            parameters=param_schemas,
+            require_approval=require_approval,
         )
 
         # Add return schema if provided

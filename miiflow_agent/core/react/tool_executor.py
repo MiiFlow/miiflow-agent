@@ -22,8 +22,12 @@ class AgentToolExecutor:
     async def execute_tool(self, tool_name: str, inputs: dict, context=None) -> ToolResult:
         """Execute tool with context injection if context is provided.
 
+        Emits PRE_TOOL_USE callback before execution (can block via ToolApprovalRequired).
         Emits a TOOL_EXECUTED callback event after execution for billing/tracking.
         """
+        # Emit PRE_TOOL_USE callback - allows blocking tool execution (e.g. for approval)
+        await self._emit_pre_tool_use_callback(tool_name, inputs)
+
         start_time = time.time()
 
         if context is not None:
@@ -42,6 +46,41 @@ class AgentToolExecutor:
         )
 
         return result
+
+    async def _emit_pre_tool_use_callback(
+        self,
+        tool_name: str,
+        inputs: dict,
+    ) -> None:
+        """Emit a PRE_TOOL_USE callback event before tool execution.
+
+        If a callback sets event.blocked = True, raises ToolApprovalRequired
+        to signal that the tool requires user approval.
+        """
+        callback_context = get_callback_context()
+
+        event = CallbackEvent(
+            event_type=CallbackEventType.PRE_TOOL_USE,
+            tool_name=tool_name,
+            tool_inputs=inputs,
+            context=callback_context,
+        )
+
+        try:
+            registry = get_global_registry()
+            await registry.emit(event)
+        except Exception as e:
+            logger.warning(f"Failed to emit PRE_TOOL_USE callback: {e}")
+            return
+
+        if event.blocked:
+            from .exceptions import ToolApprovalRequired
+
+            raise ToolApprovalRequired(
+                tool_name=tool_name,
+                tool_inputs=inputs,
+                reason=event.block_reason,
+            )
 
     async def _emit_tool_executed_callback(
         self,

@@ -14,7 +14,7 @@ from ..message import Message, MessageRole
 from .enums import ParallelPlanEventType, PlanExecuteEventType, ReActEventType, StopReason
 from .models import ExecutionWave, Plan, PlanExecuteResult, SubTask
 from .react_events import ParallelPlanEvent
-from .prompts import PLAN_AND_EXECUTE_REPLAN_PROMPT, SUBTASK_EXECUTION_PROMPT
+from .prompts import SUBTASK_EXECUTION_PROMPT
 from .react_events import PlanExecuteEvent
 from .events import EventBus
 from .orchestrator import ReActOrchestrator
@@ -763,7 +763,13 @@ class PlanAndExecuteOrchestrator:
     async def _replan(
         self, current_plan: Plan, context: RunContext, replan_attempt: int = 1
     ) -> Plan:
-        """Re-generate plan after failure with streaming.
+        """Targeted re-planning: only re-plan failed subtasks and their dependents.
+
+        Instead of regenerating the entire plan from scratch, this method:
+        1. Identifies failed subtasks and their transitive dependents
+        2. Preserves completed subtasks and their results
+        3. Asks the LLM to re-plan only the failed/dependent portion
+        4. Merges re-planned subtasks back into the plan
 
         Args:
             current_plan: Current plan with failures
@@ -771,9 +777,12 @@ class PlanAndExecuteOrchestrator:
             replan_attempt: Current replan attempt number
 
         Returns:
-            New revised plan
+            New plan with completed work preserved and failed work re-planned
         """
-        # Find failed subtasks (may be multiple in wave execution)
+        # Use targeted re-planning via get_failed_subtree
+        completed, needs_replan = current_plan.get_failed_subtree()
+
+        # Find failed subtasks for event reporting
         failed_subtasks = [st for st in current_plan.subtasks if st.status == "failed"]
         failed_subtask = failed_subtasks[0] if failed_subtasks else None
 
@@ -786,36 +795,54 @@ class PlanAndExecuteOrchestrator:
                 "failed_subtask_description": failed_subtask.description if failed_subtask else None,
                 "failure_reason": failed_subtask.error if failed_subtask else "Unknown",
                 "failed_count": len(failed_subtasks),
+                "replan_type": "targeted",
+                "preserved_count": len(completed),
+                "replan_count": len(needs_replan),
                 "replan_attempt": replan_attempt,
                 "max_replans": self.max_replans,
             },
         )
 
-        # Build plan status summary
-        plan_status = self._format_plan_status(current_plan)
-
         # Build completed context to preserve successful work
-        completed_results = [
-            (st.id, st.description, st.result[:200] if st.result else "")
-            for st in current_plan.subtasks
-            if st.status == "completed" and st.result
-        ]
-
-        if completed_results:
-            completed_context = "\n\nCompleted Work (use these results):\n" + "\n".join(
-                f"- Subtask {id} ({desc}): {result}..."
-                for id, desc, result in completed_results
+        completed_context = ""
+        if completed:
+            completed_results = []
+            for st in completed:
+                result_preview = st.result[:300] if st.result else "(no result)"
+                completed_results.append(
+                    f"- Subtask {st.id} ({st.description}): {result_preview}"
+                )
+            completed_context = (
+                "\n\nThe following subtasks completed successfully (DO NOT re-plan these):\n"
+                + "\n".join(completed_results)
             )
-        else:
-            completed_context = ""
 
-        # Build replanning prompt
-        replan_prompt = PLAN_AND_EXECUTE_REPLAN_PROMPT.format(
-            goal=current_plan.goal,
-            plan_status=plan_status,
-            failed_subtask=failed_subtask.description if failed_subtask else "Unknown",
-            error=failed_subtask.error if failed_subtask else "Unknown error",
-            completed_context=completed_context,
+        # Build failed context
+        failed_context = ""
+        if needs_replan:
+            failed_items = []
+            for st in needs_replan:
+                error_info = f" Error: {st.error}" if st.error else ""
+                status_info = f" (status: {st.status})"
+                failed_items.append(
+                    f"- Subtask {st.id} ({st.description}){status_info}{error_info}"
+                )
+            failed_context = (
+                "\n\nThe following subtasks failed or depend on failed tasks and need re-planning:\n"
+                + "\n".join(failed_items)
+            )
+
+        # Build targeted replanning prompt
+        replan_prompt = (
+            f"Goal: {current_plan.goal}\n\n"
+            f"TARGETED RE-PLANNING (attempt {replan_attempt}/{self.max_replans}):\n"
+            f"Re-plan ONLY the failed/dependent subtasks below. "
+            f"Completed work is preserved and available as context.\n"
+            f"{completed_context}\n"
+            f"{failed_context}\n\n"
+            f"Create a revised plan with ONLY the replacement subtasks. "
+            f"Use the results from completed subtasks as context. "
+            f"Respond with JSON: {{\"reasoning\": \"...\", \"subtasks\": [...]}}"
         )
 
         # Create replanning messages
@@ -828,19 +855,17 @@ class PlanAndExecuteOrchestrator:
         ):
             if chunk.delta:
                 accumulated_content += chunk.delta
-                # Emit streaming chunk for UI visibility
                 await self._publish_event(
                     PlanExecuteEventType.REPLANNING_THINKING_CHUNK,
                     {"delta": chunk.delta, "content": accumulated_content},
                 )
 
-        # Parse new plan from accumulated content
+        # Parse new subtasks from accumulated content
         plan_data = self._parse_plan_json_dict(accumulated_content)
 
-        # Convert to Plan object
-        subtasks = []
+        # Convert to SubTask objects
+        new_subtasks = []
         for idx, st_data in enumerate(plan_data.get("subtasks", []), start=1):
-            # Ensure id is always a valid integer, fallback to index if not
             raw_id = st_data.get("id")
             try:
                 subtask_id = int(raw_id) if raw_id is not None else idx
@@ -853,20 +878,26 @@ class PlanAndExecuteOrchestrator:
                 dependencies=st_data.get("dependencies", []),
                 success_criteria=st_data.get("success_criteria", ""),
             )
-            subtasks.append(subtask)
+            new_subtasks.append(subtask)
 
-        new_plan = Plan(
-            goal=current_plan.goal,
-            reasoning=plan_data.get("reasoning", "Re-planned"),
-            subtasks=subtasks,
-        )
+        # Merge completed work with new subtasks
+        new_plan = current_plan.merge_replan(completed, new_subtasks)
 
         await self._publish_event(
             PlanExecuteEventType.REPLANNING_COMPLETE,
-            {"new_plan": new_plan.to_dict(), "subtask_count": len(new_plan.subtasks)},
+            {
+                "new_plan": new_plan.to_dict(),
+                "subtask_count": len(new_plan.subtasks),
+                "preserved_count": len(completed),
+                "new_count": len(new_subtasks),
+                "replan_type": "targeted",
+            },
         )
 
-        logger.info(f"Re-planned with {len(new_plan.subtasks)} subtasks: {new_plan.reasoning}")
+        logger.info(
+            f"Targeted re-plan: preserved {len(completed)} completed, "
+            f"added {len(new_subtasks)} new subtasks"
+        )
 
         return new_plan
 

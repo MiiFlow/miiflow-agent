@@ -126,17 +126,40 @@ class ReActOrchestrator:
         event_bus: EventBus,
         safety_manager: SafetyManager,
         parser: XMLReActParser,
+        recovery_manager=None,
+        context_compressor=None,
+        tool_filter=None,
     ):
         self.tool_executor = tool_executor
         self.event_bus = event_bus
         self.safety_manager = safety_manager
         self.parser = parser
+        self.recovery_manager = recovery_manager
+        self.context_compressor = context_compressor
+        self.tool_filter = tool_filter
 
     async def execute(self, query: str, context: RunContext) -> ReActResult:
+        from .progress import ProgressTracker
+
         execution_state = ExecutionState()
+        # Extract max_steps from safety manager (first MaxStepsCondition)
+        max_steps = 25
+        for cond in self.safety_manager.conditions:
+            if hasattr(cond, 'max_steps'):
+                max_steps = cond.max_steps
+                break
+        progress_tracker = ProgressTracker(max_steps=max_steps)
 
         try:
             self._setup_context(query, context)
+
+            # Apply context compression before starting if available
+            if self.context_compressor:
+                result = await self.context_compressor.compress_if_needed(context.messages)
+                if result.was_compressed:
+                    context.messages = result.messages
+                    logger.info(f"Pre-execution context compression: {result.original_count} -> {result.compressed_count} messages")
+
             while execution_state.is_running:
                 execution_state.current_step += 1
 
@@ -154,6 +177,12 @@ class ReActOrchestrator:
 
                 execution_state.steps.append(step)
 
+                # Update progress tracker and emit progress event
+                progress_tracker.record_step(step)
+                await self.event_bus.publish(
+                    EventFactory.progress(execution_state.current_step, progress_tracker.snapshot())
+                )
+
                 # Check if clarification was requested during this step
                 if execution_state.needs_clarification:
                     logger.info("Breaking execution loop - clarification requested")
@@ -164,12 +193,30 @@ class ReActOrchestrator:
                     await self._publish_final_answer_event(step, execution_state)
                     break
 
-                # Don't break on error steps - let LLM see the error observation
-                # and continue reasoning to provide a natural response
-                # if step.is_error_step:
-                #     break
+                # Recovery: if step had an error, try recovery strategies
+                if step.is_error_step and self.recovery_manager:
+                    recovery_action = await self.recovery_manager.attempt_recovery(
+                        error=Exception(step.error or "Unknown error"),
+                        context=context,
+                        step=step,
+                        tool_name=step.action,
+                    )
+                    if not recovery_action.should_continue:
+                        logger.warning("Recovery exhausted, stopping execution")
+                        break
+                    if recovery_action.guidance_message:
+                        context.messages.append(
+                            Message(role=MessageRole.USER, content=recovery_action.guidance_message)
+                        )
+                    if recovery_action.excluded_tools and self.tool_filter:
+                        for tool_name in recovery_action.excluded_tools:
+                            self.tool_filter.add_denied(tool_name)
+                elif not (step.is_error_step) and self.recovery_manager:
+                    self.recovery_manager.record_success()
 
-            return await self._build_result(execution_state, context)
+            result = await self._build_result(execution_state, context)
+            result.progress = progress_tracker.snapshot().to_dict()
+            return result
 
         except Exception as e:
             logger.error(f"ReAct execution failed: {e}", exc_info=True)

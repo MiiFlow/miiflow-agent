@@ -88,11 +88,13 @@ Original Query: {query}
 Subagent Results:
 {subagent_results}
 
-Based on these results, provide a comprehensive, well-structured answer that:
-1. Addresses the original query directly
-2. Integrates insights from all subagents
-3. Resolves any conflicts between subagent findings
-4. Is clear and actionable for the user
+SYNTHESIS GUIDELINES:
+1. Address the original query directly — lead with the answer
+2. Do the intellectual work of combining results yourself — don't just list what each agent found
+3. When agents disagree, explain the conflict and state which finding is more reliable and why
+4. Omit redundant information — if multiple agents found the same thing, state it once
+5. Be specific — include numbers, names, and sources from the agent results
+6. If any agent failed or returned incomplete data, note the gap
 """
 
 
@@ -510,15 +512,49 @@ Complete this specific task. Stay focused on your assigned area."""
 
                 self.subagent_orchestrator.event_bus.subscribe(forward_subagent_react_event)
 
-                # Execute with ReAct orchestrator (with timeout)
+                # Create per-subagent tool filter based on role and config
+                # NOTE: We create a new isolated orchestrator per subagent to avoid
+                # race conditions when multiple subagents execute in parallel via asyncio.gather
+                from ..tools.tool_filter import ToolFilter
+                from .events import EventBus
+                from .parsing.xml_parser import XMLReActParser
+
+                subagent_tool_filter = None
+                if config.allowed_tools or config.denied_tools:
+                    subagent_tool_filter = ToolFilter(
+                        allowed_tools=config.allowed_tools,
+                        denied_tools=config.denied_tools,
+                    )
+                else:
+                    # Auto-filter based on role
+                    available = self.tool_executor.list_tools()
+                    subagent_tool_filter = ToolFilter.for_role(config.role, available)
+
+                # Create isolated orchestrator with its own tool filter, event bus, and parser
+                # to prevent race conditions in parallel execution
+                from .tool_executor import AgentToolExecutor
+                isolated_executor = AgentToolExecutor(
+                    self.subagent_orchestrator.tool_executor.agent,
+                    tool_filter=subagent_tool_filter,
+                )
+                isolated_event_bus = EventBus()
+                isolated_event_bus.subscribe(forward_subagent_react_event)
+                isolated_orchestrator = ReActOrchestrator(
+                    tool_executor=isolated_executor,
+                    event_bus=isolated_event_bus,
+                    safety_manager=self.subagent_orchestrator.safety_manager,
+                    parser=XMLReActParser(),
+                )
+
+                # Execute with isolated orchestrator (with timeout)
                 # Uses isolated_context to prevent message contamination in parallel execution
                 try:
                     result = await asyncio.wait_for(
-                        self.subagent_orchestrator.execute(subagent_query, isolated_context),
+                        isolated_orchestrator.execute(subagent_query, isolated_context),
                         timeout=self.subagent_timeout_seconds,
                     )
                 finally:
-                    self.subagent_orchestrator.event_bus.unsubscribe(forward_subagent_react_event)
+                    isolated_event_bus.unsubscribe(forward_subagent_react_event)
 
                 execution_time = time.time() - start_time
 

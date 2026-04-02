@@ -14,10 +14,11 @@ logger = logging.getLogger(__name__)
 class AgentToolExecutor:
     """Tool execution adapter following Django Manager pattern."""
 
-    def __init__(self, agent):
+    def __init__(self, agent, tool_filter=None):
         self.agent = agent
         self._tool_registry = agent.tool_registry
         self._client = agent.client
+        self.tool_filter = tool_filter  # Optional ToolFilter for narrowing available tools
 
     async def execute_tool(self, tool_name: str, inputs: dict, context=None) -> ToolResult:
         """Execute tool with context injection if context is provided.
@@ -25,6 +26,15 @@ class AgentToolExecutor:
         Emits PRE_TOOL_USE callback before execution (can block via ToolApprovalRequired).
         Emits a TOOL_EXECUTED callback event after execution for billing/tracking.
         """
+        # Check tool filter before execution
+        if self.tool_filter and not self.tool_filter.is_allowed(tool_name):
+            return ToolResult(
+                name=tool_name,
+                input=inputs,
+                output=None,
+                error=f"Tool '{tool_name}' is not available in the current execution context.",
+                success=False,
+            )
         # Emit PRE_TOOL_USE callback - allows blocking tool execution (e.g. for approval)
         await self._emit_pre_tool_use_callback(tool_name, inputs)
 
@@ -197,6 +207,10 @@ class AgentToolExecutor:
             provider_schema = self._client.client.convert_schema_to_provider_format(filtered_schema)
             native_schemas.append(provider_schema)
 
+        # Apply tool filter if configured
+        if self.tool_filter:
+            native_schemas = self.tool_filter.filter_schemas(native_schemas)
+
         logger.debug(
             f"Built {len(native_schemas)} native tool schemas for provider {self._client.client.provider_name}"
         )
@@ -277,10 +291,17 @@ class AgentToolExecutor:
         return schema
 
     def list_tools(self) -> List[str]:
-        return self._tool_registry.list_tools()
+        tools = self._tool_registry.list_tools()
+        if self.tool_filter:
+            return self.tool_filter.filter_tool_names(tools)
+        return tools
 
     def has_tool(self, tool_name: str) -> bool:
-        return tool_name in self._tool_registry.tools
+        if tool_name not in self._tool_registry.tools:
+            return False
+        if self.tool_filter and not self.tool_filter.is_allowed(tool_name):
+            return False
+        return True
 
     def get_tool_schema(self, tool_name: str) -> dict:
         tool = self._tool_registry.tools.get(tool_name)

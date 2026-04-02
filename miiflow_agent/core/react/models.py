@@ -87,7 +87,8 @@ class ReActResult:
     # Clarification data (when stop_reason == NEEDS_CLARIFICATION)
     clarification_data: Optional[Dict[str, Any]] = None
 
-    # Tracing
+    # Progress snapshot (from ProgressTracker)
+    progress: Optional[Dict[str, Any]] = None
 
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -277,6 +278,96 @@ class Plan:
             return 0.0
         return (self.completed_subtasks / self.total_subtasks) * 100
 
+    def get_dependents(self, subtask_id: int) -> List[int]:
+        """Get all subtask IDs that depend on the given subtask (transitive).
+
+        Walks the dependency graph to find all downstream dependents,
+        not just direct dependents.
+
+        Args:
+            subtask_id: ID of the subtask to find dependents for.
+
+        Returns:
+            List of subtask IDs that transitively depend on subtask_id.
+        """
+        # Build reverse dependency map: id -> list of IDs that depend on it
+        reverse_deps: Dict[int, List[int]] = {}
+        for st in self.subtasks:
+            for dep_id in st.dependencies:
+                reverse_deps.setdefault(dep_id, []).append(st.id)
+
+        # BFS to find all transitive dependents
+        visited = set()
+        queue = [subtask_id]
+        while queue:
+            current = queue.pop(0)
+            for dependent_id in reverse_deps.get(current, []):
+                if dependent_id not in visited:
+                    visited.add(dependent_id)
+                    queue.append(dependent_id)
+
+        return sorted(visited)
+
+    def get_failed_subtree(self) -> tuple:
+        """Partition subtasks into completed and needs-replan groups.
+
+        Failed subtasks and their transitive dependents need re-planning.
+        Completed subtasks are preserved.
+
+        Returns:
+            Tuple of (completed_subtasks, subtasks_needing_replan).
+        """
+        completed = []
+        failed_ids = set()
+
+        # Find directly failed subtasks
+        for st in self.subtasks:
+            if st.status == "failed":
+                failed_ids.add(st.id)
+            elif st.status == "completed":
+                completed.append(st)
+
+        # Find all transitive dependents of failed subtasks
+        needs_replan_ids = set(failed_ids)
+        for failed_id in failed_ids:
+            dependents = self.get_dependents(failed_id)
+            needs_replan_ids.update(dependents)
+
+        needs_replan = [st for st in self.subtasks if st.id in needs_replan_ids]
+
+        return completed, needs_replan
+
+    def merge_replan(self, completed: List["SubTask"], new_subtasks: List["SubTask"]) -> "Plan":
+        """Merge completed subtasks with re-planned subtasks into a new plan.
+
+        Args:
+            completed: Subtasks that completed successfully (preserved).
+            new_subtasks: New subtasks from re-planning (replacing failed ones).
+
+        Returns:
+            New Plan with completed work preserved and failed work re-planned.
+        """
+        # Preserve completed subtasks as-is
+        merged = list(completed)
+
+        # Add new subtasks, adjusting IDs to avoid conflicts
+        existing_ids = {st.id for st in merged}
+        next_id = max(existing_ids) + 1 if existing_ids else 1
+
+        for st in new_subtasks:
+            if st.id in existing_ids:
+                st.id = next_id
+                next_id += 1
+            existing_ids.add(st.id)
+            merged.append(st)
+
+        return Plan(
+            subtasks=merged,
+            goal=self.goal,
+            reasoning=f"Targeted re-plan: preserved {len(completed)} completed, added {len(new_subtasks)} new subtasks",
+            metadata={**self.metadata, "replan_type": "targeted"},
+        )
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert plan to dictionary."""
         return {
@@ -308,6 +399,9 @@ class PlanExecuteResult:
 
     # Clarification data (when stop_reason == NEEDS_CLARIFICATION)
     clarification_data: Optional[Dict[str, Any]] = None
+
+    # Progress snapshot
+    progress: Optional[Dict[str, Any]] = None
 
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -382,6 +476,10 @@ class SubAgentConfig:
     system_prompt: Optional[str] = None
     max_steps: int = 25
 
+    # Tool filtering per subagent
+    allowed_tools: Optional[List[str]] = None  # Allowlist (None = all)
+    denied_tools: Optional[List[str]] = None  # Denylist
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""
         return {
@@ -392,6 +490,8 @@ class SubAgentConfig:
             "output_key": self.output_key,
             "system_prompt": self.system_prompt,
             "max_steps": self.max_steps,
+            "allowed_tools": self.allowed_tools,
+            "denied_tools": self.denied_tools,
         }
 
 
@@ -459,6 +559,9 @@ class MultiAgentResult:
 
     # Clarification data (when stop_reason == NEEDS_CLARIFICATION)
     clarification_data: Optional[Dict[str, Any]] = None
+
+    # Progress snapshot
+    progress: Optional[Dict[str, Any]] = None
 
     metadata: Dict[str, Any] = field(default_factory=dict)
 

@@ -104,6 +104,8 @@ class Agent(Generic[Deps, Result]):
         max_tokens: Optional[int] = None,
         tools: Optional[List[FunctionTool]] = None,
         json_schema: Optional[Dict[str, Any]] = None,
+        context_compression: bool = True,
+        max_context_tokens: Optional[int] = None,
     ):
         self.client = client
         self.agent_type = agent_type
@@ -113,6 +115,18 @@ class Agent(Generic[Deps, Result]):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.json_schema = json_schema
+
+        # Context compression: enabled by default for multi-step agent types
+        self._context_compressor = None
+        if context_compression and agent_type in (
+            AgentType.REACT, AgentType.PLAN_AND_EXECUTE,
+            AgentType.PARALLEL_PLAN, AgentType.MULTI_AGENT,
+        ):
+            from .context_compression import ContextCompressor
+            self._context_compressor = ContextCompressor(
+                client=client,
+                max_context_tokens=max_context_tokens,
+            )
 
         # Share the tool registry with LLMClient for consistency
         self.tool_registry = self.client.tool_registry
@@ -559,6 +573,14 @@ class Agent(Generic[Deps, Result]):
         """Internal: Run agent in ReAct mode with streaming events."""
         from .react import ReActFactory
 
+        # Create recovery manager (always enabled for ReAct agents)
+        # Works with or without compressor — RETRY_WITH_GUIDANCE and SIMPLIFY_TOOLS
+        # don't need one, only COMPRESS_AND_RETRY does (and it handles None gracefully)
+        from .react.recovery import RecoveryManager
+        recovery_manager = RecoveryManager(
+            context_compressor=self._context_compressor,
+        )
+
         orchestrator = ReActFactory.create_orchestrator(
             agent=self,
             max_steps=max_steps,
@@ -567,6 +589,8 @@ class Agent(Generic[Deps, Result]):
             event_format=event_format,
             thread_id=thread_id,
             message_id=message_id,
+            recovery_manager=recovery_manager,
+            context_compressor=self._context_compressor,
         )
 
         # Real-time streaming setup
@@ -650,6 +674,7 @@ class Agent(Generic[Deps, Result]):
             event_format=event_format,
             thread_id=thread_id,
             message_id=message_id,
+            context_compressor=self._context_compressor,
         )
 
         # Create Plan and Execute orchestrator
@@ -746,6 +771,7 @@ class Agent(Generic[Deps, Result]):
             event_format=event_format,
             thread_id=thread_id,
             message_id=message_id,
+            context_compressor=self._context_compressor,
         )
 
         # Create Plan&Execute orchestrator with parallel execution enabled
@@ -841,6 +867,7 @@ class Agent(Generic[Deps, Result]):
             event_format=event_format,
             thread_id=thread_id,
             message_id=message_id,
+            context_compressor=self._context_compressor,
         )
 
         # Create Multi-Agent orchestrator

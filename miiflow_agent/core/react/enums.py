@@ -21,6 +21,7 @@ class ReActEventType(Enum):
     TOOL_APPROVAL_NEEDED = "tool_approval_needed"  # Tool requires user approval before execution
     VISUALIZATION = "visualization"  # Tool returned a visualization result
     MEDIA = "media"  # Tool returned a media result (image/video/audio)
+    PROGRESS = "progress"  # Progress snapshot update
 
 
 class StopReason(Enum):
@@ -35,6 +36,7 @@ class StopReason(Enum):
     FORCED_STOP = "forced_stop"
     USER_CANCELLED = "user_cancelled"
     NEEDS_CLARIFICATION = "needs_clarification"  # Agent needs user input to continue
+    RECOVERY_EXHAUSTED = "recovery_exhausted"  # All recovery strategies exhausted
 
 
 class PlanExecuteEventType(Enum):

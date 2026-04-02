@@ -64,6 +64,18 @@ from .core.callback_context import (
     set_callback_context,
 )
 
+# Context compression
+from .core.context_compression import CompressionStrategy, ContextCompressor
+
+# Recovery strategies
+from .core.react.recovery import RecoveryManager, RecoveryStrategy
+
+# Progress tracking
+from .core.react.progress import ProgressSnapshot, ProgressTracker, ToolActivity
+
+# Tool filtering
+from .core.tools.tool_filter import ToolFilter
+
 # Exceptions
 from .core.exceptions import (
     AuthenticationError,
@@ -124,6 +136,18 @@ __all__ = [
     "reset_callback_context",
     "set_callback_context",
     "unregister",
+    # Context compression
+    "ContextCompressor",
+    "CompressionStrategy",
+    # Recovery strategies
+    "RecoveryManager",
+    "RecoveryStrategy",
+    # Progress tracking
+    "ProgressTracker",
+    "ProgressSnapshot",
+    "ToolActivity",
+    # Tool filtering
+    "ToolFilter",
     # Exceptions
     "MiiflowLLMError",
     "ProviderError",

@@ -561,3 +561,20 @@ class EventFactory:
                 "action": action,
             }
         )
+
+    @staticmethod
+    def progress(step_number: int, snapshot) -> ReActEvent:
+        """Create progress snapshot event.
+
+        Args:
+            step_number: Current step number
+            snapshot: ProgressSnapshot instance
+
+        Returns:
+            ReActEvent with PROGRESS type
+        """
+        return ReActEvent(
+            event_type=ReActEventType.PROGRESS,
+            step_number=step_number,
+            data={"progress": snapshot.to_dict() if hasattr(snapshot, 'to_dict') else snapshot}
+        )

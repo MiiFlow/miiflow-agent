@@ -372,9 +372,41 @@ class ReActOrchestrator:
                             # Answer complete - sanitize to remove any residual XML tags
                             step.answer = _strip_xml_tags_from_answer(parse_event.data["answer"])
 
-                    # Note: If chunk was not parsed (no XML tags), we accumulate in buffer
-                    # but don't emit yet since we can't distinguish thinking from answer
-                    # without XML tags. We'll classify and emit after streaming completes.
+                    # Native tool calling: when the LLM does NOT wrap its answer
+                    # in <answer>...</answer> XML tags, the parser above never
+                    # emits ANSWER_CHUNK and the user would otherwise see one
+                    # giant chunk at the end of the step (the fallback at the
+                    # bottom of this method).
+                    #
+                    # To restore real-time token streaming for the final
+                    # answer, emit each text delta as a final_answer_chunk
+                    # AS IT ARRIVES, gated on:
+                    #   - the XML parser has not taken over (no <answer> tag),
+                    #     otherwise we would double-emit alongside the
+                    #     ANSWER_CHUNK branch above; and
+                    #   - no tool calls have been accumulated yet in THIS
+                    #     step. Once a tool call appears, this step is a
+                    #     tool step, and any further text in the same step
+                    #     is intermediate narration, not the final answer.
+                    #
+                    # `state.accumulated_answer` is shared with the
+                    # ANSWER_CHUNK branch and the fallback, so populating it
+                    # here also makes the fallback skip its one-big-chunk
+                    # emission (see line ~722 below).
+                    if (
+                        not state.ready_for_answer
+                        and not accumulated_tool_calls
+                    ):
+                        if not hasattr(state, "accumulated_answer"):
+                            state.accumulated_answer = ""
+                        state.accumulated_answer += chunk.delta
+                        await self.event_bus.publish(
+                            EventFactory.final_answer_chunk(
+                                state.current_step,
+                                chunk.delta,
+                                state.accumulated_answer,
+                            )
+                        )
 
                 # Handle native extended thinking (e.g. Anthropic thinking blocks)
                 if getattr(chunk, "thinking_delta", None):

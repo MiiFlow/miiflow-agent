@@ -64,7 +64,10 @@ class XAIClient(ModelClient):
     ) -> ChatResponse:
         """Send chat completion request to xAI Grok."""
         try:
-            openai_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
+            # Offload sync DocumentBlock I/O / PDF extraction off the event loop.
+            openai_messages = await asyncio.to_thread(
+                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
+            )
             
             request_params = {
                 "model": self.model,
@@ -141,7 +144,10 @@ class XAIClient(ModelClient):
     ) -> AsyncIterator[StreamChunk]:
         """Send streaming chat completion request to xAI Grok."""
         try:
-            openai_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
+            # Offload sync DocumentBlock I/O / PDF extraction off the event loop.
+            openai_messages = await asyncio.to_thread(
+                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
+            )
 
             request_params = {
                 "model": self.model,

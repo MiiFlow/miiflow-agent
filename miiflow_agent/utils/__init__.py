@@ -12,6 +12,12 @@ from .image import (
     url_to_bytes_and_mimetype,
     detect_mimetype_from_bytes,
     image_url_to_bytes,
+    resize_image_for_api,
+    ImageResizeError,
+    API_IMAGE_MAX_BASE64_SIZE,
+    IMAGE_TARGET_RAW_SIZE,
+    IMAGE_MAX_WIDTH,
+    IMAGE_MAX_HEIGHT,
 )
 
 __all__ = [
@@ -27,4 +33,10 @@ __all__ = [
     "url_to_bytes_and_mimetype",
     "detect_mimetype_from_bytes",
     "image_url_to_bytes",
+    "resize_image_for_api",
+    "ImageResizeError",
+    "API_IMAGE_MAX_BASE64_SIZE",
+    "IMAGE_TARGET_RAW_SIZE",
+    "IMAGE_MAX_WIDTH",
+    "IMAGE_MAX_HEIGHT",
 ]

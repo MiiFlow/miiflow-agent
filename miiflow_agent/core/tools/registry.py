@@ -36,7 +36,14 @@ class ToolRegistry:
     - MCPTool: Model Context Protocol server tools
     """
 
-    def __init__(self, allowlist: Optional[List[str]] = None, enable_logging: bool = True):
+    def __init__(
+        self,
+        allowlist: Optional[List[str]] = None,
+        enable_logging: bool = True,
+        *,
+        tool_search_enabled: bool = True,
+        tool_search_threshold: Optional[int] = None,
+    ):
         self.tools: Dict[str, FunctionTool] = {}
         self.http_tools: Dict[str, HTTPTool] = {}
         self.mcp_tools: Dict[str, MCPTool] = {}
@@ -48,6 +55,20 @@ class ToolRegistry:
         self._sanitized_to_original: Dict[str, str] = {}
         # Native MCP servers (for provider-side execution)
         self._native_mcp_servers: List[NativeMCPServerConfig] = []
+
+        # ToolSearch: provider-agnostic deferred-tool discovery.
+        from . import tool_search as _tool_search_mod
+
+        self.tool_search_enabled = tool_search_enabled
+        self.tool_search_threshold = (
+            tool_search_threshold
+            if tool_search_threshold is not None
+            else _tool_search_mod.DEFAULT_TOOL_SEARCH_THRESHOLD
+        )
+        # Cached lowercase searchable text per tool name (built lazily).
+        self._search_index: Dict[str, str] = {}
+        # The built-in tool_search FunctionTool, lazily built on first need.
+        self._tool_search_tool: Optional[FunctionTool] = None
 
     def register(self, tool) -> None:
         """Register a function tool with allowlist validation."""
@@ -78,6 +99,12 @@ class ToolRegistry:
         if sanitized_name != tool_name:
             self._sanitized_to_original[sanitized_name] = tool_name
 
+        self._index_tool_for_search(
+            tool_name,
+            getattr(tool.definition, "description", "") or "",
+            getattr(tool.definition, "metadata", {}) or {},
+        )
+
         if self.enable_logging:
             logger.info(f"Registered function tool: {tool_name}")
 
@@ -105,8 +132,23 @@ class ToolRegistry:
         if sanitized_name != schema.name:
             self._sanitized_to_original[sanitized_name] = schema.name
 
+        self._index_tool_for_search(schema.name, schema.description or "", schema.metadata or {})
+
         if self.enable_logging:
             logger.info(f"Registered HTTP tool: {schema.name} -> {schema.url}")
+
+    def _index_tool_for_search(
+        self,
+        tool_name: str,
+        description: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Cache the lowercase searchable text for a tool."""
+        from . import tool_search as _tool_search_mod
+
+        self._search_index[tool_name] = _tool_search_mod.build_searchable_text(
+            tool_name, description or "", metadata or {}
+        ).lower()
 
     def _resolve_name(self, name: str) -> str:
         """Resolve a potentially sanitized name back to the original name."""
@@ -148,6 +190,12 @@ class ToolRegistry:
         sanitized_name = _sanitize_tool_name(tool.name)
         if sanitized_name != tool.name:
             self._sanitized_to_original[sanitized_name] = tool.name
+
+        self._index_tool_for_search(
+            tool.name,
+            getattr(tool, "description", "") or getattr(getattr(tool, "schema", None), "description", "") or "",
+            getattr(getattr(tool, "schema", None), "metadata", {}) or {},
+        )
 
         if self.enable_logging:
             logger.info(
@@ -263,10 +311,176 @@ class ToolRegistry:
 
         return schemas
 
+    # ------------------------------------------------------------------
+    # ToolSearch (provider-agnostic deferred-tool discovery)
+    # ------------------------------------------------------------------
+
+    def _iter_all_tool_entries(self):
+        """Yield (name, description, metadata) for every registered tool."""
+        for name, t in self.tools.items():
+            md = getattr(getattr(t, "definition", None), "metadata", {}) or {}
+            desc = getattr(getattr(t, "definition", None), "description", "") or ""
+            yield name, desc, md
+        for name, t in self.http_tools.items():
+            md = getattr(getattr(t, "schema", None), "metadata", {}) or {}
+            desc = getattr(getattr(t, "schema", None), "description", "") or ""
+            yield name, desc, md
+        for name, t in self.mcp_tools.items():
+            md = getattr(getattr(t, "schema", None), "metadata", {}) or {}
+            desc = getattr(t, "description", "") or getattr(getattr(t, "schema", None), "description", "") or ""
+            yield name, desc, md
+
+    def total_tool_count(self) -> int:
+        """Number of registered tools across all kinds (excluding the meta-tool)."""
+        return len(self.tools) + len(self.http_tools) + len(self.mcp_tools)
+
+    def should_use_tool_search(self, threshold: Optional[int] = None) -> bool:
+        """Whether ToolSearch should activate for the next LLM call.
+
+        Activates when ``tool_search_enabled`` is True and the registered tool
+        count exceeds ``threshold`` (or ``self.tool_search_threshold``).
+        """
+        if not self.tool_search_enabled:
+            return False
+        limit = threshold if threshold is not None else self.tool_search_threshold
+        return self.total_tool_count() > limit
+
+    def get_always_load_names(self) -> List[str]:
+        """Names of tools flagged ``always_load`` in their schema metadata."""
+        names: List[str] = []
+        for name, _desc, md in self._iter_all_tool_entries():
+            if md.get("always_load"):
+                names.append(name)
+        return names
+
+    def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        """Lexically rank registered tools against ``query``.
+
+        Returns up to ``max_results`` entries shaped as
+        ``{"name", "description", "parameters"}`` (universal JSON schema).
+        The built-in ``tool_search`` meta-tool is excluded from results.
+        """
+        from . import tool_search as _tool_search_mod
+
+        query_tokens = _tool_search_mod._tokenize(query or "")
+        if not query_tokens:
+            return []
+
+        scored: List[tuple] = []
+        for name, _desc, _md in self._iter_all_tool_entries():
+            if name == _tool_search_mod.TOOL_SEARCH_TOOL_NAME:
+                continue
+            text = self._search_index.get(name)
+            if text is None:
+                # Late-indexed tool (registered before this build); skip silently.
+                continue
+            score = _tool_search_mod.score_tool(query_tokens, text)
+            if score > 0:
+                scored.append((score, name))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        results: List[Dict[str, Any]] = []
+        for _score, name in scored[:max_results]:
+            schema = self._get_universal_schema(name)
+            if schema is not None:
+                results.append(schema)
+        return results
+
+    def _get_universal_schema(self, name: str) -> Optional[Dict[str, Any]]:
+        """Return the universal-format schema for any registered tool by name."""
+        if name in self.tools:
+            return self.tools[name].definition.to_universal_schema()
+        if name in self.http_tools:
+            return self.http_tools[name].schema.to_universal_schema()
+        if name in self.mcp_tools:
+            return self.mcp_tools[name].schema.to_universal_schema()
+        return None
+
+    def get_tool_search_tool(self) -> "FunctionTool":
+        """Return (and lazily build) the ``tool_search`` meta-tool.
+
+        The tool is *not* inserted into ``self.tools``: it lives on its own
+        attribute so it never leaks into ``list_tools()``, ``get_schemas()``,
+        or any code that iterates the registry. ``execute_safe`` and
+        ``get_filtered_schemas`` route to it explicitly.
+        """
+        from . import tool_search as _tool_search_mod
+
+        if self._tool_search_tool is None:
+            self._tool_search_tool = _tool_search_mod.build_tool_search_tool(self)
+            self.execution_stats[self._tool_search_tool.name] = {
+                "calls": 0,
+                "successes": 0,
+                "failures": 0,
+                "total_time": 0.0,
+            }
+        return self._tool_search_tool
+
+    def get_filtered_schemas(
+        self,
+        provider: str,
+        client=None,
+        enabled_names: Optional[set] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return schemas for the next LLM turn under ToolSearch.
+
+        Always includes: the ``tool_search`` meta-tool, every tool flagged
+        ``always_load``, and any tools the model has already discovered (via
+        ``enabled_names``). All other tools are hidden until ``tool_search``
+        surfaces them.
+        """
+        # Build the meta-tool (lives off-registry so it never leaks into
+        # legacy schema callers).
+        meta_tool = self.get_tool_search_tool()
+
+        visible: set = set(self.get_always_load_names())
+        if enabled_names:
+            visible.update(enabled_names)
+
+        schemas: List[Dict[str, Any]] = []
+
+        def _format(universal_or_tool, formatter_obj) -> Dict[str, Any]:
+            if client and hasattr(client, "convert_schema_to_provider_format"):
+                return client.convert_schema_to_provider_format(
+                    formatter_obj.to_universal_schema()
+                )
+            return formatter_obj.to_provider_format(provider)
+
+        # Always include the meta-tool first.
+        schemas.append(_format(meta_tool, meta_tool.definition))
+
+        for name, tool in self.tools.items():
+            if name not in visible:
+                continue
+            schemas.append(_format(tool, tool.definition))
+        for name, http_tool in self.http_tools.items():
+            if name not in visible:
+                continue
+            schemas.append(_format(http_tool, http_tool.schema))
+        for name, mcp_tool in self.mcp_tools.items():
+            if name not in visible:
+                continue
+            if client and hasattr(client, "convert_schema_to_provider_format"):
+                schemas.append(
+                    client.convert_schema_to_provider_format(mcp_tool.schema.to_universal_schema())
+                )
+            else:
+                schemas.append(mcp_tool.to_provider_format(provider))
+
+        return schemas
+
     def validate_tool_call(self, name: str, **kwargs) -> bool:
         """Validate a tool call against schema and allowlist."""
         # Resolve sanitized name back to original (for OpenAI compatibility)
         resolved_name = self._resolve_name(name)
+
+        # The off-registry tool_search meta-tool is always valid when active.
+        if (
+            self._tool_search_tool is not None
+            and resolved_name == self._tool_search_tool.name
+        ):
+            return True
 
         if (
             resolved_name not in self.tools
@@ -302,6 +516,33 @@ class ToolRegistry:
 
         if resolved_name in self.execution_stats:
             self.execution_stats[resolved_name]["calls"] += 1
+
+        # Route the off-registry tool_search meta-tool, if active.
+        if (
+            self._tool_search_tool is not None
+            and resolved_name == self._tool_search_tool.name
+        ):
+            try:
+                result = await self._tool_search_tool.acall(**kwargs)
+                stats = self.execution_stats.get(resolved_name)
+                if stats is not None:
+                    stats["total_time"] += result.execution_time
+                    if result.success:
+                        stats["successes"] += 1
+                    else:
+                        stats["failures"] += 1
+                return result
+            except Exception as e:
+                if resolved_name in self.execution_stats:
+                    self.execution_stats[resolved_name]["failures"] += 1
+                return ToolResult(
+                    name=resolved_name,
+                    input=kwargs,
+                    output=None,
+                    error=f"tool_search execution failed: {e}",
+                    success=False,
+                    metadata={"error_type": "tool_search_error"},
+                )
 
         function_tool = self.get(tool_name)
         http_tool = self.get_http_tool(tool_name)

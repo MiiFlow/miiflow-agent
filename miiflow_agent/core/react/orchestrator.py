@@ -172,8 +172,43 @@ class ReActOrchestrator:
                 if await self._should_stop(execution_state):
                     break
 
-                # Execute reasoning step with native tool calling
-                step = await self._execute_reasoning_step_native(context, execution_state)
+                # Execute reasoning step with native tool calling.
+                # Catch context-overflow / token-limit errors here so the
+                # recovery manager (which knows how to compact) gets a chance
+                # before we abort the whole run.
+                try:
+                    step = await self._execute_reasoning_step_native(context, execution_state)
+                except Exception as _llm_err:
+                    from .recovery import is_context_overflow_error
+
+                    if not is_context_overflow_error(_llm_err) or not self.recovery_manager:
+                        raise
+                    logger.warning(
+                        "LLM call hit context-overflow error; attempting compaction recovery: %s",
+                        _llm_err,
+                    )
+                    recovery_action = await self.recovery_manager.attempt_recovery(
+                        error=_llm_err,
+                        context=context,
+                        step=None,
+                        tool_name=None,
+                    )
+                    if not recovery_action.should_continue:
+                        logger.warning(
+                            "Context-overflow recovery exhausted; stopping execution"
+                        )
+                        break
+                    if recovery_action.guidance_message:
+                        context.messages.append(
+                            Message(
+                                role=MessageRole.USER,
+                                content=recovery_action.guidance_message,
+                            )
+                        )
+                    # Skip the rest of this iteration; the next loop turn will
+                    # retry the reasoning step against the (now compacted)
+                    # message history.
+                    continue
 
                 execution_state.steps.append(step)
 

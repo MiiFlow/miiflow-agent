@@ -15,6 +15,46 @@ from ..message import Message, MessageRole
 logger = logging.getLogger(__name__)
 
 
+# Substrings used to detect context-overflow / max-tokens errors across
+# providers. Each provider raises its own exception class with its own message,
+# so we sniff strings as a portable lowest-common-denominator. The check is
+# best-effort: a false positive only means we try compaction once before
+# falling through to the normal recovery ladder.
+_CONTEXT_OVERFLOW_HINTS = (
+    "context length",
+    "context_length",
+    "context window",
+    "maximum context",
+    "max_tokens",
+    "max output tokens",
+    "max_output_tokens",
+    "too many tokens",
+    "prompt is too long",
+    "input is too long",
+    "exceeded the context",
+    "string too long",
+    "request too large",
+)
+
+
+def is_context_overflow_error(error: BaseException) -> bool:
+    """Heuristically classify ``error`` as a context-overflow / token-limit error.
+
+    Works across providers (Anthropic, OpenAI, Gemini, Groq, ...) by matching
+    common phrases in the exception message and class name. Returns False for
+    None or unrelated errors.
+    """
+    if error is None:
+        return False
+    text = (str(error) or "").lower()
+    cls = type(error).__name__.lower()
+    if any(hint in text for hint in _CONTEXT_OVERFLOW_HINTS):
+        return True
+    if "contextlength" in cls or "tokenlimit" in cls:
+        return True
+    return False
+
+
 class RecoveryStrategy(Enum):
     """Available recovery strategies, ordered by aggressiveness."""
 
@@ -109,6 +149,16 @@ class RecoveryManager:
         # Track per-tool failures
         if tool_name:
             self._tool_error_counts[tool_name] = self._tool_error_counts.get(tool_name, 0) + 1
+
+        # Context-overflow / token-limit errors are special: the only useful
+        # response is to compact the conversation. Jump straight to the
+        # compression strategy regardless of attempt index, so we don't waste
+        # an attempt on RETRY_WITH_GUIDANCE that will hit the same wall.
+        if is_context_overflow_error(error) and self.context_compressor is not None:
+            logger.info(
+                "Detected context-overflow error; routing recovery to COMPRESS_AND_RETRY"
+            )
+            return await self._apply_compression(error, context, tool_name)
 
         # Exhausted all recovery attempts
         if self._attempt_count > self.max_recovery_attempts:

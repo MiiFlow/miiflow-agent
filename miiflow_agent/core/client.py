@@ -316,8 +316,19 @@ class LLMClient:
                 ]
                 all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
                 formatted_tools = [s for s in all_schemas if self._extract_tool_name(s) in tool_names]
-            elif self.tool_registry.tools:
-                formatted_tools = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+            elif self.tool_registry.tools or self.tool_registry.http_tools or self.tool_registry.mcp_tools:
+                from .tools.tool_search import get_enabled_tool_names, is_session_active
+
+                if is_session_active() and self.tool_registry.should_use_tool_search():
+                    formatted_tools = self.tool_registry.get_filtered_schemas(
+                        self.client.provider_name,
+                        self.client,
+                        enabled_names=get_enabled_tool_names(),
+                    )
+                else:
+                    formatted_tools = self.tool_registry.get_schemas(
+                        self.client.provider_name, self.client
+                    )
 
         # Check for native MCP servers and pass to provider if supported
         if self.tool_registry.has_native_mcp_servers() and self._supports_native_mcp():
@@ -423,8 +434,19 @@ class LLMClient:
                 ]
                 all_schemas = self.tool_registry.get_schemas(self.client.provider_name, self.client)
                 formatted_tools = [s for s in all_schemas if self._extract_tool_name(s) in tool_names]
-            elif self.tool_registry.tools:
-                formatted_tools = self.tool_registry.get_schemas(self.client.provider_name, self.client)
+            elif self.tool_registry.tools or self.tool_registry.http_tools or self.tool_registry.mcp_tools:
+                from .tools.tool_search import get_enabled_tool_names, is_session_active
+
+                if is_session_active() and self.tool_registry.should_use_tool_search():
+                    formatted_tools = self.tool_registry.get_filtered_schemas(
+                        self.client.provider_name,
+                        self.client,
+                        enabled_names=get_enabled_tool_names(),
+                    )
+                else:
+                    formatted_tools = self.tool_registry.get_schemas(
+                        self.client.provider_name, self.client
+                    )
 
         # Check for native MCP servers and pass to provider if supported
         if self.tool_registry.has_native_mcp_servers() and self._supports_native_mcp():

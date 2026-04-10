@@ -61,6 +61,16 @@ from .decorators import (
     auto_register_tools,
 )
 
+# ToolSearch (provider-agnostic deferred-tool discovery)
+from .tool_search import (
+    DEFAULT_MAX_RESULTS as TOOL_SEARCH_DEFAULT_MAX_RESULTS,
+    DEFAULT_TOOL_SEARCH_THRESHOLD,
+    TOOL_SEARCH_TOOL_NAME,
+    get_enabled_tool_names,
+    is_session_active as tool_search_session_active,
+    tool_search_session,
+)
+
 # Schema utilities
 from .schema_utils import (
     get_fun_schema,
@@ -157,6 +167,14 @@ __all__ = [
     "MCPConnectionError",
     "MCPToolError",
     "MCPTimeoutError",
+
+    # ToolSearch
+    "tool_search_session",
+    "tool_search_session_active",
+    "get_enabled_tool_names",
+    "TOOL_SEARCH_TOOL_NAME",
+    "DEFAULT_TOOL_SEARCH_THRESHOLD",
+    "TOOL_SEARCH_DEFAULT_MAX_RESULTS",
 
     # HTTP utilities
     "get_proxy_config",

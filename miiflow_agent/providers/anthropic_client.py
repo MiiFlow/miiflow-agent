@@ -180,7 +180,7 @@ class AnthropicClient(ModelClient):
                         try:
                             from ..utils.image import url_to_base64_and_mimetype
                             base64_content, media_type = url_to_base64_and_mimetype(
-                                block.image_url
+                                block.image_url, resize=True
                             )
                             content_list.append(
                                 {
@@ -302,7 +302,12 @@ class AnthropicClient(ModelClient):
         """
         try:
 
-            system_content, anthropic_messages = self._prepare_messages(messages)
+            # _prepare_messages may download images via blocking httpx and run
+            # Pillow resize — both CPU/I/O bound. Offload to a worker thread so
+            # we never stall the event loop under ASGI servers.
+            system_content, anthropic_messages = await asyncio.to_thread(
+                self._prepare_messages, messages
+            )
 
             # Extract thinking parameters from kwargs (won't be passed to API directly)
             thinking_enabled = kwargs.pop("thinking_enabled", False)
@@ -579,7 +584,10 @@ class AnthropicClient(ModelClient):
         logger = logging.getLogger(__name__)
 
         try:
-            system_content, anthropic_messages = self._prepare_messages(messages)
+            # Offload sync image-download + Pillow resize work off the event loop.
+            system_content, anthropic_messages = await asyncio.to_thread(
+                self._prepare_messages, messages
+            )
 
             # Extract thinking parameters from kwargs (won't be passed to API directly)
             thinking_enabled = kwargs.pop("thinking_enabled", False)

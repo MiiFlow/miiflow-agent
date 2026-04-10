@@ -352,7 +352,7 @@ class GeminiClient(ModelClient):
                         elif isinstance(block, ImageBlock):
                             try:
                                 image_bytes, mime_type = await image_url_to_bytes(
-                                    block.image_url, timeout=self.timeout
+                                    block.image_url, timeout=self.timeout, resize=True
                                 )
                                 # REST API needs base64 string
                                 b64_data = base64.b64encode(image_bytes).decode("utf-8")

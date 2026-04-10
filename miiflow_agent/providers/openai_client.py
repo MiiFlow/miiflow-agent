@@ -184,7 +184,12 @@ class OpenAIClient(ModelClient):
 
         # Use standard Chat Completions API
         try:
-            openai_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
+            # convert_message_to_provider_format may do blocking I/O for
+            # DocumentBlocks (httpx.get, PDF extraction) — offload to a worker
+            # thread so the event loop stays free under ASGI servers.
+            openai_messages = await asyncio.to_thread(
+                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
+            )
 
             request_params = {
                 "model": self.model,
@@ -522,7 +527,10 @@ class OpenAIClient(ModelClient):
 
         # Use standard Chat Completions API streaming
         try:
-            openai_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
+            # Offload sync DocumentBlock I/O / PDF extraction off the event loop.
+            openai_messages = await asyncio.to_thread(
+                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
+            )
 
             request_params = {
                 "model": self.model,

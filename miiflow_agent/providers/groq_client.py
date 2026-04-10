@@ -51,7 +51,10 @@ class GroqClient(ModelClient):
     ) -> ChatResponse:
         """Send chat completion request to Groq."""
         try:
-            groq_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
+            # Offload sync DocumentBlock I/O / PDF extraction off the event loop.
+            groq_messages = await asyncio.to_thread(
+                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
+            )
 
             request_params = {
                 "model": self.model,
@@ -142,7 +145,10 @@ class GroqClient(ModelClient):
     ) -> AsyncIterator[StreamChunk]:
         """Send streaming chat completion request to Groq."""
         try:
-            groq_messages = [self.convert_message_to_provider_format(msg) for msg in messages]
+            # Offload sync DocumentBlock I/O / PDF extraction off the event loop.
+            groq_messages = await asyncio.to_thread(
+                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
+            )
 
             request_params = {
                 "model": self.model,

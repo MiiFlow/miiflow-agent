@@ -33,6 +33,16 @@ Deps = TypeVar("Deps")
 Result = TypeVar("Result")
 
 
+class _NullCM:
+    """No-op context manager used when an outer ToolSearch session is active."""
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
 class AgentType(Enum):
     SINGLE_HOP = "single_hop"  # Simple, direct response
     REACT = "react"  # ReAct with multi-hop reasoning
@@ -196,6 +206,23 @@ class Agent(Generic[Deps, Result]):
         message_history: Optional[List[Message]] = None,
     ) -> RunResult[Result]:
         """Run the agent with dependency injection (stateless)."""
+        from .callback_context import get_callback_context
+        from .callbacks import CallbackEvent, CallbackEventType, get_global_registry
+        from .tools.tool_search import tool_search_session
+
+        # Open a per-run ToolSearch session so the registry can hide most tool
+        # schemas behind the tool_search meta-tool when the catalog is large.
+        # This is a no-op for small registries (see should_use_tool_search()).
+        with tool_search_session():
+            return await self._run_inner(user_prompt, deps=deps, message_history=message_history)
+
+    async def _run_inner(
+        self,
+        user_prompt: str,
+        *,
+        deps: Optional[Deps] = None,
+        message_history: Optional[List[Message]] = None,
+    ) -> RunResult[Result]:
         from .callback_context import get_callback_context
         from .callbacks import CallbackEvent, CallbackEventType, get_global_registry
 
@@ -460,6 +487,14 @@ class Agent(Generic[Deps, Result]):
         """
         from .callback_context import get_callback_context
         from .callbacks import CallbackEvent, CallbackEventType, get_global_registry
+        from .tools.tool_search import tool_search_session, is_session_active
+
+        # Open a per-run ToolSearch session if none is active. We use a
+        # ``with`` block on the synchronous context manager *inside* the async
+        # generator body so the ContextVar token is set, used, and reset all
+        # within a single task frame — important under ASGI where this
+        # generator may be iterated by middleware.
+        _own_session = not is_session_active()
 
         # Validate agui requirements
         if event_format == "agui" and (not thread_id or not message_id):
@@ -495,69 +530,75 @@ class Agent(Generic[Deps, Result]):
                 # Emit run_started event
                 yield agui_factory.run_started()
 
-        try:
-            if effective_type == AgentType.SINGLE_HOP:
-                async for event in self._stream_single_hop(query, context=context):
-                    yield event
-            elif effective_type == AgentType.REACT:
-                async for event in self._stream_react(
-                    query, context, max_steps, max_budget, max_time_seconds,
-                    event_format=event_format, thread_id=thread_id, message_id=message_id
-                ):
-                    yield event
-            elif effective_type == AgentType.PLAN_AND_EXECUTE:
-                async for event in self._stream_plan_execute(
-                    query, context, max_replans, existing_plan,
-                    event_format=event_format, thread_id=thread_id, message_id=message_id
-                ):
-                    yield event
-            elif effective_type == AgentType.PARALLEL_PLAN:
-                async for event in self._stream_parallel_plan(
-                    query, context, max_replans, existing_plan,
-                    event_format=event_format, thread_id=thread_id, message_id=message_id
-                ):
-                    yield event
-            elif effective_type == AgentType.MULTI_AGENT:
-                async for event in self._stream_multi_agent(
-                    query, context, max_subagents=5,
-                    event_format=event_format, thread_id=thread_id, message_id=message_id
-                ):
-                    yield event
-            else:
-                raise ValueError(f"Unknown agent type: {effective_type}")
+        # Open the ToolSearch session inside a `with` block scoped to this
+        # generator's body. The contextvar token is set and reset within the
+        # same task frame that drives the generator, which keeps it safe under
+        # ASGI middlewares that may rebind generator iteration to a child task.
+        _session_cm = tool_search_session() if _own_session else _NullCM()
+        with _session_cm:
+            try:
+                if effective_type == AgentType.SINGLE_HOP:
+                    async for event in self._stream_single_hop(query, context=context):
+                        yield event
+                elif effective_type == AgentType.REACT:
+                    async for event in self._stream_react(
+                        query, context, max_steps, max_budget, max_time_seconds,
+                        event_format=event_format, thread_id=thread_id, message_id=message_id
+                    ):
+                        yield event
+                elif effective_type == AgentType.PLAN_AND_EXECUTE:
+                    async for event in self._stream_plan_execute(
+                        query, context, max_replans, existing_plan,
+                        event_format=event_format, thread_id=thread_id, message_id=message_id
+                    ):
+                        yield event
+                elif effective_type == AgentType.PARALLEL_PLAN:
+                    async for event in self._stream_parallel_plan(
+                        query, context, max_replans, existing_plan,
+                        event_format=event_format, thread_id=thread_id, message_id=message_id
+                    ):
+                        yield event
+                elif effective_type == AgentType.MULTI_AGENT:
+                    async for event in self._stream_multi_agent(
+                        query, context, max_subagents=5,
+                        event_format=event_format, thread_id=thread_id, message_id=message_id
+                    ):
+                        yield event
+                else:
+                    raise ValueError(f"Unknown agent type: {effective_type}")
 
-            # Emit run_finished event for AG-UI mode
-            if agui_factory:
-                yield agui_factory.run_finished()
+                # Emit run_finished event for AG-UI mode
+                if agui_factory:
+                    yield agui_factory.run_finished()
 
-            # Emit AGENT_RUN_END on success
-            end_event = CallbackEvent(
-                event_type=CallbackEventType.AGENT_RUN_END,
-                agent_type=effective_type.value,
-                query=query,
-                context=ctx,
-                success=True,
-            )
-            await get_global_registry().emit(end_event)
+                # Emit AGENT_RUN_END on success
+                end_event = CallbackEvent(
+                    event_type=CallbackEventType.AGENT_RUN_END,
+                    agent_type=effective_type.value,
+                    query=query,
+                    context=ctx,
+                    success=True,
+                )
+                await get_global_registry().emit(end_event)
 
-        except Exception as e:
-            # Emit run_error event for AG-UI mode
-            if agui_factory:
-                yield agui_factory.run_error(str(e))
+            except Exception as e:
+                # Emit run_error event for AG-UI mode
+                if agui_factory:
+                    yield agui_factory.run_error(str(e))
 
-            # Emit AGENT_RUN_END on failure
-            end_event = CallbackEvent(
-                event_type=CallbackEventType.AGENT_RUN_END,
-                agent_type=effective_type.value,
-                query=query,
-                context=ctx,
-                success=False,
-                error=e,
-                error_type=type(e).__name__,
-            )
-            await get_global_registry().emit(end_event)
+                # Emit AGENT_RUN_END on failure
+                end_event = CallbackEvent(
+                    event_type=CallbackEventType.AGENT_RUN_END,
+                    agent_type=effective_type.value,
+                    query=query,
+                    context=ctx,
+                    success=False,
+                    error=e,
+                    error_type=type(e).__name__,
+                )
+                await get_global_registry().emit(end_event)
 
-            raise
+                raise
 
     async def _stream_react(
         self,

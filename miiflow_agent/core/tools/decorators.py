@@ -23,6 +23,8 @@ def tool(
     return_schema: Optional[Dict[str, Any]] = None,
     strict: bool = False,
     require_approval: bool = False,
+    always_load: bool = False,
+    search_keywords: Optional[List[str]] = None,
 ) -> Callable[[F], F]:
     """
     Decorator to mark a function as a tool with optional explicit schema.
@@ -129,6 +131,12 @@ def tool(
         # Add strict mode flag
         if strict:
             schema.metadata['strict'] = True
+
+        # ToolSearch metadata
+        if always_load:
+            schema.metadata['always_load'] = True
+        if search_keywords:
+            schema.metadata['search_keywords'] = list(search_keywords)
 
         # Attach schema to function BEFORE creating FunctionTool
         # so FunctionTool can use the explicit schema

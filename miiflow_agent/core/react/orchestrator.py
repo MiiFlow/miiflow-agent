@@ -1,9 +1,10 @@
 """Focused ReAct orchestrator with clean separation of concerns."""
 
+import json
 import logging
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..agent import RunContext
 from ..message import Message, MessageRole
@@ -987,9 +988,60 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                 # This is critical because str(VisualizationResult) returns [VIZ:uuid]
                 # which loses the actual chart data
                 from miiflow_agent.visualization import is_visualization_result, extract_visualization_data
-                from miiflow_agent.visualization.types import is_media_result, extract_media_data
+                from miiflow_agent.visualization.types import (
+                    is_media_result, extract_media_data,
+                    is_media_collection, extract_media_collection, extract_collection_metadata,
+                    is_llm_block_injection, extract_llm_blocks,
+                )
 
-                if is_media_result(result.output):
+                if is_llm_block_injection(result.output):
+                    # Tool wants the LLM to actually see pixels on the next turn.
+                    # Queue the raw block dicts; the TOOL-message construction below
+                    # will materialize them as multimodal content.
+                    inj = extract_llm_blocks(result.output) or {}
+                    blocks = inj.get("blocks") or []
+                    summary = inj.get("summary") or (
+                        f"Injected {len(blocks)} content block(s) for visual analysis."
+                    )
+                    step.observation = summary
+                    state.pending_llm_blocks = list(blocks)
+                    logger.info(
+                        f"Step {state.current_step} - Queued {len(blocks)} LLM blocks for next turn"
+                    )
+                elif is_media_collection(result.output):
+                    media_items = extract_media_collection(result.output) or []
+                    metadata_items = extract_collection_metadata(result.output) or []
+                    observation_lines = []
+                    for idx, media_data in enumerate(media_items):
+                        await self.event_bus.publish(
+                            EventFactory.media(state.current_step, media_data, step.action)
+                        )
+                        media_id = media_data['id']
+                        media_url = media_data.get('url', '')
+                        if media_url and not media_url.startswith('data:'):
+                            state.media_store[media_id] = media_url
+                        # Correlate metadata entries by index (tools return parallel lists)
+                        meta = metadata_items[idx] if idx < len(metadata_items) else None
+                        if meta is not None:
+                            try:
+                                meta_json = json.dumps(meta, default=str)
+                            except Exception:
+                                meta_json = str(meta)
+                            observation_lines.append(f"[MEDIA:{media_id}] {meta_json}")
+                        else:
+                            observation_lines.append(
+                                f"[MEDIA:{media_id}] media_type={media_data.get('media_type')} "
+                                f"url={media_url}"
+                            )
+                    step.observation = (
+                        f"Returned {len(media_items)} media item(s). "
+                        "Reference any of them with media_ref:<id>.\n"
+                        + "\n".join(observation_lines)
+                    )
+                    logger.info(
+                        f"Step {state.current_step} - Emitted {len(media_items)} media events (collection)"
+                    )
+                elif is_media_result(result.output):
                     media_data = extract_media_data(result.output)
                     await self.event_bus.publish(
                         EventFactory.media(state.current_step, media_data, step.action)
@@ -1097,11 +1149,46 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                 )
             )
 
-            # Add tool result to context (required for native tool calling)
+            # Add tool result to context (required for native tool calling).
+            # If the tool returned LlmBlockInjection, the orchestrator stashed
+            # raw block dicts on state.pending_llm_blocks — attach them as
+            # multimodal TOOL-message content so the next LLM turn sees the
+            # actual pixels rather than a URL string.
             if tool_call_id:
-                observation_message = Message(
-                    role=MessageRole.TOOL, content=step.observation, tool_call_id=tool_call_id
-                )
+                if state.pending_llm_blocks:
+                    from ..message import ImageBlock, TextBlock, VideoBlock
+
+                    content_blocks: List[Any] = [TextBlock(text=step.observation or "")]
+                    for b in state.pending_llm_blocks:
+                        btype = b.get("type")
+                        if btype == "text":
+                            content_blocks.append(TextBlock(text=b.get("text", "")))
+                        elif btype == "image_url":
+                            content_blocks.append(
+                                ImageBlock(
+                                    image_url=b.get("image_url", ""),
+                                    detail=b.get("detail", "auto"),
+                                )
+                            )
+                        elif btype == "video_url":
+                            content_blocks.append(
+                                VideoBlock(
+                                    video_url=b.get("video_url", ""),
+                                    mime_type=b.get("mime_type"),
+                                )
+                            )
+                    observation_message = Message(
+                        role=MessageRole.TOOL,
+                        content=content_blocks,
+                        tool_call_id=tool_call_id,
+                    )
+                    state.pending_llm_blocks = []
+                else:
+                    observation_message = Message(
+                        role=MessageRole.TOOL,
+                        content=step.observation,
+                        tool_call_id=tool_call_id,
+                    )
                 context.messages.append(observation_message)
                 logger.debug(
                     f"Step {state.current_step} - Added tool result to context with ID: {tool_call_id}"
@@ -1197,6 +1284,19 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
         # This enables image editing tools to reference previously generated images
         if isinstance(step.action_input, dict) and state:
             step.action_input = self._resolve_media_refs(step.action_input, state)
+
+        # Expose media_store on ctx.deps so tools (e.g. analyze_creative) can
+        # resolve media_ref IDs without re-implementing the resolution logic.
+        # Safe in-place assignment because the orchestrator owns ctx lifecycle
+        # for the duration of a ReAct run.
+        if state is not None and context is not None:
+            try:
+                if isinstance(context.deps, dict):
+                    context.deps["media_store"] = state.media_store
+            except Exception:
+                # deps may be a custom type; tools that need media_store use
+                # ctx.deps.get which would silently miss — acceptable v1.
+                pass
 
         # Determine if tool needs context injection
         needs_context = self.tool_executor.tool_needs_context(step.action)

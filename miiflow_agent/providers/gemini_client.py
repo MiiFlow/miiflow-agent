@@ -7,6 +7,7 @@ on functionCall parts, which the SDK's protobuf layer strips out.
 The SDK is still imported for GEMINI_AVAILABLE detection only.
 """
 
+import asyncio
 import base64
 import json
 import re
@@ -46,7 +47,7 @@ except ImportError:
 
 from ..core.client import ModelClient
 from ..core.exceptions import AuthenticationError, ProviderError
-from ..core.message import DocumentBlock, ImageBlock, Message, MessageRole, TextBlock
+from ..core.message import DocumentBlock, ImageBlock, Message, MessageRole, TextBlock, VideoBlock
 from ..core.metrics import TokenCount
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import GeminiStreamNormalizer
@@ -365,6 +366,35 @@ class GeminiClient(ModelClient):
                                         "text": f"[Image failed to load: {block.image_url}. Error: {str(e)}]"
                                     }
                                 )
+                        elif isinstance(block, VideoBlock):
+                            try:
+                                video_bytes, sniffed_mime = await image_url_to_bytes(
+                                    block.video_url, timeout=self.timeout, resize=False
+                                )
+                                # Cap inline at 20 MiB. Gemini supports videos inline up to ~20MB
+                                # in a single request; larger files require the Files API (out of scope v1).
+                                max_inline = 20 * 1024 * 1024
+                                if len(video_bytes) > max_inline:
+                                    parts.append(
+                                        {
+                                            "text": (
+                                                f"[Video too large to inline: {block.video_url} "
+                                                f"— {len(video_bytes)} bytes exceeds 20MB cap.]"
+                                            )
+                                        }
+                                    )
+                                else:
+                                    mime_type = block.mime_type or sniffed_mime or "video/mp4"
+                                    b64_data = base64.b64encode(video_bytes).decode("utf-8")
+                                    parts.append(
+                                        {"inline_data": {"mime_type": mime_type, "data": b64_data}}
+                                    )
+                            except Exception as e:
+                                parts.append(
+                                    {
+                                        "text": f"[Video failed to load: {block.video_url}. Error: {str(e)}]"
+                                    }
+                                )
                         elif isinstance(block, DocumentBlock):
                             try:
                                 filename_info = f" [{block.filename}]" if block.filename else ""
@@ -456,49 +486,131 @@ class GeminiClient(ModelClient):
 
             elif message.role == MessageRole.TOOL:
                 tool_name = getattr(message, "name", None) or "tool_result"
-                result_content = (
-                    message.content if isinstance(message.content, str) else str(message.content)
-                )
+
+                # Structured tool result: convert to function_response + extra
+                # inline_data parts for images/videos so Gemini sees the pixels.
+                # Gemini allows function_response and inline_data parts in the
+                # same user message's parts array.
+                extra_parts: List[Dict[str, Any]] = []
+                if isinstance(message.content, list):
+                    text_chunks: List[str] = []
+
+                    # Fetch image/video bytes in parallel — single tool results
+                    # with 10 creatives would otherwise serialize 10× the network
+                    # round-trip. Preserve order so parts match block order.
+                    async def _fetch_image(block: "ImageBlock") -> Dict[str, Any]:
+                        try:
+                            image_bytes, mime_type = await image_url_to_bytes(
+                                block.image_url, timeout=self.timeout, resize=True
+                            )
+                            b64_data = base64.b64encode(image_bytes).decode("utf-8")
+                            return {
+                                "part": {
+                                    "inline_data": {"mime_type": mime_type, "data": b64_data}
+                                }
+                            }
+                        except Exception as e:
+                            return {
+                                "text": f"[Image failed to load: {block.image_url}. Error: {str(e)}]"
+                            }
+
+                    async def _fetch_video(block: "VideoBlock") -> Dict[str, Any]:
+                        try:
+                            video_bytes, sniffed_mime = await image_url_to_bytes(
+                                block.video_url, timeout=self.timeout, resize=False
+                            )
+                            max_inline = 20 * 1024 * 1024
+                            if len(video_bytes) > max_inline:
+                                return {
+                                    "text": (
+                                        f"[Video too large to inline: {block.video_url} "
+                                        f"— {len(video_bytes)} bytes exceeds 20MB cap.]"
+                                    )
+                                }
+                            mime_type = block.mime_type or sniffed_mime or "video/mp4"
+                            b64_data = base64.b64encode(video_bytes).decode("utf-8")
+                            return {
+                                "part": {
+                                    "inline_data": {"mime_type": mime_type, "data": b64_data}
+                                }
+                            }
+                        except Exception as e:
+                            return {
+                                "text": f"[Video failed to load: {block.video_url}. Error: {str(e)}]"
+                            }
+
+                    fetch_tasks: List[Any] = []
+                    block_kinds: List[str] = []  # parallel tracker: "text", "image", "video"
+                    text_indices: List[str] = []  # pre-fetch text entries
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            block_kinds.append("text")
+                            text_indices.append(block.text or "")
+                            fetch_tasks.append(None)
+                        elif isinstance(block, ImageBlock):
+                            block_kinds.append("image")
+                            text_indices.append("")
+                            fetch_tasks.append(_fetch_image(block))
+                        elif isinstance(block, VideoBlock):
+                            block_kinds.append("video")
+                            text_indices.append("")
+                            fetch_tasks.append(_fetch_video(block))
+                        else:
+                            block_kinds.append("skip")
+                            text_indices.append("")
+                            fetch_tasks.append(None)
+
+                    awaitables = [t for t in fetch_tasks if t is not None]
+                    fetched = (
+                        await asyncio.gather(*awaitables) if awaitables else []
+                    )
+                    fetched_iter = iter(fetched)
+                    for kind, preset_text in zip(block_kinds, text_indices):
+                        if kind == "text":
+                            if preset_text:
+                                text_chunks.append(preset_text)
+                            continue
+                        if kind in ("image", "video"):
+                            outcome = next(fetched_iter)
+                            if "part" in outcome:
+                                extra_parts.append(outcome["part"])
+                            elif "text" in outcome:
+                                text_chunks.append(outcome["text"])
+
+                    result_content = "\n".join(text_chunks) if text_chunks else "[see attached media]"
+                else:
+                    result_content = (
+                        message.content
+                        if isinstance(message.content, str)
+                        else str(message.content)
+                    )
+
+                function_response_part = {
+                    "function_response": {
+                        "name": tool_name,
+                        "response": {"result": result_content},
+                    }
+                }
 
                 if gemini_messages and gemini_messages[-1]["role"] == "user":
                     has_function_response = any(
                         "function_response" in p for p in gemini_messages[-1]["parts"]
                     )
                     if has_function_response:
-                        gemini_messages[-1]["parts"].append(
-                            {
-                                "function_response": {
-                                    "name": tool_name,
-                                    "response": {"result": result_content},
-                                }
-                            }
-                        )
+                        gemini_messages[-1]["parts"].append(function_response_part)
+                        gemini_messages[-1]["parts"].extend(extra_parts)
                     else:
                         gemini_messages.append(
                             {
                                 "role": "user",
-                                "parts": [
-                                    {
-                                        "function_response": {
-                                            "name": tool_name,
-                                            "response": {"result": result_content},
-                                        }
-                                    }
-                                ],
+                                "parts": [function_response_part, *extra_parts],
                             }
                         )
                 else:
                     gemini_messages.append(
                         {
                             "role": "user",
-                            "parts": [
-                                {
-                                    "function_response": {
-                                        "name": tool_name,
-                                        "response": {"result": result_content},
-                                    }
-                                }
-                            ],
+                            "parts": [function_response_part, *extra_parts],
                         }
                     )
 

@@ -2,6 +2,26 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.6.0] - 2026-04-14
+
+### Added
+- **`analyze_creative` tool**: Visual LLM analysis of ad creative pixels with URL classifier, dedupe, and provider-aware fallback (Gemini → OpenAI). Supports Meta and Google ad creatives, including video formats.
+- **Creative audit foundation**: Tool suite for fetching, ranking, and analyzing Meta + Google creatives — ranking, fatigue detection, carousel expansion, and lazy-loaded media children.
+- **`tool_search` tool**: Dynamic tool discovery for agents operating over large tool registries — agents can search for relevant tools by intent rather than seeing the full catalog up front.
+- **`tool_filter`**: Registry-level filter hooks so orchestrators can scope the tool catalog per run.
+- **Progress tracking** (`core/react/progress.py`): Structured progress events emitted alongside reasoning chunks for long-running runs.
+- **Recovery module** (`core/react/recovery.py`): Unified error-recovery path across orchestrators (ReAct, plan-and-execute, multi-agent) with retry and graceful termination.
+- **Context compression** (`core/context_compression.py`): Automatic summarization of older turns when approaching context limits.
+- **Human-in-the-loop tool approval**: New exceptions and orchestrator hooks let mutating tool calls pause for user approval before executing.
+
+### Changed
+- **Streaming restructure**: Reworked streaming plumbing across orchestrators — cleaner event-bus semantics, better separation of reasoning vs. tool vs. progress chunks.
+- **Memory system repurpose**: Memory is now guideline-oriented rather than a raw transcript store; orchestrator consults memory via the dynamic tool registry.
+- **Prompts & branding**: Updated ReAct / plan-and-execute / multi-agent prompts; refreshed product branding in system messages.
+- **Model list updates**: Added latest OpenAI models; refreshed Anthropic and Google model descriptions.
+- Clarification flow fixes across multi-agent and plan-and-execute orchestrators.
+- Slack workspace selection support: tool calls can target a specific installed workspace.
+
 ## [1.5.1] - 2026-03-16
 
 ### Added

@@ -20,17 +20,18 @@ class MessageRole(Enum):
 
 class ContentType(Enum):
     """Content block types for multi-modal messages."""
-    
+
     TEXT = "text"
     IMAGE_URL = "image_url"
     IMAGE_FILE = "image_file"
+    VIDEO_URL = "video_url"
     DOCUMENT = "document"
 
 
 @dataclass
 class TextBlock:
     """Text content block."""
-    
+
     type: Literal["text"] = "text"
     text: str = ""
 
@@ -38,10 +39,23 @@ class TextBlock:
 @dataclass
 class ImageBlock:
     """Image content block with URL or base64 data."""
-    
+
     type: Literal["image_url"] = "image_url"
     image_url: str = ""
     detail: Optional[Literal["auto", "low", "high"]] = "auto"
+
+
+@dataclass
+class VideoBlock:
+    """Video content block with URL or base64 data.
+
+    Only providers that natively support video (Gemini) consume the bytes.
+    Other providers (Anthropic, OpenAI) should degrade to a text reference.
+    """
+
+    type: Literal["video_url"] = "video_url"
+    video_url: str = ""
+    mime_type: Optional[str] = None
 
 
 @dataclass
@@ -77,7 +91,7 @@ class DocumentBlock:
 
 
 # Union type for content blocks
-ContentBlock = Union[TextBlock, ImageBlock, DocumentBlock]
+ContentBlock = Union[TextBlock, ImageBlock, VideoBlock, DocumentBlock]
 
 
 @dataclass
@@ -141,12 +155,21 @@ class Message:
             )
         ]
         return cls(role=MessageRole.USER, content=content, **kwargs)
-    
+
+    @classmethod
+    def from_video(cls, text: str, video_url: str, mime_type: Optional[str] = None, **kwargs) -> "Message":
+        """Create a user message with video attachment."""
+        content = [
+            TextBlock(text=text),
+            VideoBlock(video_url=video_url, mime_type=mime_type),
+        ]
+        return cls(role=MessageRole.USER, content=content, **kwargs)
+
     @classmethod
     def from_attachments(cls, text: str, attachments: List[Union[str, Dict[str, Any]]], **kwargs) -> "Message":
         """Create a user message with multiple attachments."""
         content = [TextBlock(text=text)]
-        
+
         for attachment in attachments:
             if isinstance(attachment, str):
                 content.append(ImageBlock(image_url=attachment))
@@ -161,6 +184,11 @@ class Message:
                     content.append(ImageBlock(
                         image_url=attachment["url"],
                         detail=attachment.get("detail", "auto")
+                    ))
+                elif attachment_type == "video":
+                    content.append(VideoBlock(
+                        video_url=attachment["url"],
+                        mime_type=attachment.get("mime_type"),
                     ))
 
         return cls(role=MessageRole.USER, content=content, **kwargs)

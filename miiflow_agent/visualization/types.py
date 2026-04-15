@@ -6,7 +6,7 @@ The SDK does NOT define specific visualization types - that's an application con
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import uuid
 
 
@@ -171,6 +171,131 @@ def extract_media_data(value: Any) -> Optional[Dict[str, Any]]:
     if isinstance(value, MediaResult):
         return value.to_dict()
     if isinstance(value, dict) and value.get("__media__"):
+        return value
+    return None
+
+
+def is_media_collection(value: Any) -> bool:
+    """
+    Check if a value is a collection of MediaResults.
+
+    Recognized shapes:
+    - A list/tuple where every element satisfies is_media_result()
+    - A dict with a "creatives" key whose value is a list of MediaResults
+    - A dict with a "__media_collection__" marker whose "items" is a list of MediaResults
+    """
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return False
+        return all(is_media_result(v) for v in value)
+    if isinstance(value, dict):
+        if value.get("__media_collection__") is True:
+            items = value.get("items")
+            return isinstance(items, (list, tuple)) and all(is_media_result(v) for v in items)
+        creatives = value.get("creatives")
+        if isinstance(creatives, (list, tuple)) and creatives:
+            return all(is_media_result(v) for v in creatives)
+    return False
+
+
+def extract_media_collection(value: Any) -> Optional[list]:
+    """
+    Extract a list of media dicts from a media collection.
+
+    Returns a list of dicts (each with __media__ marker) or None if not a collection.
+    """
+    if isinstance(value, (list, tuple)):
+        out = []
+        for v in value:
+            data = extract_media_data(v)
+            if data:
+                out.append(data)
+        return out if out else None
+    if isinstance(value, dict):
+        if value.get("__media_collection__") is True:
+            items = value.get("items") or []
+        elif isinstance(value.get("creatives"), (list, tuple)):
+            items = value.get("creatives")
+        else:
+            return None
+        out = []
+        for v in items:
+            data = extract_media_data(v)
+            if data:
+                out.append(data)
+        return out if out else None
+    return None
+
+
+def extract_collection_metadata(value: Any) -> Optional[list]:
+    """
+    Extract accompanying per-item metadata from a media collection dict, if present.
+
+    Applications may return {"creatives": [...], "metadata": [...]} so the LLM sees
+    descriptive context alongside [MEDIA:id] markers. This returns the metadata list
+    verbatim, or None if the shape isn't recognized.
+    """
+    if isinstance(value, dict):
+        metadata = value.get("metadata")
+        if isinstance(metadata, list):
+            return metadata
+    return None
+
+
+@dataclass
+class LlmBlockInjection:
+    """
+    Tool return value that must be materialized as multimodal content blocks
+    on the LLM's NEXT turn — not just summarized as a tool observation string.
+
+    Used by tools like analyze_creative that need the LLM to actually see
+    pixels/frames instead of just reading URLs. The orchestrator detects
+    this shape, emits a short text summary into the trace observation, and
+    queues the blocks so the next provider prompt includes them as
+    ImageBlock/VideoBlock/TextBlock content.
+
+    Fields:
+        blocks: Pre-serialized content blocks (each has a "type" key matching
+            miiflow_agent.core.message block types: "text", "image_url",
+            "video_url", "document"). The orchestrator rehydrates them into
+            real block instances when building the next provider prompt.
+        summary: Short text shown in the trace observation line. Something
+            the LLM can ground subsequent reasoning in (e.g. "Injected 6
+            creatives for visual analysis"). Keep under ~200 chars.
+    """
+    blocks: List[Dict[str, Any]]
+    summary: str = ""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def to_dict(self) -> dict:
+        return {
+            "__llm_blocks__": True,
+            "id": self.id,
+            "blocks": self.blocks,
+            "summary": self.summary,
+        }
+
+    def __str__(self) -> str:
+        return f"[LLM_BLOCKS:{self.id}]"
+
+    def __repr__(self) -> str:
+        return f"LlmBlockInjection(id={self.id!r}, blocks={len(self.blocks)})"
+
+
+def is_llm_block_injection(value: Any) -> bool:
+    """Check if a value is an LlmBlockInjection."""
+    if isinstance(value, LlmBlockInjection):
+        return True
+    if isinstance(value, dict):
+        return value.get("__llm_blocks__") is True
+    return False
+
+
+def extract_llm_blocks(value: Any) -> Optional[Dict[str, Any]]:
+    """Extract the block-injection payload. Returns {"blocks": [...], "summary": "..."} or None."""
+    if isinstance(value, LlmBlockInjection):
+        return value.to_dict()
+    if isinstance(value, dict) and value.get("__llm_blocks__"):
         return value
     return None
 

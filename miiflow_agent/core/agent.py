@@ -360,6 +360,7 @@ class Agent(Generic[Deps, Result]):
         """
         from miiflow_agent.visualization.types import (
             is_media_result, extract_media_data,
+            is_media_collection, extract_media_collection,
             is_visualization_result, extract_visualization_data,
         )
 
@@ -422,7 +423,15 @@ class Agent(Generic[Deps, Result]):
 
             # Detect special results (media/visualization) before stringification
             if observation.success and observation.output is not None:
-                if is_media_result(observation.output):
+                if is_media_collection(observation.output):
+                    media_items = extract_media_collection(observation.output) or []
+                    for media_data in media_items:
+                        special_results.append({
+                            "type": "media",
+                            "data": media_data,
+                            "tool_name": tool_name,
+                        })
+                elif is_media_result(observation.output):
                     media_data = extract_media_data(observation.output)
                     if media_data:
                         special_results.append({

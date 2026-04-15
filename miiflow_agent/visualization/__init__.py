@@ -39,10 +39,16 @@ Usage (in APPLICATION code):
 """
 
 from .types import (
+    LlmBlockInjection,
     MediaResult,
     VisualizationConfig,
     VisualizationResult,
+    extract_collection_metadata,
+    extract_llm_blocks,
+    extract_media_collection,
     extract_media_data,
+    is_llm_block_injection,
+    is_media_collection,
     is_media_result,
     is_visualization_result,
     extract_visualization_data,
@@ -56,10 +62,16 @@ from .registry import (
 
 __all__ = [
     # Types
+    "LlmBlockInjection",
     "MediaResult",
     "VisualizationConfig",
     "VisualizationResult",
+    "extract_collection_metadata",
+    "extract_llm_blocks",
+    "extract_media_collection",
     "extract_media_data",
+    "is_llm_block_injection",
+    "is_media_collection",
     "is_media_result",
     "is_visualization_result",
     "extract_visualization_data",

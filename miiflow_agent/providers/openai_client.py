@@ -14,7 +14,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from ..core.client import ChatResponse, ModelClient
 from ..core.exceptions import AuthenticationError, ModelError, ProviderError, RateLimitError
 from ..core.exceptions import TimeoutError as MiiflowTimeoutError
-from ..core.message import DocumentBlock, ImageBlock, Message, MessageRole, TextBlock
+from ..core.message import DocumentBlock, ImageBlock, Message, MessageRole, TextBlock, VideoBlock
 from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import OpenAIStreamNormalizer
@@ -87,6 +87,45 @@ class OpenAIClient(ModelClient):
     def convert_message_to_openai_format(message: Message) -> Dict[str, Any]:
         """Convert universal Message to OpenAI format (static for reuse by compatible providers)."""
         openai_message = {"role": message.role.value}
+
+        # OpenAI's Chat Completions API requires tool-role messages to have
+        # string content — it rejects an array of blocks. When a tool returns
+        # multimodal content (e.g. LlmBlockInjection), collapse to a text
+        # summary that references the media URLs. OpenAI users miss the visual
+        # analysis but get a coherent response instead of a 400 error.
+        if (
+            message.role == MessageRole.TOOL
+            and message.tool_call_id
+            and isinstance(message.content, list)
+        ):
+            text_parts: List[str] = []
+            dropped_images: List[str] = []
+            dropped_videos: List[str] = []
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    if block.text:
+                        text_parts.append(block.text)
+                elif isinstance(block, ImageBlock):
+                    dropped_images.append(block.image_url)
+                elif isinstance(block, VideoBlock):
+                    dropped_videos.append(block.video_url)
+            if dropped_images:
+                text_parts.append(
+                    "[NOTE: OpenAI tool messages cannot carry image content. "
+                    f"{len(dropped_images)} image(s) referenced by URL: {dropped_images}]"
+                )
+            if dropped_videos:
+                text_parts.append(
+                    f"[NOTE: OpenAI cannot view videos in tool messages. "
+                    f"{len(dropped_videos)} video(s) referenced: {dropped_videos}]"
+                )
+            openai_message["content"] = (
+                "\n".join(text_parts) if text_parts else "[empty result]"
+            )
+            openai_message["tool_call_id"] = message.tool_call_id
+            if message.name:
+                openai_message["name"] = message.name
+            return openai_message
 
         if isinstance(message.content, str):
             openai_message["content"] = message.content

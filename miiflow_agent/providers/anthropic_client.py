@@ -82,13 +82,68 @@ class AnthropicClient(ModelClient):
 
     def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
         """Convert Message to Anthropic format."""
-        from ..core.message import DocumentBlock, ImageBlock, TextBlock
+        from ..core.message import DocumentBlock, ImageBlock, TextBlock, VideoBlock
 
         # Handle tool result messages (for sending tool outputs back)
         # Anthropic expects "user" role for tool results, not "tool"
         if message.tool_call_id and message.role in (MessageRole.USER, MessageRole.TOOL):
             # This is a tool result message - Anthropic requires "user" role
             anthropic_message = {"role": "user"}
+
+            # Structured (multimodal) tool result: content is a list of blocks.
+            # Anthropic's tool_result.content accepts a list of text + image blocks,
+            # which is how we pipe pixels from tools like analyze_creative into
+            # the next LLM turn without needing a separate user message.
+            if isinstance(message.content, list):
+                sub_content: List[Dict[str, Any]] = []
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        if block.text and block.text.strip():
+                            sub_content.append({"type": "text", "text": block.text})
+                    elif isinstance(block, ImageBlock):
+                        if block.image_url.startswith("data:"):
+                            base64_content, media_type = data_uri_to_base64_and_mimetype(
+                                block.image_url
+                            )
+                            sub_content.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": base64_content,
+                                    },
+                                }
+                            )
+                        else:
+                            sub_content.append(
+                                {
+                                    "type": "image",
+                                    "source": {"type": "url", "url": block.image_url},
+                                }
+                            )
+                    elif isinstance(block, VideoBlock):
+                        # Claude cannot view videos — degrade to a text reference
+                        # so the rest of the tool_result still delivers.
+                        sub_content.append(
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"[Video: {block.video_url} — Claude cannot view "
+                                    f"videos; switch to a Gemini-powered agent for video analysis.]"
+                                ),
+                            }
+                        )
+                if not sub_content:
+                    sub_content = [{"type": "text", "text": "[empty result]"}]
+                anthropic_message["content"] = [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": message.tool_call_id,
+                        "content": sub_content,
+                    }
+                ]
+                return anthropic_message
 
             # Ensure tool result content is not empty or whitespace-only
             tool_content = (
@@ -199,6 +254,18 @@ class AnthropicClient(ModelClient):
                             content_list.append(
                                 {"type": "image", "source": {"type": "url", "url": block.image_url}}
                             )
+                elif isinstance(block, VideoBlock):
+                    # Claude cannot view videos; emit a text reference so the model
+                    # stays coherent instead of erroring on an unsupported block type.
+                    content_list.append(
+                        {
+                            "type": "text",
+                            "text": (
+                                f"[Video at {block.video_url} — Claude cannot view videos; "
+                                f"switch to a Gemini-powered agent to analyze video creatives.]"
+                            ),
+                        }
+                    )
                 elif isinstance(block, DocumentBlock):
                     # Claude document blocks only support PDF and plain text
                     if block.document_type in ("pdf", "txt"):

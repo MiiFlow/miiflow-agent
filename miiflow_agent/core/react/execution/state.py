@@ -42,6 +42,13 @@ class ExecutionState:
     # (e.g. image editing) can reference generated images via media_ref:<id>
     media_store: Dict[str, str] = field(default_factory=dict)
 
+    # Content blocks queued by tools (via LlmBlockInjection) that must be
+    # materialized on the next provider prompt. Drained immediately before
+    # each LLM call in the orchestrator. Each entry is a serialized block
+    # dict with a "type" key matching miiflow_agent.core.message blocks
+    # ("text", "image_url", "video_url"). See analyze_creative for usage.
+    pending_llm_blocks: List[Dict[str, Any]] = field(default_factory=list)
+
     def increment_step(self) -> int:
         """Increment and return the new step number."""
         self.current_step += 1

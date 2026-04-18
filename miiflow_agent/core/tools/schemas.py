@@ -116,12 +116,12 @@ class ToolSchema:
         """Convert to universal JSON Schema format."""
         properties = {}
         required = []
-        
+
         for param_name, param in self.parameters.items():
             properties[param_name] = param.to_json_schema_property()
             if param.required:
                 required.append(param_name)
-        
+
         schema = {
             "name": self.name,
             "description": self.description,
@@ -131,14 +131,20 @@ class ToolSchema:
                 "required": required
             }
         }
-        
+
         # Add returns field for consistency with function tools
         if self.tool_type == ToolType.HTTP_API:
             schema["returns"] = {
                 "type": "object",
                 "description": "HTTP API response data"
             }
-        
+
+        # Carry metadata through so provider adapters (e.g. Anthropic's strict
+        # mode) can read flags like `strict=True`. Omitted previously, which
+        # silently dropped per-tool strict opt-ins on the way to the LLM.
+        if self.metadata:
+            schema["metadata"] = dict(self.metadata)
+
         return schema
     
     def to_provider_format(self, provider: str) -> Dict[str, Any]:

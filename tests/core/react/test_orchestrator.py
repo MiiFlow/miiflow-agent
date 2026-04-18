@@ -430,6 +430,79 @@ class TestNativeToolCallingMode:
         assert "4" in result.final_answer
         assert result.stop_reason == StopReason.ANSWER_COMPLETE
 
+    @pytest.mark.asyncio
+    async def test_preamble_before_tool_call_not_committed_as_answer(self):
+        """Regression: plain text that streams *before* a tool_use block in the
+        same step must not leak into the final answer.
+
+        Reproduces the bug where "Let me pull data..." preamble was shown as the
+        final answer because text deltas were optimistically emitted as
+        final_answer_chunk during streaming, before the tool call arrived in the
+        same step.
+        """
+        preamble = "Let me pull data from both platforms simultaneously."
+        # Use a phrase that the heuristic classifier recognizes as a final
+        # answer ("based on the ...") so the test isolates the streaming fix
+        # rather than re-testing the classifier.
+        real_answer = "Based on the data, campaign ROAS is 3.5x for the month."
+
+        # First step: plain-text preamble (no XML tags) + tool_call.
+        first_response = {
+            "content": preamble,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "fetch_metrics",
+                    "arguments": '{"platform": "meta"}'
+                }
+            }],
+            "finish_reason": "tool_calls"
+        }
+        # Second step: plain-text final answer (no XML tags, no tool call).
+        second_response = {
+            "content": real_answer,
+            "tool_calls": None,
+            "finish_reason": "stop"
+        }
+
+        mock_agent = self._create_mock_agent_with_native_tools(
+            [first_response, second_response]
+        )
+
+        @tool("fetch_metrics", "Fetch campaign metrics")
+        def fetch_metrics(platform: str) -> str:
+            return "roas=3.5"
+
+        mock_agent.tool_registry.register(fetch_metrics)
+
+        orchestrator = ReActFactory.create_orchestrator(
+            agent=mock_agent,
+            max_steps=5,
+        )
+
+        # Capture every final_answer_chunk event so we can assert the preamble
+        # never appeared in the answer stream.
+        answer_chunks = []
+
+        def capture_answer_chunks(event):
+            if getattr(event, "event_type", None) == ReActEventType.FINAL_ANSWER_CHUNK:
+                answer_chunks.append(event.data.get("delta", ""))
+
+        orchestrator.event_bus.subscribe(capture_answer_chunks)
+
+        context = RunContext(deps=None, messages=[])
+        result = await orchestrator.execute("What is my ROAS?", context)
+
+        assert isinstance(result, ReActResult)
+        assert result.final_answer == real_answer
+        assert preamble not in result.final_answer
+
+        # The preamble must never have been emitted as an answer chunk.
+        joined_answer_stream = "".join(answer_chunks)
+        assert preamble not in joined_answer_stream
+        assert real_answer in joined_answer_stream
+
 
 class TestResponseClassification:
     """Test response classification methods."""
@@ -659,6 +732,31 @@ class TestResultBuilding:
         fallback = orchestrator._generate_fallback_answer([])
 
         assert "No reasoning steps" in fallback
+
+    def test_generate_fallback_answer_hides_tool_error_leak(self, orchestrator):
+        """Regression: consecutive tool-error steps must NOT surface the raw
+        observation to the user. Previously the loop halted on
+        ErrorThresholdCondition with the last step's observation being a raw
+        tool-execution error string, which leaked parameter names and schema
+        details into the final answer."""
+        raw_error = (
+            "Tool execution failed: Tool 'meta_ads_insights' received unknown "
+            "parameter(s): ['customer_id', 'query']. Valid parameters are: "
+            "['ad_account_id', 'breakdowns', 'date_from', 'date_to', 'level']"
+        )
+        steps = [
+            ReActStep(
+                step_number=i, thought="", observation=raw_error, error=raw_error
+            )
+            for i in range(1, 4)
+        ]
+
+        fallback = orchestrator._generate_fallback_answer(steps)
+
+        assert raw_error not in fallback
+        assert "customer_id" not in fallback
+        assert "ad_account_id" not in fallback
+        assert "repeated issues" in fallback.lower() or "try" in fallback.lower()
 
 
 class TestSanitizeErrorMessage:

@@ -633,26 +633,28 @@ class ToolRegistry:
         tool = self.tools[resolved_name]
         start_time = time.time()
 
-        # Validate kwargs against the tool's schema - reject unknown parameters
-        # so the LLM can correct its tool call
+        # Drop kwargs the tool doesn't declare in its schema. Some models
+        # (observed across Claude Opus 4.6 and 4.7) cross-pollinate parameter
+        # shapes between sibling tools — e.g. passing Google Ads `customer_id`
+        # / `query` to the Meta Ads `meta_ads_insights` tool when both
+        # platforms are connected. Anthropic's tool-use API doesn't enforce
+        # `additionalProperties: false` server-side, so the extra keys reach
+        # us. Silently dropping them lets the call proceed with the still-valid
+        # subset; missing required params still surface as a normal
+        # "missing required" error below, which is a much more actionable
+        # signal for the model than "unknown parameter".
         if hasattr(tool, "definition") and hasattr(tool.definition, "parameters"):
             valid_params = set(tool.definition.parameters.keys())
             unknown_params = set(kwargs.keys()) - valid_params
             if unknown_params:
-                error_msg = (
-                    f"Tool '{resolved_name}' received unknown parameter(s): {sorted(unknown_params)}. "
-                    f"Valid parameters are: {sorted(valid_params)}"
+                logger.warning(
+                    "Tool '%s' received unknown parameter(s): %s — dropping them; "
+                    "valid parameters: %s",
+                    resolved_name,
+                    sorted(unknown_params),
+                    sorted(valid_params),
                 )
-                logger.warning(error_msg)
-                return ToolResult(
-                    name=resolved_name,
-                    input=kwargs,
-                    output=None,
-                    error=error_msg,
-                    success=False,
-                    execution_time=0.0,
-                    metadata={"error_type": "invalid_parameters", "unknown_params": list(unknown_params)},
-                )
+                kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
 
         try:
             if hasattr(tool, "fn"):

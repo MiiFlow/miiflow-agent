@@ -59,6 +59,64 @@ def _strip_xml_tags_from_answer(content: str) -> str:
     return content.strip()
 
 
+def _preview(value: Any, max_len: int = 200) -> str:
+    """Render a value for trace logs: single-line, truncated, length-annotated."""
+    if value is None:
+        return "None"
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, default=str, ensure_ascii=False)
+        except Exception:
+            value = str(value)
+    collapsed = value.replace("\n", " ").replace("\r", " ")
+    if len(collapsed) > max_len:
+        return f"{collapsed[:max_len]!r}… (len={len(value)})"
+    return repr(collapsed)
+
+
+def _summarize_tool_call(tc: Any) -> str:
+    """One-line summary of a Message.tool_call (supports dict or object form)."""
+    if isinstance(tc, dict):
+        tc_id = tc.get("id")
+        fn = tc.get("function") or {}
+        name = fn.get("name")
+        args = fn.get("arguments")
+    else:
+        tc_id = getattr(tc, "id", None)
+        name = getattr(getattr(tc, "function", None), "name", None) or getattr(tc, "name", None)
+        args = getattr(getattr(tc, "function", None), "arguments", None) or getattr(tc, "arguments", None)
+    return f"{name}(id={tc_id}, args={_preview(args, 160)})"
+
+
+def _summarize_messages_for_trace(messages: List[Message]) -> str:
+    """Render a messages list as a multi-line, truncated trace."""
+    lines = []
+    for i, msg in enumerate(messages):
+        role = getattr(msg.role, "value", str(msg.role))
+        tc_id = getattr(msg, "tool_call_id", None)
+        tag = f"{role}/{tc_id}" if tc_id else role
+        content = getattr(msg, "content", None)
+        if isinstance(content, list):
+            # Multimodal blocks — summarize their types.
+            parts = []
+            for b in content:
+                btype = getattr(b, "__class__", type(b)).__name__
+                text = getattr(b, "text", None)
+                if text is not None:
+                    parts.append(f"{btype}:{_preview(text, 80)}")
+                else:
+                    parts.append(btype)
+            content_preview = "[" + ", ".join(parts) + "]"
+        else:
+            content_preview = _preview(content, 240)
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        tc_preview = ""
+        if tool_calls:
+            tc_preview = " tool_calls=[" + ", ".join(_summarize_tool_call(tc) for tc in tool_calls) + "]"
+        lines.append(f"  [{i}] {tag:<18}: {content_preview}{tc_preview}")
+    return "\n".join(lines)
+
+
 def _observation_with_citation_ref(output: Any) -> str:
     """Convert tool output to observation string, extracting citation ref from dicts.
 
@@ -170,7 +228,28 @@ class ReActOrchestrator:
                     execution_state.final_answer = self.full_response if hasattr(self, 'full_response') else ""
                     break
 
-                if await self._should_stop(execution_state):
+                # If recovery just excluded a tool, give the LLM one turn to
+                # respond to the reduced tool set before safety conditions
+                # (e.g. ErrorThresholdCondition) can halt the loop. Without
+                # this grace turn, SIMPLIFY_TOOLS' exclusion has no effect:
+                # the loop halts at the top of the next iteration before the
+                # LLM ever gets to produce a call with the new tool list.
+                skip_stop_check = getattr(
+                    execution_state, "_grace_turn_after_recovery", False
+                )
+                if skip_stop_check:
+                    execution_state._grace_turn_after_recovery = False
+                    logger.info(
+                        "[ORCH] step=%d grace turn — bypassing safety check after SIMPLIFY_TOOLS",
+                        execution_state.current_step,
+                    )
+                elif await self._should_stop(execution_state):
+                    logger.info(
+                        "[ORCH] step=%d STOP via safety condition (final_answer=%r, step_count=%d)",
+                        execution_state.current_step,
+                        execution_state.final_answer,
+                        len(execution_state.steps),
+                    )
                     break
 
                 # Execute reasoning step with native tool calling.
@@ -224,6 +303,18 @@ class ReActOrchestrator:
                     logger.info("Breaking execution loop - clarification requested")
                     break
 
+                # Trace: one line per step summarizing the outcome so the log
+                # reads like a ReAct transcript.
+                logger.info(
+                    "[ORCH] step=%d outcome action=%s error=%s is_final=%s answer=%s obs=%s",
+                    execution_state.current_step,
+                    step.action,
+                    _preview(step.error, 200) if step.error else None,
+                    step.is_final_step,
+                    _preview(step.answer, 200) if step.answer else None,
+                    _preview(step.observation, 200) if step.observation else None,
+                )
+
                 if step.is_final_step:
                     execution_state.final_answer = step.answer
                     await self._publish_final_answer_event(step, execution_state)
@@ -237,6 +328,16 @@ class ReActOrchestrator:
                         step=step,
                         tool_name=step.action,
                     )
+                    logger.info(
+                        "[ORCH] step=%d recovery strategy=%s attempt=%s continue=%s "
+                        "excluded_tools=%s guidance=%s",
+                        execution_state.current_step,
+                        getattr(recovery_action.strategy_used, "value", recovery_action.strategy_used),
+                        recovery_action.attempt_number,
+                        recovery_action.should_continue,
+                        sorted(recovery_action.excluded_tools) if recovery_action.excluded_tools else None,
+                        _preview(recovery_action.guidance_message, 240) if recovery_action.guidance_message else None,
+                    )
                     if not recovery_action.should_continue:
                         logger.warning("Recovery exhausted, stopping execution")
                         break
@@ -244,9 +345,17 @@ class ReActOrchestrator:
                         context.messages.append(
                             Message(role=MessageRole.USER, content=recovery_action.guidance_message)
                         )
-                    if recovery_action.excluded_tools and self.tool_filter:
-                        for tool_name in recovery_action.excluded_tools:
-                            self.tool_filter.add_denied(tool_name)
+                    if recovery_action.excluded_tools:
+                        if self.tool_filter:
+                            for tool_name in recovery_action.excluded_tools:
+                                self.tool_filter.add_denied(tool_name)
+                        # One grace turn so the LLM gets to respond to the
+                        # SIMPLIFY_TOOLS guidance (and the narrowed tool set,
+                        # if tool_filter is wired) before ErrorThresholdCondition
+                        # halts the loop. Must fire even when tool_filter is
+                        # absent — the guidance message alone is the only
+                        # meaningful signal the model has to break the pattern.
+                        execution_state._grace_turn_after_recovery = True
                 elif not (step.is_error_step) and self.recovery_manager:
                     self.recovery_manager.record_success()
 
@@ -362,6 +471,32 @@ class ReActOrchestrator:
 
             logger.debug(f"Step {state.current_step} - Calling LLM with tools enabled")
 
+            # Trace: dump everything going INTO the LLM so we can audit the
+            # exact messages, tool schemas, and generation settings on each
+            # turn. Kept at INFO level (single prefix [LLM_TURN]) so it's easy
+            # to grep and filter.
+            try:
+                _trace_tools = self.tool_executor._build_native_tool_schemas()
+                _trace_tool_names = []
+                for _t in _trace_tools:
+                    # Providers vary: OpenAI nests under function.name, others use top-level name.
+                    _fn = _t.get("function") if isinstance(_t, dict) else None
+                    _trace_tool_names.append(
+                        (_fn or {}).get("name") if _fn else (_t.get("name") if isinstance(_t, dict) else str(_t))
+                    )
+            except Exception as _trace_err:
+                _trace_tool_names = [f"<unavailable: {_trace_err}>"]
+            logger.info(
+                "[LLM_TURN] step=%d OUT messages=%d tools=%d temp=%s max_tokens=%s\n%s\n  tool_names=%s",
+                state.current_step,
+                len(context.messages),
+                len(_trace_tool_names),
+                getattr(self.tool_executor.agent, "temperature", None),
+                getattr(self.tool_executor.agent, "max_tokens", None),
+                _summarize_messages_for_trace(context.messages),
+                _trace_tool_names,
+            )
+
             async for chunk in self.tool_executor.stream_with_tools(messages=context.messages):
                 # Stream text as it arrives
                 if chunk.delta:
@@ -408,39 +543,34 @@ class ReActOrchestrator:
                             # Answer complete - sanitize to remove any residual XML tags
                             step.answer = _strip_xml_tags_from_answer(parse_event.data["answer"])
 
-                    # Native tool calling: when the LLM does NOT wrap its answer
-                    # in <answer>...</answer> XML tags, the parser above never
-                    # emits ANSWER_CHUNK and the user would otherwise see one
-                    # giant chunk at the end of the step (the fallback at the
-                    # bottom of this method).
+                    # Native tool calling: when the LLM does NOT wrap its
+                    # answer in <answer>...</answer> XML tags we cannot know
+                    # during streaming whether the current text delta is the
+                    # final answer or a preamble that precedes a tool_use
+                    # block (providers stream text deltas BEFORE tool_use).
                     #
-                    # To restore real-time token streaming for the final
-                    # answer, emit each text delta as a final_answer_chunk
-                    # AS IT ARRIVES, gated on:
+                    # To avoid committing a preamble as the final answer,
+                    # emit deltas as thinking_chunks during streaming. If
+                    # this step ends with no tool calls, the no-tool branch
+                    # below promotes the accumulated text (assistant_content)
+                    # to a single final_answer_chunk. If a tool call appears
+                    # later in the same step, the text stays classified as
+                    # thinking (the narration preceding the tool call).
+                    #
+                    # Gated on:
                     #   - the XML parser has not taken over (no <answer> tag),
                     #     otherwise we would double-emit alongside the
                     #     ANSWER_CHUNK branch above; and
                     #   - no tool calls have been accumulated yet in THIS
-                    #     step. Once a tool call appears, this step is a
-                    #     tool step, and any further text in the same step
-                    #     is intermediate narration, not the final answer.
-                    #
-                    # `state.accumulated_answer` is shared with the
-                    # ANSWER_CHUNK branch and the fallback, so populating it
-                    # here also makes the fallback skip its one-big-chunk
-                    # emission (see line ~722 below).
+                    #     step. Once a tool call appears, we stop emitting
+                    #     text deltas (further text is handled post-stream).
                     if (
                         not state.ready_for_answer
                         and not accumulated_tool_calls
                     ):
-                        if not hasattr(state, "accumulated_answer"):
-                            state.accumulated_answer = ""
-                        state.accumulated_answer += chunk.delta
                         await self.event_bus.publish(
-                            EventFactory.final_answer_chunk(
-                                state.current_step,
-                                chunk.delta,
-                                state.accumulated_answer,
+                            EventFactory.thinking_chunk(
+                                state.current_step, chunk.delta, buffer
                             )
                         )
 
@@ -564,6 +694,18 @@ class ReActOrchestrator:
             # This preserves the complete response including XML tags for context
             assistant_content = buffer.strip()
 
+            # Trace: dump the LLM response we got back, including any accumulated
+            # tool calls. Pairs with the OUT line emitted before stream_with_tools.
+            logger.info(
+                "[LLM_TURN] step=%d IN finish_reason=%s tokens=%s cost=%s text=%s tool_calls=[%s]",
+                state.current_step,
+                finish_reason,
+                tokens_used,
+                cost,
+                _preview(assistant_content, 240),
+                ", ".join(_summarize_tool_call(tc) for tc in accumulated_tool_calls.values()),
+            )
+
             # === TOOL CALL ROUTING ===
             # Tool calls present = continue loop (execute tool)
             # No tool calls = final answer
@@ -572,13 +714,11 @@ class ReActOrchestrator:
                 # Reset consecutive thinking counter — tool call present
                 state._consecutive_thinking_steps = 0
 
-                # Emit text alongside tool calls as thinking for visibility
-                if assistant_content:
-                    await self.event_bus.publish(
-                        EventFactory.thinking_chunk(
-                            state.current_step, assistant_content, buffer
-                        )
-                    )
+                # Any text streamed before the tool call was narration, not
+                # the final answer. Each delta was already emitted as a
+                # thinking_chunk during streaming, so there is nothing to
+                # re-emit or discard here.
+
                 # --- OTHER TOOLS: Execute normally ---
                 # Take first tool call (ReAct is single-action per step)
                 tool_call_data = accumulated_tool_calls.get(0)
@@ -1413,11 +1553,23 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
         else:
             stop_reason = StopReason.FORCED_STOP
             state.final_answer = self._generate_fallback_answer(state.steps)
+            logger.warning(
+                "[ORCH] FALLBACK answer generated (no step produced a final answer). steps=%d final_answer=%s",
+                len(state.steps),
+                _preview(state.final_answer, 300),
+            )
             # Publish fallback as FINAL_ANSWER event so streaming_service captures it
             if state.final_answer:
                 await self.event_bus.publish(
                     EventFactory.final_answer(state.current_step, state.final_answer)
                 )
+
+        logger.info(
+            "[ORCH] result stop_reason=%s steps=%d final_answer=%s",
+            getattr(stop_reason, "value", stop_reason),
+            len(state.steps),
+            _preview(state.final_answer, 300),
+        )
 
         # Calculate totals
         total_time = time.time() - state.start_time
@@ -1453,6 +1605,21 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
             return "No reasoning steps were completed."
 
         last_step = steps[-1]
+
+        # Detect the "halted on consecutive tool errors" case. If the tail of
+        # the step history is made of error steps, the last observation is a
+        # raw tool-execution error string — leaking that to the user surfaces
+        # internals like parameter names and schema mismatches. Return a
+        # user-facing apology instead, keeping any successful observations
+        # out of the leak path too.
+        recent_errors = [s for s in steps[-3:] if getattr(s, "is_error_step", False)]
+        if recent_errors and getattr(last_step, "is_error_step", False):
+            return (
+                "I ran into repeated issues while trying to fulfill this request and "
+                "wasn't able to produce a complete answer. Please try rephrasing your "
+                "question, or try again in a moment."
+            )
+
         if last_step.observation:
             return f"Based on the available information: {last_step.observation}"
         elif last_step.thought:

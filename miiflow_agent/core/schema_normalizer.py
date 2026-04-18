@@ -162,6 +162,10 @@ def _normalize_native_strict(obj: Dict[str, Any], ensure_all_required: bool = Fa
 
     - Sets additionalProperties: false on all object types
     - Optionally ensures all properties are in 'required' array
+    - Strips JSON-Schema constraint fields Anthropic rejects in strict mode
+      (e.g. `minimum`/`maximum` on integer types). The API returns
+      "For 'integer' type, properties maximum, minimum are not supported"
+      if these slip through.
     - Recursively processes: properties, items, allOf, anyOf, oneOf
     """
     if not isinstance(obj, dict):
@@ -175,6 +179,19 @@ def _normalize_native_strict(obj: Dict[str, Any], ensure_all_required: bool = Fa
             existing_required = set(obj.get("required", []))
             all_props = set(obj["properties"].keys())
             obj["required"] = list(existing_required | all_props)
+
+    # Strip constraint fields Anthropic rejects on primitive types in strict
+    # mode. Keeping the value hint in the `description` is fine; the typed
+    # constraint form isn't allowed.
+    if obj.get("type") in ("integer", "number"):
+        for unsupported in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"):
+            obj.pop(unsupported, None)
+    if obj.get("type") == "string":
+        for unsupported in ("minLength", "maxLength", "pattern", "format"):
+            obj.pop(unsupported, None)
+    if obj.get("type") == "array":
+        for unsupported in ("minItems", "maxItems", "uniqueItems"):
+            obj.pop(unsupported, None)
 
     # Recursively process nested schemas
     if "properties" in obj and isinstance(obj["properties"], dict):

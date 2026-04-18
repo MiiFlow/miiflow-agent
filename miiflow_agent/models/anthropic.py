@@ -5,10 +5,30 @@ from typing import Dict
 from .base import ModelConfig, ParameterConfig, ParameterType
 
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
+    "claude-opus-4.7": ModelConfig(
+        model_identifier="claude-opus-4-7",
+        name="claude-opus-4.7",
+        description="Anthropic's most capable model (released April 16, 2026) with superior intelligence across coding, reasoning, and complex agentic tasks. Features extended thinking, adaptive thinking, and structured outputs. 1M context window.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=1000000,
+        maximum_output_tokens=128000,
+        token_param_name="max_tokens",
+        # Opus 4.7 deprecates `temperature` as a request parameter — sending
+        # it returns "`temperature` is deprecated for this model" (HTTP 400).
+        supports_temperature=False,
+        input_cost_hint=5.0,
+        output_cost_hint=25.0,
+    ),
     "claude-opus-4.6": ModelConfig(
         model_identifier="claude-opus-4-6",
         name="claude-opus-4.6",
-        description="Anthropic's most capable model with superior intelligence across coding, reasoning, and complex agentic tasks. Features extended thinking, adaptive thinking, and structured outputs. 1M context window.",
+        description="Legacy — succeeded by Claude Opus 4.7 (April 2026). Previously Anthropic's most capable model with 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -171,6 +191,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
         default_value=4096,
         min_value=1,
         max_value={
+            "claude-opus-4.7": 128000,
             "claude-opus-4.6": 128000,
             "claude-sonnet-4.6": 64000,
             "claude-opus-4.5": 64000,
@@ -259,6 +280,33 @@ def supports_thinking(model: str) -> bool:
             return config.reasoning
 
     return False
+
+
+def supports_temperature(model: str) -> bool:
+    """Check whether a model accepts the `temperature` request parameter.
+
+    Anthropic deprecated `temperature` for Opus 4.7 (and likely future models);
+    sending it returns HTTP 400 `"temperature is deprecated for this model"`.
+    Callers should omit `temperature` from the request_params when this is
+    False.
+
+    Args:
+        model: The model identifier (alias or full identifier).
+
+    Returns:
+        True when the model accepts `temperature`. Defaults to True for
+        unknown models so behavior matches the previous implicit default.
+    """
+    if model in ANTHROPIC_MODELS:
+        return ANTHROPIC_MODELS[model].supports_temperature
+    for config in ANTHROPIC_MODELS.values():
+        if config.model_identifier == model:
+            return config.supports_temperature
+    model_lower = model.lower()
+    for name, config in ANTHROPIC_MODELS.items():
+        if name in model_lower or config.model_identifier in model_lower:
+            return config.supports_temperature
+    return True
 
 
 def supports_native_mcp(model: str) -> bool:

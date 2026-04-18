@@ -16,7 +16,12 @@ from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import AnthropicStreamNormalizer
 from ..core.streaming import StreamChunk
-from ..models.anthropic import supports_native_mcp, supports_structured_outputs, supports_thinking
+from ..models.anthropic import (
+    supports_native_mcp,
+    supports_structured_outputs,
+    supports_temperature,
+    supports_thinking,
+)
 from ..utils.image import data_uri_to_base64_and_mimetype
 
 if TYPE_CHECKING:
@@ -59,8 +64,14 @@ class AnthropicClient(ModelClient):
         if sanitized_name != original_name:
             self._tool_name_mapping[sanitized_name] = original_name
 
-        # Check if strict mode is requested and supported
-        # Check both top-level 'strict' and metadata['strict']
+        # Strict-mode tool schemas: emit `additionalProperties: false` so the
+        # model cannot hallucinate extra keys (e.g. passing Google Ads
+        # `customer_id`/`query` to a Meta Ads tool). Per-tool opt-in via
+        # `schema["strict"]=True` or `schema["metadata"]["strict"]=True`.
+        # Anthropic caps strict tools at 20 per request, so this has to stay
+        # opt-in rather than default-on; use it for tools that have
+        # cognitively-similar siblings whose parameter shapes the model
+        # confuses.
         strict_flag = schema.get("strict", False) or schema.get("metadata", {}).get("strict", False)
         use_strict = strict_flag and self._supports_structured_outputs()
 
@@ -502,6 +513,11 @@ class AnthropicClient(ModelClient):
                 )
 
             # Determine which client to use
+            # Some models (e.g. Opus 4.7) reject `temperature` as a deprecated
+            # parameter; drop it before hitting the API.
+            if not supports_temperature(self.model):
+                request_params.pop("temperature", None)
+
             # Use beta client for structured outputs or native MCP
             use_beta_client = use_native_structured_output or use_native_mcp
             if use_beta_client:
@@ -792,6 +808,11 @@ class AnthropicClient(ModelClient):
                 logger.debug(
                     f"Streaming with native MCP: {len(mcp_servers)} servers"
                 )
+
+            # Some models (e.g. Opus 4.7) reject `temperature` as a deprecated
+            # parameter; drop it before hitting the API.
+            if not supports_temperature(self.model):
+                request_params.pop("temperature", None)
 
             # Determine which client to use
             # Use beta client for structured outputs or native MCP

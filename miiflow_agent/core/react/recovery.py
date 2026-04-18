@@ -256,10 +256,17 @@ class RecoveryManager:
         """Exclude repeatedly failing tools."""
         excluded = set(self._excluded_tools)
 
-        if tool_name and self._tool_error_counts.get(tool_name, 0) >= 2:
-            excluded.add(tool_name)
-            self._excluded_tools.add(tool_name)
-            logger.info(f"Excluding tool '{tool_name}' after repeated failures")
+        # Exclude EVERY tool that has hit the failure threshold, not just the
+        # one that failed in the current step. The model can alternate between
+        # similarly-shaped tools (e.g. meta_ads_insights ↔ google_ads_query
+        # cross-confusion), so by the time SIMPLIFY_TOOLS fires, the earlier
+        # offender may not be the current step's tool. Only exclusion across
+        # all known problem tools breaks the loop.
+        for name, count in self._tool_error_counts.items():
+            if count >= 2 and name not in excluded:
+                excluded.add(name)
+                self._excluded_tools.add(name)
+                logger.info(f"Excluding tool '{name}' after {count} failures")
 
         error_msg = str(error)[:200]
         if excluded:

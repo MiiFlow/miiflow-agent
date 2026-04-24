@@ -1133,6 +1133,11 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                     is_media_collection, extract_media_collection, extract_collection_metadata,
                     is_llm_block_injection, extract_llm_blocks,
                 )
+                from miiflow_agent.artifacts import (
+                    extract_artifact_data,
+                    format_artifact_observation,
+                    is_artifact_result,
+                )
 
                 if is_llm_block_injection(result.output):
                     # Tool wants the LLM to actually see pixels on the next turn.
@@ -1239,6 +1244,19 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
                         )
                     else:
                         # Extraction failed, fall back to string
+                        step.observation = _observation_with_citation_ref(result.output)
+                elif is_artifact_result(result.output):
+                    artifact_data = extract_artifact_data(result.output)
+                    if artifact_data:
+                        await self.event_bus.publish(
+                            EventFactory.artifact(state.current_step, artifact_data, step.action)
+                        )
+                        step.observation = format_artifact_observation(artifact_data)
+                        logger.info(
+                            f"Step {state.current_step} - Emitted artifact event: "
+                            f"kind={artifact_data.get('kind')}, id={artifact_data.get('id')}"
+                        )
+                    else:
                         step.observation = _observation_with_citation_ref(result.output)
                 else:
                     step.observation = _observation_with_citation_ref(result.output)

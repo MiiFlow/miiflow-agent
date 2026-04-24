@@ -363,6 +363,7 @@ class Agent(Generic[Deps, Result]):
             is_media_collection, extract_media_collection,
             is_visualization_result, extract_visualization_data,
         )
+        from miiflow_agent.artifacts import is_artifact_result, extract_artifact_data
 
         special_results = []
         logger.debug(f"About to execute {len(tool_calls)} tool calls")
@@ -445,6 +446,14 @@ class Agent(Generic[Deps, Result]):
                         special_results.append({
                             "type": "visualization",
                             "data": viz_data,
+                            "tool_name": tool_name,
+                        })
+                elif is_artifact_result(observation.output):
+                    artifact_data = extract_artifact_data(observation.output)
+                    if artifact_data:
+                        special_results.append({
+                            "type": "artifact",
+                            "data": artifact_data,
                             "tool_name": tool_name,
                         })
 
@@ -1072,6 +1081,8 @@ class Agent(Generic[Deps, Result]):
                         yield EventFactory.media(0, sr["data"], sr["tool_name"])
                     elif sr["type"] == "visualization":
                         yield EventFactory.visualization(0, sr["data"], sr["tool_name"])
+                    elif sr["type"] == "artifact":
+                        yield EventFactory.artifact(0, sr["data"], sr["tool_name"])
 
                 yield {"event": "tools_complete", "data": {}}
                 # Re-filter messages after tool execution (tool results added to context.messages)

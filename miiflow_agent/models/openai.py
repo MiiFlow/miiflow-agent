@@ -13,6 +13,8 @@ _REASONING_MODELS = {
 }
 
 _GPT5_MODELS = {
+    "gpt-5.5",
+    "gpt-5.5-pro",
     "gpt-5.4",
     "gpt-5.4-pro",
     "gpt-5.4-mini",
@@ -24,11 +26,46 @@ _NO_TEMPERATURE_MODELS = _REASONING_MODELS | _GPT5_MODELS
 
 
 OPENAI_MODELS: Dict[str, ModelConfig] = {
-    # GPT-5.4 series (released March 2026) — current flagship line
+    # GPT-5.5 series (released April 23, 2026) — current flagship line
+    "gpt-5.5": ModelConfig(
+        model_identifier="gpt-5.5",
+        name="gpt-5.5",
+        description="GPT-5.5 is OpenAI's flagship model (released April 23, 2026), a 'new class of intelligence' with stronger coding and agentic capabilities. 82.7% on Terminal-Bench 2.0, 58.6% on SWE-Bench Pro. 1M context window. Priced at 2x GPT-5.4.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        reasoning=True,
+        maximum_context_tokens=1050000,
+        maximum_output_tokens=128000,
+        token_param_name="max_completion_tokens",
+        supports_temperature=False,
+        input_cost_hint=5.0,
+        output_cost_hint=30.0,
+    ),
+    "gpt-5.5-pro": ModelConfig(
+        model_identifier="gpt-5.5-pro",
+        name="gpt-5.5-pro",
+        description="GPT-5.5 Pro is OpenAI's highest-accuracy model for mission-critical agentic and reasoning tasks (April 23, 2026). 1M context window.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        reasoning=True,
+        maximum_context_tokens=1050000,
+        maximum_output_tokens=128000,
+        token_param_name="max_completion_tokens",
+        supports_temperature=False,
+        input_cost_hint=30.0,
+        output_cost_hint=180.0,
+    ),
+    # GPT-5.4 series (released March 2026) — succeeded by GPT-5.5, still available at lower cost
     "gpt-5.4": ModelConfig(
         model_identifier="gpt-5.4",
         name="gpt-5.4",
-        description="GPT-5.4 is OpenAI's flagship model (March 2026) with 1M context window, built-in computer use, and improved deep research. 33% fewer factual errors than GPT-5.2 and 75% on OSWorld-Verified.",
+        description="GPT-5.4 (March 2026) — succeeded by GPT-5.5 as flagship. Still available as a lower-cost option with 1M context window, built-in computer use, and improved deep research.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -45,7 +82,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.4-pro": ModelConfig(
         model_identifier="gpt-5.4-pro",
         name="gpt-5.4-pro",
-        description="GPT-5.4 Pro is OpenAI's highest-accuracy model for mission-critical agentic tasks. 1M context window with built-in computer use.",
+        description="GPT-5.4 Pro — succeeded by GPT-5.5 Pro (April 2026). High-accuracy model for mission-critical agentic tasks. 1M context window with built-in computer use.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -287,6 +324,8 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         parameter_type=ParameterType.NUMBER,
         min_value=1,
         max_value={
+            "gpt-5.5": 128000,
+            "gpt-5.5-pro": 128000,
             "gpt-5.4": 128000,
             "gpt-5.4-pro": 128000,
             "gpt-5.4-mini": 128000,

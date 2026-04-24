@@ -563,6 +563,30 @@ class EventFactory:
         )
 
     @staticmethod
+    def artifact(step_number: int, artifact_data: dict, action: str) -> ReActEvent:
+        """Create artifact event for a downloadable file (PDF, HTML, ...).
+
+        Emitted BEFORE stringification so the host server can render + persist
+        the binary payload and stream a user-facing SSE event.
+
+        Args:
+            step_number: Current step number
+            artifact_data: The artifact data dict (from ArtifactResult.to_dict())
+            action: The name of the tool that produced the artifact
+
+        Returns:
+            ReActEvent with ARTIFACT type
+        """
+        return ReActEvent(
+            event_type=ReActEventType.ARTIFACT,
+            step_number=step_number,
+            data={
+                "artifact": artifact_data,
+                "action": action,
+            }
+        )
+
+    @staticmethod
     def progress(step_number: int, snapshot) -> ReActEvent:
         """Create progress snapshot event.
 

@@ -21,6 +21,7 @@ class ReActEventType(Enum):
     TOOL_APPROVAL_NEEDED = "tool_approval_needed"  # Tool requires user approval before execution
     VISUALIZATION = "visualization"  # Tool returned a visualization result
     MEDIA = "media"  # Tool returned a media result (image/video/audio)
+    ARTIFACT = "artifact"  # Tool returned a downloadable artifact (PDF, HTML, ...)
     PROGRESS = "progress"  # Progress snapshot update
 
 
@@ -86,6 +87,7 @@ class MultiAgentEventType(Enum):
     SUBAGENT_FAILED = "subagent_failed"  # Subagent failed
     SUBAGENT_MEDIA = "subagent_media"  # Subagent produced media (image/video/audio)
     SUBAGENT_VISUALIZATION = "subagent_visualization"  # Subagent produced visualization
+    SUBAGENT_ARTIFACT = "subagent_artifact"  # Subagent produced downloadable artifact
 
     SYNTHESIS_START = "multi_agent_synthesis_start"  # Starting result synthesis
     FINAL_ANSWER = "multi_agent_final_answer"  # Final synthesized answer

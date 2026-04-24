@@ -507,6 +507,15 @@ Complete this specific task. Stay focused on your assigned area."""
                                     "action": react_event.data.get("action", "unknown"),
                                 },
                             )
+                        elif react_event.event_type == ReActEventType.ARTIFACT:
+                            await self._publish_event(
+                                MultiAgentEventType.SUBAGENT_ARTIFACT,
+                                {
+                                    "subagent_name": config.name,
+                                    "artifact": react_event.data.get("artifact"),
+                                    "action": react_event.data.get("action", "unknown"),
+                                },
+                            )
                     except Exception as e:
                         logger.error(f"Error forwarding ReAct event from subagent {config.name}: {e}")
 
@@ -863,6 +872,15 @@ Complete this specific task. Stay focused on your assigned area."""
                             {
                                 "subagent_name": config.name,
                                 "visualization": react_event.data.get("visualization"),
+                                "action": react_event.data.get("action", "unknown"),
+                            },
+                        )
+                    elif react_event.event_type == ReActEventType.ARTIFACT:
+                        await self._publish_event(
+                            MultiAgentEventType.SUBAGENT_ARTIFACT,
+                            {
+                                "subagent_name": config.name,
+                                "artifact": react_event.data.get("artifact"),
                                 "action": react_event.data.get("action", "unknown"),
                             },
                         )

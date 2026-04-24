@@ -783,14 +783,23 @@ class ReActOrchestrator:
                         f"Step {state.current_step} - Malformed tool call: function name is None or empty"
                     )
                     step.error = "Malformed tool call: function name is missing"
-                    # Add assistant message to context anyway for history
+                    # Drop tool_calls: we can't emit a valid tool_use block
+                    # without a name. Append a user nudge so the conversation
+                    # ends on a user turn (Anthropic rejects trailing
+                    # assistant messages on models that don't support prefill).
                     response_message = Message(
                         role=MessageRole.ASSISTANT,
                         content=assistant_content,
                         tool_calls=None,
                     )
                     context.messages.append(response_message)
-                    # Skip tool execution, continue to next step
+                    step.observation = (
+                        "Previous tool call was malformed (missing function name). "
+                        "Retry with a valid tool call or provide a final answer."
+                    )
+                    context.messages.append(
+                        Message(role=MessageRole.USER, content=step.observation)
+                    )
                 # Validate required parameters are present
                 elif step.action_input is not None:
                     # Get tool schema to check required parameters
@@ -812,14 +821,39 @@ class ReActOrchestrator:
                                 f"Tool '{step.action}' requires parameters: {', '.join(missing_params)}. "
                                 f"This may indicate incomplete streaming or malformed LLM response."
                             )
-                            # Add assistant message to context for history
-                            response_message = Message(
-                                role=MessageRole.ASSISTANT,
-                                content=assistant_content,
-                                tool_calls=None,
-                            )
-                            context.messages.append(response_message)
-                            # Skip tool execution
+                            step.observation = step.error
+                            # Preserve tool_calls + append a synthetic tool_result
+                            # so the LLM sees the error as a normal tool failure
+                            # and the conversation ends on a user turn. Fall back
+                            # to dropping tool_calls if we have no id to pair
+                            # with (Anthropic rejects tool_use blocks without ids).
+                            if tool_call_id:
+                                tool_calls_list = list(accumulated_tool_calls.values())
+                                context.messages.append(
+                                    Message(
+                                        role=MessageRole.ASSISTANT,
+                                        content=assistant_content,
+                                        tool_calls=tool_calls_list,
+                                    )
+                                )
+                                context.messages.append(
+                                    Message(
+                                        role=MessageRole.TOOL,
+                                        content=step.observation,
+                                        tool_call_id=tool_call_id,
+                                    )
+                                )
+                            else:
+                                context.messages.append(
+                                    Message(
+                                        role=MessageRole.ASSISTANT,
+                                        content=assistant_content,
+                                        tool_calls=None,
+                                    )
+                                )
+                                context.messages.append(
+                                    Message(role=MessageRole.USER, content=step.observation)
+                                )
                         else:
                             # All required parameters present, execute tool
                             # Add assistant message with both text and tool calls to context
@@ -858,12 +892,34 @@ class ReActOrchestrator:
                         f"Step {state.current_step} - Tool '{step.action}' has None action_input"
                     )
                     step.error = "Internal error: action_input is None"
-                    response_message = Message(
-                        role=MessageRole.ASSISTANT,
-                        content=assistant_content,
-                        tool_calls=None,
-                    )
-                    context.messages.append(response_message)
+                    step.observation = step.error
+                    if tool_call_id:
+                        tool_calls_list = list(accumulated_tool_calls.values())
+                        context.messages.append(
+                            Message(
+                                role=MessageRole.ASSISTANT,
+                                content=assistant_content,
+                                tool_calls=tool_calls_list,
+                            )
+                        )
+                        context.messages.append(
+                            Message(
+                                role=MessageRole.TOOL,
+                                content=step.observation,
+                                tool_call_id=tool_call_id,
+                            )
+                        )
+                    else:
+                        context.messages.append(
+                            Message(
+                                role=MessageRole.ASSISTANT,
+                                content=assistant_content,
+                                tool_calls=None,
+                            )
+                        )
+                        context.messages.append(
+                            Message(role=MessageRole.USER, content=step.observation)
+                        )
 
             # No tool calls — check if this is truly a final answer or an incomplete response
             elif finish_reason == "length":

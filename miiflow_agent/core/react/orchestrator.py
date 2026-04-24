@@ -928,8 +928,25 @@ class ReActOrchestrator:
                     f"Step {state.current_step} - Response truncated (finish_reason='length'). "
                     f"Continuing loop to give LLM another turn. Preview: {assistant_content[:200]}..."
                 )
-                response_message = Message(role=MessageRole.ASSISTANT, content=assistant_content)
-                context.messages.append(response_message)
+                # Append the partial response plus a user nudge so the
+                # conversation ends on a user turn (Opus 4.7 and similar
+                # models reject trailing assistant messages as prefill).
+                # Skip the assistant append entirely when there's no content
+                # to preserve, so we don't emit an empty message.
+                if assistant_content:
+                    context.messages.append(
+                        Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                    )
+                context.messages.append(
+                    Message(
+                        role=MessageRole.USER,
+                        content=(
+                            "Previous response was truncated by max_tokens. "
+                            "Continue from where you left off, call the tool you intended, "
+                            "or provide a final answer."
+                        ),
+                    )
+                )
                 # Don't set step.answer — loop will continue
 
             else:
@@ -958,8 +975,20 @@ class ReActOrchestrator:
                                 f"(consecutive={state._consecutive_thinking_steps}), continuing loop. "
                                 f"Preview: {assistant_content[:200]}..."
                             )
-                            response_message = Message(role=MessageRole.ASSISTANT, content=assistant_content)
-                            context.messages.append(response_message)
+                            context.messages.append(
+                                Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                            )
+                            # End on a user turn so models without prefill
+                            # support (e.g. Opus 4.7) accept the next call.
+                            context.messages.append(
+                                Message(
+                                    role=MessageRole.USER,
+                                    content=(
+                                        "Continue with your next action: call a tool "
+                                        "or provide a final answer."
+                                    ),
+                                )
+                            )
                             # Don't set step.answer — loop will continue
                     else:
                         logger.warning(

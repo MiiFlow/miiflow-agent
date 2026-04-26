@@ -245,6 +245,7 @@ class AnthropicClient(ModelClient):
                         # Download the image and convert to base64.
                         try:
                             from ..utils.image import url_to_base64_and_mimetype
+
                             base64_content, media_type = url_to_base64_and_mimetype(
                                 block.image_url, resize=True
                             )
@@ -310,9 +311,7 @@ class AnthropicClient(ModelClient):
                         try:
                             import httpx
 
-                            resp = httpx.get(
-                                block.document_url, timeout=30, follow_redirects=True
-                            )
+                            resp = httpx.get(block.document_url, timeout=30, follow_redirects=True)
                             resp.raise_for_status()
                             text = resp.content.decode("utf-8", errors="replace")
                             filename_info = f" [{block.filename}]" if block.filename else ""
@@ -361,7 +360,7 @@ class AnthropicClient(ModelClient):
     async def achat(
         self,
         messages: List[Message],
-        temperature: float = 0.7,
+        temperature: float = 0.1,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         json_schema: Optional[Dict[str, Any]] = None,
@@ -492,9 +491,7 @@ class AnthropicClient(ModelClient):
             # Handle native MCP servers
             if use_native_mcp:
                 # Convert NativeMCPServerConfig to Anthropic format
-                anthropic_mcp_servers = [
-                    server.to_anthropic_format() for server in mcp_servers
-                ]
+                anthropic_mcp_servers = [server.to_anthropic_format() for server in mcp_servers]
                 request_params["mcp_servers"] = anthropic_mcp_servers
 
                 # Add MCP beta header (combine with existing betas if any)
@@ -586,11 +583,13 @@ class AnthropicClient(ModelClient):
                         elif isinstance(result_content, str):
                             content += result_content
 
-                        mcp_tool_results.append({
-                            "tool_use_id": getattr(block, "tool_use_id", ""),
-                            "is_error": is_error,
-                            "content": result_content,
-                        })
+                        mcp_tool_results.append(
+                            {
+                                "tool_use_id": getattr(block, "tool_use_id", ""),
+                                "is_error": is_error,
+                                "content": result_content,
+                            }
+                        )
 
                         if is_error:
                             logger.warning(f"MCP tool error: {result_content}")
@@ -644,7 +643,7 @@ class AnthropicClient(ModelClient):
     async def astream_chat(
         self,
         messages: List[Message],
-        temperature: float = 0.7,
+        temperature: float = 0.1,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         json_schema: Optional[Dict[str, Any]] = None,
@@ -790,9 +789,7 @@ class AnthropicClient(ModelClient):
             # Handle native MCP servers
             if use_native_mcp:
                 # Convert NativeMCPServerConfig to Anthropic format
-                anthropic_mcp_servers = [
-                    server.to_anthropic_format() for server in mcp_servers
-                ]
+                anthropic_mcp_servers = [server.to_anthropic_format() for server in mcp_servers]
                 request_params["mcp_servers"] = anthropic_mcp_servers
 
                 # Add MCP beta header (combine with existing betas if any)
@@ -805,9 +802,7 @@ class AnthropicClient(ModelClient):
                     betas.append("mcp-client-2025-04-04")
                 request_params["betas"] = betas
 
-                logger.debug(
-                    f"Streaming with native MCP: {len(mcp_servers)} servers"
-                )
+                logger.debug(f"Streaming with native MCP: {len(mcp_servers)} servers")
 
             # Some models (e.g. Opus 4.7) reject `temperature` as a deprecated
             # parameter; drop it before hitting the API.

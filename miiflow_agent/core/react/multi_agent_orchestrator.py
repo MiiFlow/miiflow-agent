@@ -521,12 +521,11 @@ Complete this specific task. Stay focused on your assigned area."""
 
                 self.subagent_orchestrator.event_bus.subscribe(forward_subagent_react_event)
 
-                # Create per-subagent tool filter based on role and config
-                # NOTE: We create a new isolated orchestrator per subagent to avoid
-                # race conditions when multiple subagents execute in parallel via asyncio.gather
+                # Create per-subagent tool filter based on role and config.
+                # We create a new isolated orchestrator per subagent to avoid
+                # race conditions when multiple subagents execute in parallel.
                 from ..tools.tool_filter import ToolFilter
                 from .events import EventBus
-                from .parsing.xml_parser import XMLReActParser
 
                 subagent_tool_filter = None
                 if config.allowed_tools or config.denied_tools:
@@ -539,8 +538,6 @@ Complete this specific task. Stay focused on your assigned area."""
                     available = self.tool_executor.list_tools()
                     subagent_tool_filter = ToolFilter.for_role(config.role, available)
 
-                # Create isolated orchestrator with its own tool filter, event bus, and parser
-                # to prevent race conditions in parallel execution
                 from .tool_executor import AgentToolExecutor
                 isolated_executor = AgentToolExecutor(
                     self.subagent_orchestrator.tool_executor.agent,
@@ -552,7 +549,6 @@ Complete this specific task. Stay focused on your assigned area."""
                     tool_executor=isolated_executor,
                     event_bus=isolated_event_bus,
                     safety_manager=self.subagent_orchestrator.safety_manager,
-                    parser=XMLReActParser(),
                 )
 
                 # Execute with isolated orchestrator (with timeout)

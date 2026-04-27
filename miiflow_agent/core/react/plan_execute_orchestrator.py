@@ -72,34 +72,21 @@ class PlanAndExecuteOrchestrator:
     def _create_isolated_orchestrator(self) -> "ReActOrchestrator":
         """Create an isolated ReAct orchestrator instance for parallel execution.
 
-        During parallel subtask execution, each subtask needs:
-        1. Its own event bus - to prevent event cross-contamination
-        2. Its own parser - XMLReActParser has mutable state (buffer, in_thinking, etc.)
-           that gets corrupted when shared between concurrent subtasks
-
-        The tool_executor and safety_manager are stateless and can be safely shared.
+        During parallel subtask execution each subtask needs its own event
+        bus to prevent event cross-contamination. The tool_executor and
+        safety_manager are stateless and can be safely shared.
 
         Returns:
-            A new ReActOrchestrator instance with isolated event bus and parser.
+            A new ReActOrchestrator instance with isolated event bus.
         """
         from .events import EventBus
-        from .parsing.xml_parser import XMLReActParser
 
-        # Create isolated event bus for this orchestrator
         isolated_event_bus = EventBus()
 
-        # Create isolated parser - CRITICAL: XMLReActParser has mutable state
-        # (buffer, current_thinking, in_thinking, in_answer, etc.) that would
-        # cause token interleaving if shared between parallel subtasks
-        isolated_parser = XMLReActParser()
-
-        # Create new orchestrator with isolated event bus AND parser
-        # tool_executor and safety_manager are stateless, safe to share
         return ReActOrchestrator(
             tool_executor=self.subtask_orchestrator.tool_executor,
             event_bus=isolated_event_bus,
             safety_manager=self.subtask_orchestrator.safety_manager,
-            parser=isolated_parser,
         )
 
     def _validate_plan(self, plan: Plan) -> list[str]:
@@ -500,7 +487,6 @@ class PlanAndExecuteOrchestrator:
             Plan with subtasks
         """
         from .prompts import PLANNING_WITH_TOOL_SYSTEM_PROMPT, create_plan_tool
-        from .parsing.xml_parser import XMLReActParser, ParseEventType
 
         await self._publish_event(PlanExecuteEventType.PLANNING_START, {"goal": query})
 
@@ -545,14 +531,10 @@ class PlanAndExecuteOrchestrator:
                 plan_tool.definition.to_universal_schema()
             )
 
-            # 4. Stream LLM response with thinking + tool call
+            # 4. Stream LLM response with reasoning text + create_plan tool call
             accumulated_content = ""
             accumulated_tool_calls = {}  # index -> {id, function: {name, arguments}}
-            parser = XMLReActParser()
-            parser.reset()
             plan_data = None
-            last_emitted_length = 0  # Track for non-XML fallback
-            xml_thinking_detected = False
 
             # Force the model to use the create_plan tool (provider-specific format)
             provider_name = getattr(self.tool_executor._client.client, "provider_name", "")
@@ -568,41 +550,16 @@ class PlanAndExecuteOrchestrator:
                 temperature=0.2,
                 **stream_kwargs,
             ):
-                # Stream thinking text as it arrives
+                # Text deltas during a forced create_plan call are the
+                # planner's reasoning (preamble before the tool call). Stream
+                # them as planning-thinking events so the UI can show the
+                # reasoning live.
                 if chunk.delta:
                     accumulated_content += chunk.delta
-
-                    # Parse XML incrementally to detect <thinking> tags
-                    for parse_event in parser.parse_streaming(chunk.delta):
-                        if parse_event.event_type == ParseEventType.THINKING:
-                            # Thinking chunk detected - emit readable planning reasoning
-                            xml_thinking_detected = True
-                            delta = parse_event.data["delta"]
-                            await self._publish_event(
-                                PlanExecuteEventType.PLANNING_THINKING_CHUNK,
-                                {"delta": delta, "accumulated": accumulated_content},
-                            )
-                            last_emitted_length = len(accumulated_content)
-
-                    # Fallback: if no XML tags detected and we have new content, emit as reasoning
-                    # Only emit if we haven't seen XML thinking tags and content looks like reasoning
-                    if (
-                        not xml_thinking_detected
-                        and not parser.in_thinking
-                        and len(accumulated_content) > last_emitted_length + 30
-                    ):
-                        new_content = accumulated_content[last_emitted_length:]
-                        # Only emit if it doesn't look like JSON (which would be raw plan output)
-                        if not new_content.strip().startswith("{"):
-                            await self._publish_event(
-                                PlanExecuteEventType.PLANNING_THINKING_CHUNK,
-                                {
-                                    "delta": new_content,
-                                    "accumulated": accumulated_content,
-                                    "is_fallback": True,
-                                },
-                            )
-                            last_emitted_length = len(accumulated_content)
+                    await self._publish_event(
+                        PlanExecuteEventType.PLANNING_THINKING_CHUNK,
+                        {"delta": chunk.delta, "accumulated": accumulated_content},
+                    )
 
                 # Accumulate tool calls if present in chunk
                 if chunk.tool_calls:
@@ -1476,11 +1433,7 @@ class PlanAndExecuteOrchestrator:
                         "clarification_data": clarification_data,
                     }
 
-                # Clean subtask result to strip any hallucinated XML tool calls
-                # (e.g., <function_calls>, <invoke>) that the LLM may have output as text
-                from .orchestrator import _strip_xml_tags_from_answer
-
-                subtask.result = _strip_xml_tags_from_answer(result.final_answer or "")
+                subtask.result = result.final_answer or ""
                 subtask.cost = result.total_cost
                 subtask.tokens_used = result.total_tokens
                 subtask.status = "completed"

@@ -5,7 +5,6 @@ from typing import Optional, Literal
 
 from .events import EventBus, EventFormat
 from .orchestrator import ReActOrchestrator
-from .parser import ReActParser
 from .safety import SafetyManager
 from .tool_executor import AgentToolExecutor
 
@@ -55,7 +54,6 @@ class ReActFactory:
             safety_manager=SafetyManager(
                 max_steps=max_steps, max_budget=max_budget, max_time_seconds=max_time_seconds
             ),
-            parser=ReActParser(),
             recovery_manager=recovery_manager,
             context_compressor=context_compressor,
             tool_filter=tool_filter,

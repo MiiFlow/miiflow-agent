@@ -2,6 +2,23 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.7.0] - 2026-04-26
+
+### Added
+- **Artifact generation** (`miiflow_agent/artifacts/`): `ArtifactResult` marker dataclass for tools that produce downloadable files (PDF, HTML, etc.). Streaming handler detects the `__artifact__` marker, persists the file, and emits a dedicated SSE event — mirroring the `MediaResult` / `VisualizationResult` pattern.
+- **Organization-level timezone**: ReAct orchestrator threads an org timezone through prompts so time-sensitive tool calls and answers respect the caller's locale.
+- **Generic email tool**: Provider-agnostic email send tool replacing the previous Slack-specific implementation.
+
+### Changed
+- **ReAct orchestrator rewrite**: Collapsed the orchestrator from ~440 LOC to a clean action-or-answer loop. Each turn the model emits exactly one of {tool calls → loop continues, text answer → loop exits}; the prompt enforces the invariant. Removed the XML parser layer (`parsing/xml_parser.py`, `_strip_xml_tags_from_answer`) and associated XML integration tests — native tool calling is the only path now.
+- **Hybrid memory system + Claude 4.7**: Memory orchestration reworked alongside Claude 4.7 model support in `models/anthropic.py` and `providers/anthropic_client.py`. Tool registry and schema normalizer updated to support the new memory tools.
+- **Cost attribution for agent nodes**: Anthropic client cost tracking corrected so workflow agent-node spend is attributed to the right run.
+- **Router & client fixes**: Several streaming/tool-call edge cases in the orchestrator (72 lines added in `orchestrator.py`).
+
+### Removed
+- **Legacy provider model configurations**: Cleared deprecated entries from `models/anthropic.py`, `models/google.py`, and `models/openai.py` (~270 LOC deleted) — provider model lists now reflect only currently-supported models.
+- **XML parser** (`core/react/parsing/xml_parser.py`) and related tests — superseded by native tool calling.
+
 ## [1.6.0] - 2026-04-14
 
 ### Added

@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -14,49 +13,10 @@ from .events import EventBus, EventFactory
 from .react_events import ReActEvent
 from .execution import ExecutionState
 from .models import ReActResult, ReActStep
-from .parsing.xml_parser import XMLReActParser
 from .safety import SafetyManager
 from .tool_executor import AgentToolExecutor
 
 logger = logging.getLogger(__name__)
-
-
-def _strip_xml_tags_from_answer(content: str) -> str:
-    """Strip XML thinking/answer tags from content to get clean answer text.
-
-    This handles cases where LLM outputs raw XML tags that weren't parsed properly
-    during streaming, ensuring users see clean content without internal markup.
-    Also strips hallucinated XML tool call blocks (<function_calls>, <invoke>, etc.)
-    that some models emit as text when they don't use native tool calling.
-    """
-    if not content:
-        return content
-
-    # Remove <thinking>...</thinking> blocks entirely
-    content = re.sub(r"<thinking>.*?</thinking>", "", content, flags=re.DOTALL | re.IGNORECASE)
-
-    # Remove hallucinated XML-based tool call blocks
-    # These appear when LLMs output tool calls as text instead of native tool calling
-    content = re.sub(
-        r"<function_calls>.*?</function_calls>",
-        "",
-        content,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-
-    # Remove standalone opening/closing tags that might remain
-    content = re.sub(r"</?thinking>", "", content, flags=re.IGNORECASE)
-    content = re.sub(r"</?answer>", "", content, flags=re.IGNORECASE)
-    content = re.sub(r"</?function_calls>", "", content, flags=re.IGNORECASE)
-    content = re.sub(r"<invoke\s+name=[^>]*>.*?</invoke>", "", content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r"</?invoke[^>]*>", "", content, flags=re.IGNORECASE)
-    content = re.sub(r"<parameter\s+name=[^>]*>.*?</parameter>", "", content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r"</?parameter[^>]*>", "", content, flags=re.IGNORECASE)
-
-    # Clean up extra whitespace from removed tags
-    content = re.sub(r"\n\s*\n\s*\n", "\n\n", content)
-
-    return content.strip()
 
 
 def _preview(value: Any, max_len: int = 200) -> str:
@@ -177,14 +137,18 @@ def _sanitize_error_message(error_msg: str) -> str:
 
 
 class ReActOrchestrator:
-    """ReAct orchestrator with clean separation of concerns."""
+    """Action-or-answer agent loop.
+
+    Per turn the model emits exactly one of: tool calls (loop continues) or
+    a text answer (loop exits). The prompt enforces the invariant; the
+    orchestrator branches on which signal arrives during streaming.
+    """
 
     def __init__(
         self,
         tool_executor: AgentToolExecutor,
         event_bus: EventBus,
         safety_manager: SafetyManager,
-        parser: XMLReActParser,
         recovery_manager=None,
         context_compressor=None,
         tool_filter=None,
@@ -192,7 +156,6 @@ class ReActOrchestrator:
         self.tool_executor = tool_executor
         self.event_bus = event_bus
         self.safety_manager = safety_manager
-        self.parser = parser
         self.recovery_manager = recovery_manager
         self.context_compressor = context_compressor
         self.tool_filter = tool_filter
@@ -466,9 +429,6 @@ class ReActOrchestrator:
             accumulated_tool_calls = {}  # index -> {id, function: {name, arguments}}
             finish_reason = None
 
-            # Reset parser for new response
-            self.parser.reset()
-
             logger.debug(f"Step {state.current_step} - Calling LLM with tools enabled")
 
             # Trace: dump everything going INTO the LLM so we can audit the
@@ -498,83 +458,10 @@ class ReActOrchestrator:
             )
 
             async for chunk in self.tool_executor.stream_with_tools(messages=context.messages):
-                # Stream text as it arrives
-                if chunk.delta:
-                    buffer += chunk.delta
-
-                    # Parse XML incrementally to detect <thinking> and <answer> tags
-                    from .parsing.xml_parser import ParseEventType
-
-                    for parse_event in self.parser.parse_streaming(chunk.delta):
-
-                        if parse_event.event_type == ParseEventType.THINKING:
-                            # Thinking chunk detected - emit streaming chunk
-                            delta = parse_event.data["delta"]
-                            await self.event_bus.publish(
-                                EventFactory.thinking_chunk(state.current_step, delta, buffer)
-                            )
-
-                        elif parse_event.event_type == ParseEventType.THINKING_COMPLETE:
-                            # Complete thinking extracted
-                            step.thought = parse_event.data["thought"]
-                            # Publish complete thought event
-                            await self.event_bus.publish(
-                                EventFactory.thought(state.current_step, step.thought)
-                            )
-
-                        elif parse_event.event_type == ParseEventType.ANSWER_START:
-                            # <answer> tag detected - enter streaming answer mode
-                            state.ready_for_answer = True
-
-                        elif parse_event.event_type == ParseEventType.ANSWER_CHUNK:
-                            # Stream answer chunks in real-time
-                            delta = parse_event.data["delta"]
-                            if not hasattr(state, "accumulated_answer"):
-                                state.accumulated_answer = ""
-                            state.accumulated_answer += delta
-                            # Emit streaming chunk event
-                            await self.event_bus.publish(
-                                EventFactory.final_answer_chunk(
-                                    state.current_step, delta, state.accumulated_answer
-                                )
-                            )
-
-                        elif parse_event.event_type == ParseEventType.ANSWER_COMPLETE:
-                            # Answer complete - sanitize to remove any residual XML tags
-                            step.answer = _strip_xml_tags_from_answer(parse_event.data["answer"])
-
-                    # Native tool calling: when the LLM does NOT wrap its
-                    # answer in <answer>...</answer> XML tags we cannot know
-                    # during streaming whether the current text delta is the
-                    # final answer or a preamble that precedes a tool_use
-                    # block (providers stream text deltas BEFORE tool_use).
-                    #
-                    # To avoid committing a preamble as the final answer,
-                    # emit deltas as thinking_chunks during streaming. If
-                    # this step ends with no tool calls, the no-tool branch
-                    # below promotes the accumulated text (assistant_content)
-                    # to a single final_answer_chunk. If a tool call appears
-                    # later in the same step, the text stays classified as
-                    # thinking (the narration preceding the tool call).
-                    #
-                    # Gated on:
-                    #   - the XML parser has not taken over (no <answer> tag),
-                    #     otherwise we would double-emit alongside the
-                    #     ANSWER_CHUNK branch above; and
-                    #   - no tool calls have been accumulated yet in THIS
-                    #     step. Once a tool call appears, we stop emitting
-                    #     text deltas (further text is handled post-stream).
-                    if (
-                        not state.ready_for_answer
-                        and not accumulated_tool_calls
-                    ):
-                        await self.event_bus.publish(
-                            EventFactory.thinking_chunk(
-                                state.current_step, chunk.delta, buffer
-                            )
-                        )
-
-                # Handle native extended thinking (e.g. Anthropic thinking blocks)
+                # Native extended thinking (Anthropic thinking blocks, OpenAI
+                # reasoning tokens) arrive on a dedicated channel separate
+                # from response text. Pass through to the UI's thinking panel;
+                # never enters the answer buffer.
                 if getattr(chunk, "thinking_delta", None):
                     await self.event_bus.publish(
                         EventFactory.thinking_chunk(
@@ -582,9 +469,42 @@ class ReActOrchestrator:
                         )
                     )
 
+                # Text deltas. Per the per-turn invariant in prompts.py the
+                # model emits text only on answer turns, so stream text live
+                # into the final-answer bubble. If a tool call later appears
+                # in the same turn (prompt violation), we log and switch
+                # routing for any subsequent text — the small amount already
+                # streamed is a tolerable UI artifact.
+                if chunk.delta:
+                    buffer += chunk.delta
+                    if accumulated_tool_calls:
+                        # Action turn already declared; treat further text as
+                        # preamble narration. Emit as thinking_chunk.
+                        await self.event_bus.publish(
+                            EventFactory.thinking_chunk(
+                                state.current_step, chunk.delta, buffer
+                            )
+                        )
+                    else:
+                        await self.event_bus.publish(
+                            EventFactory.final_answer_chunk(
+                                state.current_step, chunk.delta, buffer
+                            )
+                        )
+
                 # Accumulate tool calls if present in chunk
                 # All providers now normalize to dict format via stream normalizers
                 if chunk.tool_calls:
+                    if buffer and not accumulated_tool_calls:
+                        # Frontier models often narrate before a tool call
+                        # ("I'll do X"). Logged at INFO for observability;
+                        # not actionable on its own.
+                        logger.info(
+                            "Step %d - Tool-call preamble: model emitted text "
+                            "before tool call. text_preview=%s",
+                            state.current_step,
+                            _preview(buffer, 200),
+                        )
                     for tool_call_dict in chunk.tool_calls:
                         # All tool calls are now dicts thanks to provider normalizers
                         # Extract index (use 0 for first/only tool in ReAct single-action mode)
@@ -661,37 +581,6 @@ class ReActOrchestrator:
             step.tokens_used = tokens_used
             step.cost = cost
 
-            # Finalize XML parser to flush any remaining buffered content
-            # This is critical for handling LLMs that don't output closing </answer> tags
-            # The parser holds back 10 chars to handle split tags, which need to be flushed
-            from .parsing.xml_parser import ParseEventType
-
-            for parse_event in self.parser.finalize():
-                if parse_event.event_type == ParseEventType.ANSWER_CHUNK:
-                    delta = parse_event.data["delta"]
-                    if not hasattr(state, "accumulated_answer"):
-                        state.accumulated_answer = ""
-                    state.accumulated_answer += delta
-                    await self.event_bus.publish(
-                        EventFactory.final_answer_chunk(
-                            state.current_step, delta, state.accumulated_answer
-                        )
-                    )
-                elif parse_event.event_type == ParseEventType.ANSWER_COMPLETE:
-                    step.answer = _strip_xml_tags_from_answer(parse_event.data["answer"])
-                elif parse_event.event_type == ParseEventType.THINKING:
-                    delta = parse_event.data["delta"]
-                    await self.event_bus.publish(
-                        EventFactory.thinking_chunk(state.current_step, delta, buffer)
-                    )
-                elif parse_event.event_type == ParseEventType.THINKING_COMPLETE:
-                    step.thought = parse_event.data["thought"]
-                    await self.event_bus.publish(
-                        EventFactory.thought(state.current_step, step.thought)
-                    )
-
-            # Reconstruct assistant message from buffer
-            # This preserves the complete response including XML tags for context
             assistant_content = buffer.strip()
 
             # Trace: dump the LLM response we got back, including any accumulated
@@ -706,20 +595,12 @@ class ReActOrchestrator:
                 ", ".join(_summarize_tool_call(tc) for tc in accumulated_tool_calls.values()),
             )
 
-            # === TOOL CALL ROUTING ===
-            # Tool calls present = continue loop (execute tool)
-            # No tool calls = final answer
+            # === TURN ROUTING ===
+            # Tool calls present = action turn, execute and loop.
+            # finish_reason == "length" = response truncated, nudge model.
+            # Otherwise = answer turn, accumulated text is the final answer.
 
             if accumulated_tool_calls:
-                # Reset consecutive thinking counter — tool call present
-                state._consecutive_thinking_steps = 0
-
-                # Any text streamed before the tool call was narration, not
-                # the final answer. Each delta was already emitted as a
-                # thinking_chunk during streaming, so there is nothing to
-                # re-emit or discard here.
-
-                # --- OTHER TOOLS: Execute normally ---
                 # Take first tool call (ReAct is single-action per step)
                 tool_call_data = accumulated_tool_calls.get(0)
                 if not tool_call_data:
@@ -950,76 +831,17 @@ class ReActOrchestrator:
                 # Don't set step.answer — loop will continue
 
             else:
-                # Detect hallucinated XML tool calls (model outputting tool calls as text
-                # instead of using native tool calling API)
-                if re.search(r"<function_calls>|<invoke\s+name=", assistant_content, re.IGNORECASE):
-                    logger.warning(
-                        f"Step {state.current_step} - LLM output hallucinated XML tool calls as text "
-                        f"instead of using native tool calling. Stripping XML and treating as answer. "
-                        f"Preview: {assistant_content[:200]}..."
-                    )
-
-                # Check if this text-only response is actually thinking/planning
-                # rather than a final answer (e.g. "Let me check that:" without a tool call)
-                treat_as_final = True
-                if assistant_content and not step.answer:
-                    # Only attempt classification if we haven't exceeded consecutive thinking limit
-                    consecutive_thinking = getattr(state, "_consecutive_thinking_steps", 0)
-                    if consecutive_thinking < 2:
-                        is_final = await self._is_final_answer(assistant_content)
-                        if not is_final:
-                            treat_as_final = False
-                            state._consecutive_thinking_steps = consecutive_thinking + 1
-                            logger.info(
-                                f"Step {state.current_step} - Text-only response classified as THINKING "
-                                f"(consecutive={state._consecutive_thinking_steps}), continuing loop. "
-                                f"Preview: {assistant_content[:200]}..."
-                            )
-                            context.messages.append(
-                                Message(role=MessageRole.ASSISTANT, content=assistant_content)
-                            )
-                            # End on a user turn so models without prefill
-                            # support (e.g. Opus 4.7) accept the next call.
-                            context.messages.append(
-                                Message(
-                                    role=MessageRole.USER,
-                                    content=(
-                                        "Continue with your next action: call a tool "
-                                        "or provide a final answer."
-                                    ),
-                                )
-                            )
-                            # Don't set step.answer — loop will continue
-                    else:
-                        logger.warning(
-                            f"Step {state.current_step} - Exceeded consecutive thinking limit "
-                            f"({consecutive_thinking}), forcing final answer"
-                        )
-
-                if treat_as_final:
-                    logger.debug(f"Step {state.current_step} - No tool calls, treating as final answer")
-
-                    # Add assistant message to context
-                    response_message = Message(role=MessageRole.ASSISTANT, content=assistant_content)
-                    context.messages.append(response_message)
-
-                    # If answer was already parsed from <answer> XML tags during streaming, use it.
-                    # Otherwise, the entire text content IS the answer.
-                    if not step.answer and assistant_content:
-                        # Safety net: strip any residual XML tags that might have leaked
-                        step.answer = _strip_xml_tags_from_answer(assistant_content)
-
-                        # Emit answer chunks for plain text responses (no XML tags were used)
-                        # The XML parser only emits ANSWER_CHUNK when <answer> tags are present,
-                        # so we need to emit the full answer here for streaming consumers
-                        if not getattr(state, "accumulated_answer", None) and step.answer:
-                            await self.event_bus.publish(
-                                EventFactory.final_answer_chunk(
-                                    state.current_step, step.answer, step.answer
-                                )
-                            )
-
-                    # step.answer is now set, so is_final_step property returns True
+                # Answer turn: no tool calls, no truncation. Streamed text
+                # deltas already went out as final_answer_chunk events;
+                # set step.answer so is_final_step returns True and the
+                # main loop publishes the closing final_answer event.
+                logger.debug(
+                    f"Step {state.current_step} - No tool calls; treating as final answer"
+                )
+                context.messages.append(
+                    Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                )
+                step.answer = assistant_content
 
         except Exception as e:
             self._handle_step_error(step, e, state)
@@ -1031,148 +853,6 @@ class ReActOrchestrator:
         # Add observation to context if present (from tool execution)
         # NOTE: This is actually added in _handle_tool_action now with proper tool_call_id
         return step
-
-    async def _classify_response_type(self, content: str) -> str:
-        """Use LLM to classify if content is thinking/reasoning or a final answer.
-
-        This is a more robust approach than pattern matching, as it uses
-        semantic understanding to classify the content.
-
-        Args:
-            content: The content to classify
-
-        Returns:
-            "THINKING" if content is reasoning/planning, "ANSWER" if it's a final answer
-        """
-        if not content or len(content.strip()) == 0:
-            return "THINKING"
-
-        # Truncate very long content to save tokens (keep first 500 chars)
-        truncated_content = content[:500] + ("..." if len(content) > 500 else "")
-
-        classification_prompt = f"""Classify this AI assistant response as either "THINKING" or "ANSWER".
-
-THINKING: Internal reasoning, planning next steps, analyzing information, deciding what to do
-Examples:
-- "I need to check the database for this information"
-- "Let me analyze the data from the tool result"
-- "First, I should verify the user's credentials"
-
-ANSWER: Direct response to user, complete solution, final conclusion, stating facts
-Examples:
-- "You have 131 accounts in your database"
-- "The current stock price is $45.23"
-- "Based on the analysis, here are the top 3 recommendations"
-
-Response to classify:
-{truncated_content}
-
-Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
-
-        try:
-            # Create a simple message for classification
-            messages = [Message(role=MessageRole.USER, content=classification_prompt)]
-
-            # Use low temperature for deterministic classification
-            # max_tokens=50 gives buffer for models that add extra formatting/whitespace
-            response = await self.tool_executor._client.achat(
-                messages=messages, temperature=0.0, max_tokens=50
-            )
-
-            classification = (response.message.content or "").strip().upper()
-
-            # Validate response
-            if "ANSWER" in classification:
-                return "ANSWER"
-            elif "THINKING" in classification:
-                return "THINKING"
-            else:
-                # Fallback to heuristic if LLM returns empty or unexpected response
-                # This is normal behavior, not a warning - some providers may return empty responses
-                logger.debug(
-                    f"Classification response '{classification}' not recognized, using heuristic"
-                )
-                return "ANSWER" if self._heuristic_is_final_answer(content) else "THINKING"
-
-        except Exception as e:
-            logger.warning(f"LLM classification failed: {e}, falling back to heuristic")
-            return "ANSWER" if self._heuristic_is_final_answer(content) else "THINKING"
-
-    def _heuristic_is_final_answer(self, thought: str) -> bool:
-        """Fallback heuristic for detecting final answers (improved from old pattern matching).
-
-        This is used as a last resort if LLM classification fails.
-        Now uses multiple signals rather than just keywords.
-        """
-        if not thought or len(thought.strip()) == 0:
-            return False
-
-        thought_lower = thought.lower()
-
-        # Signal 1: Strong indicators that this is a final answer
-        final_answer_indicators = [
-            "the answer is",
-            "final answer",
-            "in conclusion",
-            "to summarize",
-            "in summary",
-            "therefore, the answer",
-            "so the answer",
-            "the result is",
-            "to answer your question",
-            "based on the",
-        ]
-
-        for indicator in final_answer_indicators:
-            if indicator in thought_lower:
-                return True
-
-        # Signal 2: Strong indicators this is NOT a final answer (still thinking)
-        needs_more_work_indicators = [
-            "i need to",
-            "i should",
-            "let me",
-            "i'll",
-            "first, i",
-            "next, i",
-            "i will",
-            "should check",
-            "need to verify",
-            "let's",
-        ]
-
-        for indicator in needs_more_work_indicators:
-            if indicator in thought_lower:
-                return False
-
-        # Signal 3: Check for declarative statements with data
-        import re
-
-        declarative_patterns = [
-            r"\byou have\b",
-            r"\bthere (?:are|is)\b",
-            r"\bthe (?:total|count|number|result) (?:is|are)\b",
-            r"\b(?:has|have) \d+\b",
-        ]
-
-        for pattern in declarative_patterns:
-            if re.search(pattern, thought_lower):
-                return True
-
-        # Signal 4: Length heuristic (answers typically longer than thinking)
-        if len(thought) > 200:
-            return True
-
-        return False
-
-    async def _is_final_answer(self, thought: str) -> bool:
-        """Detect if the thought indicates a final answer.
-
-        Uses intelligent LLM-based classification with heuristic fallback.
-        This replaces the old brittle pattern matching approach.
-        """
-        classification = await self._classify_response_type(thought)
-        return classification == "ANSWER"
 
     async def _handle_tool_action(
         self,
@@ -1631,14 +1311,12 @@ Classification (respond with ONLY one word - either "THINKING" or "ANSWER"):"""
         logger.error(f"Step {state.current_step} failed: {error}", exc_info=True)
 
     async def _publish_final_answer_event(self, step: ReActStep, state: "ExecutionState"):
-        """Publish final answer event.
+        """Publish the closing final_answer event for the complete answer.
 
-        Note: With XML streaming, answer chunks are already emitted during parsing.
-        This method publishes the complete final_answer event for consumers like agent.run()
-        that need to capture the complete answer.
+        Answer chunks are streamed live as they arrive in the streaming loop;
+        this single event signals completion and gives consumers like
+        agent.run() the full answer string in one place.
         """
-        # Always publish final_answer event with complete answer
-        # Chunks were streamed incrementally, but agent.run() needs the complete event
         if step.answer:
             await self.event_bus.publish(EventFactory.final_answer(state.current_step, step.answer))
 

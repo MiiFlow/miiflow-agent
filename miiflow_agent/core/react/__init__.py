@@ -40,8 +40,7 @@ from .react_events import ReActEvent, PlanExecuteEvent
 # Exceptions
 from .exceptions import ReActParsingError, ReActExecutionError, SafetyViolationError
 
-# Parser and safety
-from .parser import ReActParser
+# Safety
 from .safety import StopCondition, SafetyManager
 
 # Execution state
@@ -92,8 +91,7 @@ __all__ = [
     "ReActParsingError",
     "ReActExecutionError",
     "SafetyViolationError",
-    # Parser and safety
-    "ReActParser",
+    # Safety
     "StopCondition",
     "SafetyManager",
     # Execution state

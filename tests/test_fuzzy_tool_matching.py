@@ -11,7 +11,6 @@ from miiflow_agent.core.react.orchestrator import ReActOrchestrator
 from miiflow_agent.core.react.tool_executor import AgentToolExecutor
 from miiflow_agent.core.react.events import EventBus
 from miiflow_agent.core.react.safety import SafetyManager
-from miiflow_agent.core.react.parser import ReActParser
 
 
 class MockToolExecutor:
@@ -25,17 +24,14 @@ class MockToolExecutor:
 def test_fuzzy_matching():
     """Test that fuzzy matching works for common hallucinations."""
 
-    # Create a minimal orchestrator for testing
     mock_executor = MockToolExecutor()
     event_bus = EventBus()
     safety_manager = SafetyManager()
-    parser = ReActParser()
 
     orchestrator = ReActOrchestrator(
         tool_executor=mock_executor,
         event_bus=event_bus,
         safety_manager=safety_manager,
-        parser=parser
     )
 
     # Test cases: (hallucinated_name, expected_correction)

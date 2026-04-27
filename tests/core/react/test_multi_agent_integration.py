@@ -42,7 +42,6 @@ from miiflow_agent.core.react.events import EventBus
 from miiflow_agent.core.react.models import MultiAgentResult, SubAgentConfig, SubAgentPlan
 from miiflow_agent.core.react.multi_agent_orchestrator import MultiAgentOrchestrator
 from miiflow_agent.core.react.orchestrator import ReActOrchestrator
-from miiflow_agent.core.react.parser import ReActParser
 from miiflow_agent.core.react.react_events import MultiAgentEvent
 from miiflow_agent.core.react.safety import SafetyManager
 from miiflow_agent.core.react.tool_executor import AgentToolExecutor
@@ -254,7 +253,6 @@ async def create_multi_agent_orchestrator(
         tool_executor=tool_executor,
         event_bus=event_bus,
         safety_manager=subagent_safety,
-        parser=ReActParser(),
     )
 
     # Create safety manager for multi-agent orchestrator

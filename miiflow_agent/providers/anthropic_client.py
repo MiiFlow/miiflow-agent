@@ -354,6 +354,57 @@ class AnthropicClient(ModelClient):
         """Check if the current model supports native MCP via beta API."""
         return supports_native_mcp(self.model)
 
+    @staticmethod
+    def _apply_prompt_caching(request_params: Dict[str, Any]) -> None:
+        """Add an Anthropic prompt-cache breakpoint to `request_params` in place.
+
+        Why: on a multi-turn thread the system prompt + tool definitions are
+        identical every turn. Without an explicit cache_control marker the
+        provider re-tokenizes and re-charges the whole prefix on every request.
+        With a marker on the last tool (or last system block when no tools),
+        the entire `system + tools` prefix reads from cache on subsequent turns
+        — full price drops to ~10% and TTFT drops materially. Cached prefix
+        TTL is 5 min, which lines up with active conversation cadence.
+
+        We mark the last tool when tools are present (Anthropic caches
+        everything before the marker, which transparently includes `system`).
+        Falls back to marking the system block when there are no tools.
+        Mid-conversation message-history caching is intentionally left out
+        of this pass — extending it requires touching message content shapes
+        and is a separate, more invasive change.
+        """
+        tools = request_params.get("tools")
+        if tools:
+            new_tools = list(tools)
+            last = new_tools[-1]
+            if isinstance(last, dict):
+                last_copy = dict(last)
+                last_copy["cache_control"] = {"type": "ephemeral"}
+                new_tools[-1] = last_copy
+                request_params["tools"] = new_tools
+            return
+
+        system = request_params.get("system")
+        if not system:
+            return
+
+        if isinstance(system, str):
+            request_params["system"] = [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        elif isinstance(system, list) and system:
+            new_system = list(system)
+            last = new_system[-1]
+            if isinstance(last, dict):
+                last_copy = dict(last)
+                last_copy["cache_control"] = {"type": "ephemeral"}
+                new_system[-1] = last_copy
+                request_params["system"] = new_system
+
     @retry(
         stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10), reraise=True
     )
@@ -515,6 +566,8 @@ class AnthropicClient(ModelClient):
             if not supports_temperature(self.model):
                 request_params.pop("temperature", None)
 
+            self._apply_prompt_caching(request_params)
+
             # Use beta client for structured outputs or native MCP
             use_beta_client = use_native_structured_output or use_native_mcp
             if use_beta_client:
@@ -605,14 +658,49 @@ class AnthropicClient(ModelClient):
                 tool_calls=tool_calls if tool_calls else None,
             )
 
-            usage = TokenCount(
-                prompt_tokens=response.usage.input_tokens,
-                completion_tokens=response.usage.output_tokens,
-                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+            # When prompt caching is active, Anthropic splits input tokens into
+            # three buckets: `input_tokens` (uncached, full price),
+            # `cache_creation_input_tokens` (just-cached, ~1.25x), and
+            # `cache_read_input_tokens` (cache hit, ~0.1x). Sum them so
+            # `prompt_tokens` continues to mean "all input tokens this turn"
+            # — otherwise downstream rate-limit and billing telemetry silently
+            # under-reports as soon as cache hits start landing.
+            #
+            # The SDK returns int or None for these fields. Be strict about
+            # typing — a plain `or 0` would let truthy non-numeric values
+            # (e.g. MagicMock attributes in tests) sneak in and corrupt math.
+            def _as_int(val: Any) -> int:
+                return val if isinstance(val, int) else 0
+
+            cache_creation_tokens = _as_int(
+                getattr(response.usage, "cache_creation_input_tokens", 0)
             )
+            cache_read_tokens = _as_int(
+                getattr(response.usage, "cache_read_input_tokens", 0)
+            )
+            input_tokens_total = (
+                response.usage.input_tokens + cache_creation_tokens + cache_read_tokens
+            )
+
+            usage = TokenCount(
+                prompt_tokens=input_tokens_total,
+                completion_tokens=response.usage.output_tokens,
+                total_tokens=input_tokens_total + response.usage.output_tokens,
+            )
+
+            if cache_creation_tokens or cache_read_tokens:
+                logger.debug(
+                    "Anthropic prompt cache: read=%d, written=%d, uncached=%d",
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                    response.usage.input_tokens,
+                )
 
             # Build metadata
             metadata = {"response_id": response.id}
+            if cache_creation_tokens or cache_read_tokens:
+                metadata["cache_read_input_tokens"] = cache_read_tokens
+                metadata["cache_creation_input_tokens"] = cache_creation_tokens
             if mcp_tool_results:
                 metadata["mcp_tool_results"] = mcp_tool_results
             if use_native_mcp:
@@ -808,6 +896,8 @@ class AnthropicClient(ModelClient):
             # parameter; drop it before hitting the API.
             if not supports_temperature(self.model):
                 request_params.pop("temperature", None)
+
+            self._apply_prompt_caching(request_params)
 
             # Determine which client to use
             # Use beta client for structured outputs or native MCP

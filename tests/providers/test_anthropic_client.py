@@ -51,7 +51,14 @@ class TestAnthropicClient:
             call_args = mock_create.call_args
             assert call_args.kwargs['model'] == "claude-3-haiku-20240307"
             assert len(call_args.kwargs['messages']) == 1  # System message becomes system param
-            assert call_args.kwargs['system'] == "You are a helpful assistant."
+            # Prompt caching wraps the system string in a list of blocks with
+            # a cache_control marker on the last block — the marker caches
+            # the system+tools prefix so multi-turn threads don't re-pay TTFT
+            # on the static portion. See AnthropicClient._apply_prompt_caching.
+            system_param = call_args.kwargs['system']
+            assert isinstance(system_param, list)
+            assert system_param[-1]['text'] == "You are a helpful assistant."
+            assert system_param[-1]['cache_control'] == {"type": "ephemeral"}
     
     @pytest.mark.asyncio
     async def test_stream_chat_success(self, client, sample_messages, mock_anthropic_stream_chunks):

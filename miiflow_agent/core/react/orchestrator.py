@@ -652,8 +652,9 @@ class ReActOrchestrator:
                     )
                     step.action_input = {}
 
-                # Extract __description from action_input (LLM-generated human-readable description)
-                # This is used for displaying "Searching for Tesla news" instead of "search_web"
+                # Extract __description from action_input (LLM-generated human-readable description).
+                # Format: short verb-led imperative phrase, e.g. "Search the web for Tesla news"
+                # — used as a UI label and as the question text for tool approval consent.
                 tool_description = None
                 if isinstance(step.action_input, dict):
                     tool_description = step.action_input.pop("__description", None)

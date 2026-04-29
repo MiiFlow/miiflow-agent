@@ -17,7 +17,7 @@ NEVER do both in the same turn. NEVER write text alongside a tool call. Do not n
 ## Tool usage
 
 - Prefer specific tools over generic ones. Check what tools are available before acting.
-- When calling tools, always provide a brief `__description` explaining what you're doing (e.g., "Searching for Tesla stock price").
+- When calling tools, always provide a brief `__description` for the user — a short verb-led action phrase in imperative form (e.g., "Search the web for Tesla stock price", "Send an email to alex@example.com"). Don't use gerunds like "Searching" and don't repeat the tool name like "Calling search_web".
 - When ready to answer, respond with text only — do NOT call any tools.
 
 ## Error handling

@@ -263,8 +263,10 @@ class AgentToolExecutor:
     def _inject_description_param(self, schema: dict) -> dict:
         """Inject __description parameter into tool schema.
 
-        This parameter requires the LLM to provide a human-readable description
-        of what it's doing with each tool call (e.g., 'Searching for Tesla news').
+        Asks the LLM to attach a short, verb-led imperative phrase to each tool
+        call (e.g. 'Search the web for Tesla news'). The phrase is shown in the
+        chat UI as both a status label and — when approval is required — the
+        question the user is consenting to.
         """
         import copy
 
@@ -276,10 +278,15 @@ class AgentToolExecutor:
         if "properties" not in schema["parameters"]:
             schema["parameters"]["properties"] = {}
 
-        # Add __description as a required parameter
+        # Add __description as a required parameter.
+        # Format: short verb-led action phrase that a non-technical user can read
+        # as either a status ("Search the web for X") or a question ("Search the
+        # web for X?" with consent chips beneath). Avoid gerunds ("Searching")
+        # and tool-name jargon ("search_web") — those read as a debugger,
+        # not as the assistant communicating with the user.
         schema["parameters"]["properties"]["__description"] = {
             "type": "string",
-            "description": "Brief, user-friendly description of what you're doing with this tool call (e.g., 'Searching for Tesla stock price' not just 'search_web')"
+            "description": "Short verb-led action phrase the user will read in the UI. Use imperative form. Examples: 'Search the web for Tesla stock price', 'Send an email to john@example.com', 'Look up campaign performance for last week'. Don't use gerunds ('Searching for X'), don't repeat the tool name ('Calling search_web'), don't add ellipses or punctuation."
         }
 
         # Make it required

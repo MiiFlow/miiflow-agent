@@ -15,7 +15,7 @@ class ToolActivity:
     """Record of a single tool execution."""
 
     tool_name: str
-    description: str  # Human-readable: "Searching for Tesla news"
+    description: str  # Human-readable verb-led phrase, e.g. "Search the web for Tesla news"
     timestamp: float
     success: bool
     execution_time: float

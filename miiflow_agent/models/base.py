@@ -43,7 +43,7 @@ class ModelConfig:
     This defines a model's capabilities, parameter requirements, and pricing.
     """
 
-    model_identifier: str  # API model name (e.g., "gpt-4o")
+    model_identifier: str  # API model name (e.g., "gpt-5.5")
     name: str  # Display name
     description: str = ""
 

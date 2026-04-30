@@ -9,7 +9,6 @@ _REASONING_MODELS = {
     "o3",
     "o3-pro",
     "o3-mini",
-    "o4-mini",
 }
 
 _GPT5_MODELS = {
@@ -131,23 +130,6 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         output_cost_hint=1.25,
     ),
     # GPT-4o series (standard models, use max_tokens)
-    "gpt-4o": ModelConfig(
-        model_identifier="gpt-4o",
-        name="gpt-4o",
-        description="Legacy — retired from ChatGPT February 13, 2026, still available via API. Multimodal model with vision and audio. Succeeded by GPT-5.4.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        reasoning=False,
-        maximum_context_tokens=128000,
-        maximum_output_tokens=16384,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=2.5,
-        output_cost_hint=10.0,
-    ),
     "gpt-4o-mini": ModelConfig(
         model_identifier="gpt-4o-mini",
         name="gpt-4o-mini",
@@ -269,23 +251,6 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=20.00,
         output_cost_hint=80.00,
     ),
-    "o4-mini": ModelConfig(
-        model_identifier="o4-mini",
-        name="o4-mini",
-        description="OpenAI's compact yet powerful reasoning model with excellent cost-efficiency for math, coding, and science tasks.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        reasoning=True,
-        maximum_context_tokens=200000,
-        maximum_output_tokens=100000,
-        token_param_name="max_completion_tokens",
-        supports_temperature=False,
-        input_cost_hint=1.10,
-        output_cost_hint=4.40,
-    ),
 }
 
 
@@ -308,7 +273,6 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         parameter_type=ParameterType.NUMBER,
         min_value=1,
         max_value={
-            "gpt-4o": 16384,
             "gpt-4o-mini": 16384,
             "gpt-4.1": 32768,
             "gpt-4.1-mini": 32768,
@@ -333,7 +297,6 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
             "o3": 100000,
             "o3-pro": 100000,
             "o3-mini": 100000,
-            "o4-mini": 100000,
             "default": 100000,
         },
         supported_models=list(_NO_TEMPERATURE_MODELS),
@@ -387,7 +350,7 @@ def get_token_param_name(model: str) -> str:
     - Reasoning models (o1, o3, GPT-5): max_completion_tokens
 
     Args:
-        model: The model identifier (e.g., "gpt-4o", "o1-mini")
+        model: The model identifier (e.g., "gpt-5.5", "o3-mini")
 
     Returns:
         The API parameter name to use for max tokens

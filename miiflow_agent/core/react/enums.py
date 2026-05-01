@@ -23,6 +23,7 @@ class ReActEventType(Enum):
     MEDIA = "media"  # Tool returned a media result (image/video/audio)
     ARTIFACT = "artifact"  # Tool returned a downloadable artifact (PDF, HTML, ...)
     PROGRESS = "progress"  # Progress snapshot update
+    LLM_TRUNCATED = "llm_truncated"  # Model hit max_tokens (often mid-tool-call)
 
 
 class StopReason(Enum):

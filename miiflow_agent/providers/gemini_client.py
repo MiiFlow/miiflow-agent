@@ -171,7 +171,7 @@ class GeminiClient(ModelClient):
         self,
         model: str,
         api_key: Optional[str] = None,
-        timeout: float = 60.0,
+        timeout: float = 120.0,
         max_retries: int = 3,
         **kwargs,
     ):

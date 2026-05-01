@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_MAX_TOKENS = 32768
+
+
 class AnthropicClient(ModelClient):
     """Anthropic provider client."""
 
@@ -355,6 +358,123 @@ class AnthropicClient(ModelClient):
         return supports_native_mcp(self.model)
 
     @staticmethod
+    def _count_optional_properties(schema: Any) -> int:
+        """Count optional (non-required) properties recursively in a JSON schema.
+
+        Anthropic's strict-mode grammar compiler caps the *total* number of
+        optional properties across all strict tool schemas in a request at
+        24. We count every property whose name isn't in its enclosing
+        object's `required` array — at the top level *and* nested inside
+        properties, items, or allOf/anyOf/oneOf branches — so the demotion
+        logic can stay safely under the cap.
+        """
+        if not isinstance(schema, dict):
+            return 0
+        count = 0
+        if schema.get("type") == "object" and isinstance(schema.get("properties"), dict):
+            required = set(schema.get("required") or [])
+            for prop_name, prop_schema in schema["properties"].items():
+                if prop_name not in required:
+                    count += 1
+                count += AnthropicClient._count_optional_properties(prop_schema)
+        if isinstance(schema.get("items"), dict):
+            count += AnthropicClient._count_optional_properties(schema["items"])
+        for combinator in ("allOf", "anyOf", "oneOf"):
+            branches = schema.get(combinator)
+            if isinstance(branches, list):
+                for branch in branches:
+                    count += AnthropicClient._count_optional_properties(branch)
+        return count
+
+    @staticmethod
+    def _demote_strict_tool(tool: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a copy of `tool` with the strict flag removed and schema loosened."""
+        demoted = dict(tool)
+        demoted.pop("strict", None)
+        schema = demoted.get("input_schema")
+        # Loosen the schema so additionalProperties:false isn't interpreted as
+        # a hard rejection rule by the API. Keep the rest of the schema intact.
+        if isinstance(schema, dict):
+            schema = dict(schema)
+            if schema.get("additionalProperties") is False:
+                schema["additionalProperties"] = True
+            demoted["input_schema"] = schema
+        return demoted
+
+    @staticmethod
+    def _apply_strict_tool_cap(request_params: Dict[str, Any]) -> None:
+        """Demote excess strict tools to non-strict to fit Anthropic's per-request caps.
+
+        Anthropic enforces two caps on strict-mode tool schemas per request:
+        (1) at most 20 tools may carry `strict: true`, and (2) the *total*
+        number of optional (non-required) properties across all strict
+        schemas must not exceed 24, or grammar compilation fails with a
+        400 ("Schemas contains too many optional parameters"). With
+        strict-by-default tools, both caps are easy to exceed when an agent
+        loads multiple tagged tool sets. We demote the tail (the last N
+        strict tools) so the prefix — typically the most important /
+        always-loaded tools — keeps strict semantics, and emit a WARNING
+        listing every tool we touched so the operator can either raise the
+        cap by removing tools or refine which tools opt out at definition
+        time.
+        """
+        tool_cap = 20
+        optional_param_cap = 24
+        tools = request_params.get("tools")
+        if not tools:
+            return
+        strict_indices = [i for i, t in enumerate(tools) if isinstance(t, dict) and t.get("strict")]
+        if not strict_indices:
+            return
+
+        new_tools = list(tools)
+        demoted_names: List[str] = []
+        original_strict_count = len(strict_indices)
+
+        # Phase 1: enforce the 20-tool cap. Demote tail strict tools first.
+        while len(strict_indices) > tool_cap:
+            idx = strict_indices.pop()
+            new_tools[idx] = AnthropicClient._demote_strict_tool(new_tools[idx])
+            demoted_names.append(new_tools[idx].get("name", f"<idx={idx}>"))
+
+        # Phase 2: enforce the 24-optional-param cap by walking the strict
+        # schemas that survived phase 1 and demoting from the tail until the
+        # running total fits. Recomputing the total each iteration keeps the
+        # logic simple at the cost of O(N²) on the strict subset, which is
+        # fine for N ≤ 20.
+        def total_optional_params() -> int:
+            return sum(
+                AnthropicClient._count_optional_properties(
+                    new_tools[i].get("input_schema", {}) if isinstance(new_tools[i], dict) else {}
+                )
+                for i in strict_indices
+            )
+
+        original_optional_total = total_optional_params()
+        while strict_indices and total_optional_params() > optional_param_cap:
+            idx = strict_indices.pop()
+            new_tools[idx] = AnthropicClient._demote_strict_tool(new_tools[idx])
+            demoted_names.append(new_tools[idx].get("name", f"<idx={idx}>"))
+
+        if not demoted_names:
+            return
+
+        request_params["tools"] = new_tools
+        logger.warning(
+            "[STRICT_TOOL_CAP] strict tools=%d optional_params=%d exceeded "
+            "Anthropic caps (tools=%d, optional_params=%d) — demoted %d "
+            "tool(s) to non-strict: %s. To restore strictness, opt specific "
+            "tools out at definition (strict=False) or reduce the tool set "
+            "passed to this agent.",
+            original_strict_count,
+            original_optional_total,
+            tool_cap,
+            optional_param_cap,
+            len(demoted_names),
+            demoted_names,
+        )
+
+    @staticmethod
     def _apply_prompt_caching(request_params: Dict[str, Any]) -> None:
         """Add an Anthropic prompt-cache breakpoint to `request_params` in place.
 
@@ -466,11 +586,9 @@ class AnthropicClient(ModelClient):
                         **kwargs,
                     }
 
-                    # Anthropic requires max_tokens, use 4096 as default if not specified
-                    if max_tokens is not None:
-                        request_params["max_tokens"] = max_tokens
-                    else:
-                        request_params["max_tokens"] = 4096
+                    request_params["max_tokens"] = (
+                        max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+                    )
 
                     logger.debug(f"Using native structured output API for model {self.model}")
                 else:
@@ -496,11 +614,9 @@ class AnthropicClient(ModelClient):
                         **kwargs,
                     }
 
-                    # Anthropic requires max_tokens, use 4096 as default if not specified
-                    if max_tokens is not None:
-                        request_params["max_tokens"] = max_tokens
-                    else:
-                        request_params["max_tokens"] = 4096
+                    request_params["max_tokens"] = (
+                        max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+                    )
 
                     logger.debug(f"Using tool-based JSON output for model {self.model}")
             else:
@@ -512,11 +628,9 @@ class AnthropicClient(ModelClient):
                     **kwargs,
                 }
 
-                # Anthropic requires max_tokens, use 4096 as default if not specified
-                if max_tokens is not None:
-                    request_params["max_tokens"] = max_tokens
-                else:
-                    request_params["max_tokens"] = 4096
+                request_params["max_tokens"] = (
+                    max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+                )
 
             if system_content:
                 request_params["system"] = system_content
@@ -566,6 +680,7 @@ class AnthropicClient(ModelClient):
             if not supports_temperature(self.model):
                 request_params.pop("temperature", None)
 
+            self._apply_strict_tool_cap(request_params)
             self._apply_prompt_caching(request_params)
 
             # Use beta client for structured outputs or native MCP
@@ -675,9 +790,7 @@ class AnthropicClient(ModelClient):
             cache_creation_tokens = _as_int(
                 getattr(response.usage, "cache_creation_input_tokens", 0)
             )
-            cache_read_tokens = _as_int(
-                getattr(response.usage, "cache_read_input_tokens", 0)
-            )
+            cache_read_tokens = _as_int(getattr(response.usage, "cache_read_input_tokens", 0))
             input_tokens_total = (
                 response.usage.input_tokens + cache_creation_tokens + cache_read_tokens
             )
@@ -798,11 +911,9 @@ class AnthropicClient(ModelClient):
                         **kwargs,
                     }
 
-                    # Anthropic requires max_tokens, use 4096 as default if not specified
-                    if max_tokens is not None:
-                        request_params["max_tokens"] = max_tokens
-                    else:
-                        request_params["max_tokens"] = 4096
+                    request_params["max_tokens"] = (
+                        max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+                    )
 
                     logger.debug(
                         f"Using native structured output API with streaming for model {self.model}"
@@ -831,11 +942,9 @@ class AnthropicClient(ModelClient):
                         **kwargs,
                     }
 
-                    # Anthropic requires max_tokens, use 4096 as default if not specified
-                    if max_tokens is not None:
-                        request_params["max_tokens"] = max_tokens
-                    else:
-                        request_params["max_tokens"] = 4096
+                    request_params["max_tokens"] = (
+                        max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+                    )
 
                     logger.debug(
                         f"Using tool-based JSON output with streaming for model {self.model}"
@@ -850,11 +959,9 @@ class AnthropicClient(ModelClient):
                     **kwargs,
                 }
 
-                # Anthropic requires max_tokens, use 4096 as default if not specified
-                if max_tokens is not None:
-                    request_params["max_tokens"] = max_tokens
-                else:
-                    request_params["max_tokens"] = 4096
+                request_params["max_tokens"] = (
+                    max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+                )
 
             if system_content:
                 request_params["system"] = system_content
@@ -897,6 +1004,7 @@ class AnthropicClient(ModelClient):
             if not supports_temperature(self.model):
                 request_params.pop("temperature", None)
 
+            self._apply_strict_tool_cap(request_params)
             self._apply_prompt_caching(request_params)
 
             # Determine which client to use

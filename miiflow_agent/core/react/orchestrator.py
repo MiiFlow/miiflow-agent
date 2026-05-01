@@ -136,6 +136,86 @@ def _sanitize_error_message(error_msg: str) -> str:
     return result
 
 
+def _preparse_tool_args_string(
+    tool_call_data: Dict[str, Any], step_number: int, tool_name: str
+) -> None:
+    """Parse OpenAI/Gemini-style string tool args into a dict in-place.
+
+    On JSONDecodeError, attaches a `_truncation_error` marker so the
+    orchestrator's truncation handler treats it the same as Anthropic's
+    upstream truncation signal (which the stream_normalizer attaches at
+    content_block_stop). No-op if args are already a dict, None, or empty.
+    """
+    args = tool_call_data.get("function", {}).get("arguments")
+    if not isinstance(args, str) or not args.strip():
+        return
+    import json as _json_mod
+
+    try:
+        tool_call_data["function"]["arguments"] = _json_mod.loads(args)
+    except _json_mod.JSONDecodeError as parse_exc:
+        logger.warning(
+            "Step %d - Tool '%s' args failed to parse as JSON "
+            "(len=%d, error=%s) — routing to truncation handler",
+            step_number,
+            tool_name,
+            len(args),
+            parse_exc,
+        )
+        tool_call_data["_truncation_error"] = {
+            "kind": "json_parse_failed",
+            "message": str(parse_exc),
+            "accumulated_length": len(args),
+            "raw_prefix": args[:500],
+        }
+        tool_call_data["function"]["arguments"] = {}
+
+
+def _format_missing_params_error(
+    tool_name: str,
+    missing_params: List[str],
+    provided_params: List[str],
+    tool_schema: Dict[str, Any],
+) -> str:
+    """Build an actionable <tool_use_error> for missing required params.
+
+    Includes per-field schema hints so the model can correct in one retry
+    rather than guessing again. Mirrors claude-code's tool_use_error pattern.
+    """
+    parameters = tool_schema.get("parameters", {}) or {}
+    properties = parameters.get("properties", {}) or {}
+    required = set(parameters.get("required", []) or [])
+
+    def _field_hint(name: str, spec: Dict[str, Any]) -> str:
+        type_ = spec.get("type", "any")
+        desc = (spec.get("description") or "").strip()
+        enum = spec.get("enum")
+        marker = "REQUIRED" if name in required else "optional"
+        parts = [f"  - {name} ({marker}, {type_}"]
+        if enum:
+            parts.append(f", one of: {', '.join(map(str, enum))}")
+        parts.append(")")
+        if desc:
+            parts.append(f": {desc}")
+        return "".join(parts)
+
+    # Show missing required first, then the rest, so attention lands on the gap.
+    ordered = list(missing_params) + [n for n in properties if n not in missing_params]
+    schema_lines = [_field_hint(n, properties[n]) for n in ordered if n in properties]
+
+    return (
+        "<tool_use_error>\n"
+        f"InputValidationError: tool '{tool_name}' is missing required parameters "
+        f"{missing_params}. Provided: {provided_params}.\n\n"
+        f"Schema for '{tool_name}':\n"
+        + "\n".join(schema_lines)
+        + "\n\nRetry the call with every REQUIRED field populated. Do not omit "
+        "data-bearing fields (arrays, structured objects) — supplying only "
+        "cosmetic fields (title, layout, etc.) will fail again.\n"
+        "</tool_use_error>"
+    )
+
+
 class ReActOrchestrator:
     """Action-or-answer agent loop.
 
@@ -285,11 +365,19 @@ class ReActOrchestrator:
 
                 # Recovery: if step had an error, try recovery strategies
                 if step.is_error_step and self.recovery_manager:
+                    from .recovery import FailureKind
+
+                    kind_str = step.metadata.get("failure_kind", "runtime")
+                    try:
+                        failure_kind = FailureKind(kind_str)
+                    except ValueError:
+                        failure_kind = FailureKind.RUNTIME
                     recovery_action = await self.recovery_manager.attempt_recovery(
                         error=Exception(step.error or "Unknown error"),
                         context=context,
                         step=step,
                         tool_name=step.action,
+                        failure_kind=failure_kind,
                     )
                     logger.info(
                         "[ORCH] step=%d recovery strategy=%s attempt=%s continue=%s "
@@ -571,8 +659,12 @@ class ReActOrchestrator:
                         logger.debug(f"Tool call accumulated: {accumulated_tool_calls[idx]}")
 
                 # Accumulate metrics
+                output_tokens = None
+                input_tokens = None
                 if chunk.usage:
                     tokens_used = chunk.usage.total_tokens
+                    output_tokens = getattr(chunk.usage, "completion_tokens", None)
+                    input_tokens = getattr(chunk.usage, "prompt_tokens", None)
                 if hasattr(chunk, "cost"):
                     cost += chunk.cost
                 if getattr(chunk, "finish_reason", None):
@@ -583,17 +675,84 @@ class ReActOrchestrator:
 
             assistant_content = buffer.strip()
 
+            agent_max_tokens = getattr(self.tool_executor.agent, "max_tokens", None)
+
             # Trace: dump the LLM response we got back, including any accumulated
             # tool calls. Pairs with the OUT line emitted before stream_with_tools.
             logger.info(
-                "[LLM_TURN] step=%d IN finish_reason=%s tokens=%s cost=%s text=%s tool_calls=[%s]",
+                "[LLM_TURN] step=%d IN finish_reason=%s in_tokens=%s out_tokens=%s/max=%s total=%s cost=%s text=%s tool_calls=[%s]",
                 state.current_step,
                 finish_reason,
+                input_tokens,
+                output_tokens,
+                agent_max_tokens,
                 tokens_used,
                 cost,
                 _preview(assistant_content, 240),
                 ", ".join(_summarize_tool_call(tc) for tc in accumulated_tool_calls.values()),
             )
+
+            # Dedicated warning + event when the model hit max_tokens. Carries
+            # enough context for postmortem (tool, json length, buffer prefix)
+            # without log scraping.
+            if finish_reason == "length":
+                tool_names = [
+                    (tc.get("function", {}) or {}).get("name") or "<unnamed>"
+                    for tc in accumulated_tool_calls.values()
+                ]
+                # Pull truncation details from the first tool call that has them.
+                # The stream_normalizer attaches _truncation_error when JSON parse
+                # fails at content_block_stop; an _truncation_error-less tool call
+                # means the model emitted a complete tool_use block but max_tokens
+                # cut off subsequent content (or the buffer was empty).
+                trunc_meta = next(
+                    (tc.get("_truncation_error") for tc in accumulated_tool_calls.values()
+                     if tc.get("_truncation_error")),
+                    None,
+                ) or {}
+                accumulated_json_length = trunc_meta.get("accumulated_length")
+                raw_prefix = trunc_meta.get("raw_prefix")
+
+                logger.warning(
+                    "[LLM_TRUNCATED] step=%d in_tokens=%s out_tokens=%s/max=%s "
+                    "tool_calls=%s json_len=%s raw_prefix=%r "
+                    "— bump max_tokens or narrow scope.",
+                    state.current_step,
+                    input_tokens,
+                    output_tokens,
+                    agent_max_tokens,
+                    tool_names,
+                    accumulated_json_length,
+                    (raw_prefix or "")[:200],
+                )
+
+                # Stash on step.metadata so a serialized step trace contains
+                # everything needed to diagnose without re-running.
+                step.metadata["truncation"] = {
+                    "finish_reason": finish_reason,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "max_tokens": agent_max_tokens,
+                    "tool_names": tool_names,
+                    "accumulated_json_length": accumulated_json_length,
+                    "raw_prefix": raw_prefix,
+                }
+
+                try:
+                    await self.event_bus.publish(
+                        EventFactory.llm_truncated(
+                            step_number=state.current_step,
+                            finish_reason=finish_reason,
+                            output_tokens=output_tokens,
+                            max_tokens=agent_max_tokens,
+                            input_tokens=input_tokens,
+                            tool_names=tool_names,
+                            accumulated_json_length=accumulated_json_length,
+                            raw_prefix=raw_prefix,
+                        )
+                    )
+                except Exception as _evt_err:
+                    logger.debug("Failed to publish llm_truncated event: %s", _evt_err)
 
             # === TURN ROUTING ===
             # Tool calls present = action turn, execute and loop.
@@ -610,6 +769,84 @@ class ReActOrchestrator:
                 step.action = tool_call_data["function"]["name"]
                 tool_args = tool_call_data["function"]["arguments"]
                 tool_call_id = tool_call_data["id"]
+
+                # Pre-parse string args *before* the truncation check so a
+                # JSONDecodeError gets routed through the truncation handler
+                # (mirrors Anthropic, where stream_normalizer attaches
+                # _truncation_error at content_block_stop).
+                _preparse_tool_args_string(tool_call_data, state.current_step, step.action)
+                tool_args = tool_call_data["function"]["arguments"]
+
+                # Detect tool_use truncation. Two signals:
+                # - stream_normalizer attached _truncation_error (JSON didn't parse)
+                # - finish_reason="length" with a tool call in flight
+                # Either way, the args are incomplete — running schema validation
+                # against them surfaces a misleading "missing required params" error.
+                # Skip validation and feed the truncation back to the LLM directly.
+                truncation_error = tool_call_data.get("_truncation_error")
+                if truncation_error or finish_reason == "length":
+                    logger.warning(
+                        "Step %d - Tool '%s' truncated mid-stream "
+                        "(finish_reason=%s, json_parse_failed=%s). Asking model to retry.",
+                        state.current_step,
+                        step.action,
+                        finish_reason,
+                        bool(truncation_error),
+                    )
+                    retry_msg = (
+                        f"<tool_use_error>\n"
+                        f"The tool call to '{step.action}' was truncated mid-stream by the "
+                        f"model's max_tokens limit before the input JSON was complete. The "
+                        f"arguments are unusable. Retry with a smaller scope (e.g. fewer rows, "
+                        f"narrower date range, or split into multiple smaller calls). If a "
+                        f"tool needs to emit a large data array inline, prefer summarising "
+                        f"or paginating.\n"
+                        f"</tool_use_error>"
+                    )
+                    step.error = retry_msg
+                    step.observation = retry_msg
+                    step.metadata["failure_kind"] = "truncation"
+                    # Backfill truncation debug fields for the case where the
+                    # parse failed without finish_reason=="length" (rare but
+                    # possible) — the [LLM_TRUNCATED] block above only fires
+                    # on finish_reason=="length".
+                    if "truncation" not in step.metadata and truncation_error:
+                        step.metadata["truncation"] = {
+                            "finish_reason": finish_reason,
+                            "tool_names": [step.action],
+                            "accumulated_json_length": truncation_error.get("accumulated_length"),
+                            "raw_prefix": truncation_error.get("raw_prefix"),
+                            "parse_error": truncation_error.get("message"),
+                        }
+                    if tool_call_id:
+                        tool_calls_list = list(accumulated_tool_calls.values())
+                        context.messages.append(
+                            Message(
+                                role=MessageRole.ASSISTANT,
+                                content=assistant_content,
+                                tool_calls=tool_calls_list,
+                            )
+                        )
+                        context.messages.append(
+                            Message(
+                                role=MessageRole.TOOL,
+                                content=step.observation,
+                                tool_call_id=tool_call_id,
+                            )
+                        )
+                    else:
+                        if assistant_content:
+                            context.messages.append(
+                                Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                            )
+                        context.messages.append(
+                            Message(role=MessageRole.USER, content=step.observation)
+                        )
+                    # Skip the rest of this step's tool processing on truncation —
+                    # outer loop will iterate, model retries with the feedback above.
+                    # The finally: block at the end of this method publishes
+                    # step_complete and sets execution_time.
+                    return step
 
                 # Parse arguments based on format:
                 # - OpenAI: string (JSON) that needs parsing
@@ -699,11 +936,14 @@ class ReActOrchestrator:
                                 f"Step {state.current_step} - Tool '{step.action}' missing required parameters: "
                                 f"{missing_params}. Provided parameters: {list(step.action_input.keys())}"
                             )
-                            step.error = (
-                                f"Tool '{step.action}' requires parameters: {', '.join(missing_params)}. "
-                                f"This may indicate incomplete streaming or malformed LLM response."
+                            step.error = _format_missing_params_error(
+                                tool_name=step.action,
+                                missing_params=missing_params,
+                                provided_params=list(step.action_input.keys()),
+                                tool_schema=tool_schema,
                             )
                             step.observation = step.error
+                            step.metadata["failure_kind"] = "schema"
                             # Preserve tool_calls + append a synthetic tool_result
                             # so the LLM sees the error as a normal tool failure
                             # and the conversation ends on a user turn. Fall back

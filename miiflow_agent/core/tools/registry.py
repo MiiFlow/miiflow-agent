@@ -618,6 +618,15 @@ class ToolRegistry:
         # Resolve sanitized name back to original (for OpenAI compatibility)
         resolved_name = self._resolve_name(tool_name)
 
+        # Route the off-registry tool_search meta-tool. The meta-tool doesn't
+        # take a context argument (it's a registry-internal helper), so we
+        # delegate to execute_safe which already knows how to dispatch it.
+        if (
+            self._tool_search_tool is not None
+            and resolved_name == self._tool_search_tool.name
+        ):
+            return await self.execute_safe(resolved_name, **kwargs)
+
         if resolved_name not in self.tools:
             available_tools = list(self.tools.keys()) + list(self.http_tools.keys())
             return ToolResult(

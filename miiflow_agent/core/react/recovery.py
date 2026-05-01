@@ -63,6 +63,25 @@ class RecoveryStrategy(Enum):
     SIMPLIFY_TOOLS = "simplify"  # Exclude the failing tool
 
 
+class FailureKind(Enum):
+    """Why a step failed. Different kinds gate different recovery behaviors."""
+
+    # The tool itself raised, the API returned 5xx, etc. The tool may genuinely
+    # be broken or unsuitable — eligible for the SIMPLIFY_TOOLS escalation.
+    RUNTIME = "runtime"
+
+    # The model called the tool with an arg shape that didn't match the schema
+    # (e.g. missing required fields). The tool is fine; the LLM needs better
+    # feedback. The orchestrator emits a structured tool_use_error itself, so
+    # recovery should NOT add a duplicate guidance message and must NOT count
+    # this against the per-tool exclusion threshold.
+    SCHEMA = "schema"
+
+    # The model's tool_use block was truncated mid-stream by max_tokens. The
+    # tool is fine; the args are incomplete. Same handling as SCHEMA.
+    TRUNCATION = "truncation"
+
+
 # Default strategy sequence
 DEFAULT_STRATEGIES = [
     RecoveryStrategy.RETRY_WITH_GUIDANCE,
@@ -132,6 +151,7 @@ class RecoveryManager:
         context,
         step=None,
         tool_name: Optional[str] = None,
+        failure_kind: FailureKind = FailureKind.RUNTIME,
     ) -> RecoveryAction:
         """Determine recovery action based on error type and attempt number.
 
@@ -140,13 +160,31 @@ class RecoveryManager:
             context: Current RunContext.
             step: The ReActStep that failed (optional).
             tool_name: Name of the tool that failed (optional).
+            failure_kind: Whether this is a runtime, schema, or truncation
+                failure. Schema/truncation failures don't count toward the
+                per-tool exclusion threshold or the recovery ladder; the
+                orchestrator already emitted a structured tool_use_error
+                that the LLM will see on its next turn.
 
         Returns:
             RecoveryAction describing what to do next.
         """
+        # SCHEMA / TRUNCATION: the orchestrator already pushed an actionable
+        # tool_use_error into the message history. Don't double-prompt the
+        # LLM and don't pollute the runtime failure counters that drive
+        # tool exclusion. The safety_manager's max_iterations cap is what
+        # protects us from infinite self-correction loops.
+        if failure_kind in (FailureKind.SCHEMA, FailureKind.TRUNCATION):
+            return RecoveryAction(
+                strategy_used=RecoveryStrategy.RETRY_WITH_GUIDANCE,
+                should_continue=True,
+                guidance_message=None,
+                attempt_number=self._attempt_count,
+            )
+
         self._attempt_count += 1
 
-        # Track per-tool failures
+        # Track per-tool failures (runtime only)
         if tool_name:
             self._tool_error_counts[tool_name] = self._tool_error_counts.get(tool_name, 0) + 1
 

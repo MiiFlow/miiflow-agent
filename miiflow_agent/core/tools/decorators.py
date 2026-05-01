@@ -21,7 +21,7 @@ def tool(
     tags: Optional[List[str]] = None,
     parameters: Optional[Dict[str, ParameterSchema]] = None,
     return_schema: Optional[Dict[str, Any]] = None,
-    strict: bool = False,
+    strict: bool = True,
     require_approval: bool = False,
     always_load: bool = False,
     search_keywords: Optional[List[str]] = None,
@@ -36,7 +36,13 @@ def tool(
         tags: Tags for categorization
         parameters: Explicit parameter schemas (overrides reflection)
         return_schema: Explicit return type schema
-        strict: Enable strict mode for type-safe function calling (for supported models)
+        strict: Enable strict mode for type-safe function calling (for supported
+            models). Default True — sets additionalProperties=false on object
+            schemas, blocking the model from passing fields belonging to a
+            different tool (e.g. Google Ads `customer_id` to a Meta Ads tool).
+            Opt out with strict=False if your tool has bare `items={"type":
+            "object"}` arrays without nested property schemas; strict mode
+            would forbid all object content there.
         require_approval: If True, tool requires user approval before execution (default: False)
 
     Example with automatic reflection:

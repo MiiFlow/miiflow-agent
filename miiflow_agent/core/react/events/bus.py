@@ -602,3 +602,35 @@ class EventFactory:
             step_number=step_number,
             data={"progress": snapshot.to_dict() if hasattr(snapshot, 'to_dict') else snapshot}
         )
+
+    @staticmethod
+    def llm_truncated(
+        step_number: int,
+        finish_reason: str,
+        output_tokens,
+        max_tokens,
+        input_tokens=None,
+        tool_names=None,
+        accumulated_json_length=None,
+        raw_prefix=None,
+    ) -> ReActEvent:
+        """Create LLM-truncated event.
+
+        Emitted when the model hits max_tokens (with or without a tool_use block
+        in flight). Carries enough context for postmortem queries — which tool
+        was being attempted, how much JSON made it through, and what the
+        accumulated buffer looked like — without log scraping.
+        """
+        return ReActEvent(
+            event_type=ReActEventType.LLM_TRUNCATED,
+            step_number=step_number,
+            data={
+                "finish_reason": finish_reason,
+                "output_tokens": output_tokens,
+                "max_tokens": max_tokens,
+                "input_tokens": input_tokens,
+                "tool_names": tool_names or [],
+                "accumulated_json_length": accumulated_json_length,
+                "raw_prefix": raw_prefix,
+            },
+        )

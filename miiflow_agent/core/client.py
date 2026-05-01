@@ -1,6 +1,7 @@
 """Core LLM client interface and base implementations."""
 
 import asyncio
+import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -26,6 +27,18 @@ from .tools import FunctionTool, ToolRegistry
 
 if TYPE_CHECKING:
     from .callbacks import CallbackRegistry
+
+logger = logging.getLogger(__name__)
+
+
+def _format_tokens(tokens: TokenCount) -> str:
+    """Compact token summary for log lines: in/out/total."""
+    if tokens is None:
+        return "in=?/out=?/total=?"
+    in_t = getattr(tokens, "prompt_tokens", None)
+    out_t = getattr(tokens, "completion_tokens", None)
+    total_t = getattr(tokens, "total_tokens", None)
+    return f"in={in_t}/out={out_t}/total={total_t}"
 
 
 @dataclass
@@ -103,7 +116,7 @@ class ModelClient(ABC):
         self,
         model: str,
         api_key: Optional[str] = None,
-        timeout: float = 60.0,
+        timeout: float = 120.0,
         max_retries: int = 3,
         metrics_collector: Optional[MetricsCollector] = None,
         **kwargs,
@@ -342,6 +355,16 @@ class LLMClient:
             response = await self.client.achat(normalized_messages, tools=formatted_tools, **kwargs)
             latency_ms = (time.time() - start_time) * 1000
 
+            logger.info(
+                "[LLM_CALL] provider=%s model=%s mode=achat status=ok "
+                "latency_ms=%.0f tokens=%s tools=%d",
+                self.client.provider_name,
+                self.client.model,
+                latency_ms,
+                _format_tokens(response.usage),
+                len(formatted_tools or []),
+            )
+
             # Record successful usage
             self._record_usage(
                 normalized_messages, response.usage, time.time() - start_time, success=True
@@ -363,6 +386,16 @@ class LLMClient:
 
         except Exception as e:
             latency_ms = (time.time() - start_time) * 1000
+
+            logger.warning(
+                "[LLM_CALL] provider=%s model=%s mode=achat status=error "
+                "latency_ms=%.0f error=%s tools=%d",
+                self.client.provider_name,
+                self.client.model,
+                latency_ms,
+                type(e).__name__,
+                len(formatted_tools or []),
+            )
 
             # Record failed usage
             self._record_usage(
@@ -478,6 +511,17 @@ class LLMClient:
                 latency_ms = (time.time() - start_time) * 1000
 
                 if error_occurred:
+                    logger.warning(
+                        "[LLM_CALL] provider=%s model=%s mode=astream status=error "
+                        "latency_ms=%.0f tokens=%s error=%s tools=%d",
+                        self.client.provider_name,
+                        self.client.model,
+                        latency_ms,
+                        _format_tokens(total_tokens),
+                        type(error_occurred).__name__,
+                        len(formatted_tools or []),
+                    )
+
                     # Record failed streaming usage
                     self._record_usage(
                         normalized_messages, total_tokens, time.time() - start_time, success=False
@@ -498,6 +542,16 @@ class LLMClient:
                     # Use sync emit in finally block since we can't await
                     self.callback_registry.emit_sync(error_event)
                 else:
+                    logger.info(
+                        "[LLM_CALL] provider=%s model=%s mode=astream status=ok "
+                        "latency_ms=%.0f tokens=%s tools=%d",
+                        self.client.provider_name,
+                        self.client.model,
+                        latency_ms,
+                        _format_tokens(total_tokens),
+                        len(formatted_tools or []),
+                    )
+
                     # Record successful streaming usage
                     self._record_usage(
                         normalized_messages, total_tokens, time.time() - start_time, success=True

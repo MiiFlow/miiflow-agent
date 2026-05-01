@@ -180,12 +180,32 @@ class AgentToolExecutor:
 
         Converts universal schemas to provider-specific format
         (OpenAI, Anthropic, Gemini, etc.)
+
+        When a ToolSearch session is active and the registry is large enough
+        to warrant it, only the meta-tool plus always_load tools plus the set
+        the model has discovered via ``tool_search`` are included. Otherwise
+        every registered function tool is included (legacy behaviour).
         """
         from ..tools import FunctionTool
+        from ..tools.tool_search import get_enabled_tool_names, is_session_active
 
-        native_schemas = []
+        # Determine which tools to expose this turn.
+        use_tool_search = (
+            is_session_active() and self._tool_registry.should_use_tool_search()
+        )
+        if use_tool_search:
+            visible = set(self._tool_registry.get_always_load_names())
+            enabled = get_enabled_tool_names()
+            if enabled:
+                visible.update(enabled)
+            # The meta-tool itself is always exposed under tool_search.
+            tool_names = [name for name in self.list_tools() if name in visible]
+        else:
+            tool_names = self.list_tools()
 
-        for tool_name in self.list_tools():
+        native_schemas: List = []
+
+        for tool_name in tool_names:
             tool = self._tool_registry.tools.get(tool_name)
             if not tool:
                 continue
@@ -207,12 +227,23 @@ class AgentToolExecutor:
             provider_schema = self._client.client.convert_schema_to_provider_format(filtered_schema)
             native_schemas.append(provider_schema)
 
+        # Append the tool_search meta-tool when ToolSearch is active so the
+        # model can discover hidden tools by name/keyword.
+        if use_tool_search:
+            meta_tool = self._tool_registry.get_tool_search_tool()
+            meta_universal = meta_tool.schema.to_universal_schema()
+            meta_filtered = self._inject_description_param(meta_universal)
+            native_schemas.append(
+                self._client.client.convert_schema_to_provider_format(meta_filtered)
+            )
+
         # Apply tool filter if configured
         if self.tool_filter:
             native_schemas = self.tool_filter.filter_schemas(native_schemas)
 
         logger.debug(
-            f"Built {len(native_schemas)} native tool schemas for provider {self._client.client.provider_name}"
+            f"Built {len(native_schemas)} native tool schemas for provider "
+            f"{self._client.client.provider_name} (tool_search={use_tool_search})"
         )
 
         # Debug: Log the actual schemas being sent
@@ -261,12 +292,25 @@ class AgentToolExecutor:
         return schema
 
     def _inject_description_param(self, schema: dict) -> dict:
-        """Inject __description parameter into tool schema.
+        """Inject __description parameter into tool schema (required).
 
         Asks the LLM to attach a short, verb-led imperative phrase to each tool
         call (e.g. 'Search the web for Tesla news'). The phrase is shown in the
         chat UI as both a status label and — when approval is required — the
         question the user is consenting to.
+
+        Required, not optional. An earlier iteration kept this optional because
+        a vague schema description led models to either emit perfunctory
+        labels ("Calling tool") or skip the field entirely, leaving the UI to
+        fall back to bare tool names like ``tool_search``. The schema
+        description below pins ``__description`` to the *specific* call's
+        action with per-tool examples, which makes "describe what THIS call
+        does" the path of least resistance — and making it required ensures
+        every call gets a user-readable label rather than a raw tool name.
+
+        Cost: ~10-30 extra output tokens per tool call. Acceptable in
+        exchange for consistent UX; flag if you observe max_tokens
+        truncation tied to verbose-arg tools.
         """
         import copy
 
@@ -278,24 +322,55 @@ class AgentToolExecutor:
         if "properties" not in schema["parameters"]:
             schema["parameters"]["properties"] = {}
 
-        # Add __description as a required parameter.
-        # Format: short verb-led action phrase that a non-technical user can read
-        # as either a status ("Search the web for X") or a question ("Search the
-        # web for X?" with consent chips beneath). Avoid gerunds ("Searching")
-        # and tool-name jargon ("search_web") — those read as a debugger,
-        # not as the assistant communicating with the user.
+        # Add __description as a *required* property. Format: short verb-led
+        # action phrase that a non-technical user can read as either a status
+        # ("Search the web for X") or a question ("Search the web for X?" with
+        # consent chips beneath). Avoid gerunds ("Searching") and tool-name
+        # jargon ("search_web") — those read as a debugger, not as the
+        # assistant communicating with the user.
+        #
+        # Critical: __description must describe THIS specific tool call's
+        # action, not an overall plan or what comes next. Models otherwise
+        # tend to write a plan-level summary ("Pull this month's campaign
+        # performance") on every call along the way, which mislabels early
+        # discovery/lookup steps in the UI.
         schema["parameters"]["properties"]["__description"] = {
             "type": "string",
-            "description": "Short verb-led action phrase the user will read in the UI. Use imperative form. Examples: 'Search the web for Tesla stock price', 'Send an email to john@example.com', 'Look up campaign performance for last week'. Don't use gerunds ('Searching for X'), don't repeat the tool name ('Calling search_web'), don't add ellipses or punctuation."
+            "description": (
+                "Required. Short imperative phrase describing THIS specific "
+                "tool call — not your overall plan, not the next step, not "
+                "the user's broader request. The phrase appears as a status "
+                "label in the UI while this exact call runs.\n\n"
+                "Match the phrase to what THIS call does, using the tool's "
+                "actual arguments. For example, with `search_memory`, write "
+                "'Search memory for past campaign preferences' — not 'Pull "
+                "campaign performance'. With `list_all_ad_accounts`, write "
+                "'List connected ad accounts' — not 'Compare Google and "
+                "Meta spend'. With `google_ads_query` for a rollup, write "
+                "'Pull account-level rollup for April 2026' — not "
+                "'Summarize this month'.\n\n"
+                "Format rules: verb-led imperative ('Search', 'List', "
+                "'Pull', 'Send', 'Look up'). No gerunds ('Searching'). No "
+                "tool-name jargon ('search_web'). No ellipses or trailing "
+                "punctuation. Never repeat the same description across "
+                "consecutive calls."
+            ),
         }
 
-        # Make it required
-        if "required" not in schema["parameters"]:
-            schema["parameters"]["required"] = []
-        if "__description" not in schema["parameters"]["required"]:
-            schema["parameters"]["required"].insert(0, "__description")
+        # Mark __description as required so every tool call carries a
+        # user-readable label. Append to the existing required list rather
+        # than replacing it so other required fields aren't lost.
+        required = list(schema["parameters"].get("required") or [])
+        if "__description" not in required:
+            required.append("__description")
+        schema["parameters"]["required"] = required
 
         return schema
+
+    def _tool_search_meta_name(self) -> Optional[str]:
+        """Name of the off-registry tool_search meta-tool, if it has been built."""
+        meta = getattr(self._tool_registry, "_tool_search_tool", None)
+        return meta.name if meta is not None else None
 
     def list_tools(self) -> List[str]:
         tools = self._tool_registry.list_tools()
@@ -304,6 +379,11 @@ class AgentToolExecutor:
         return tools
 
     def has_tool(self, tool_name: str) -> bool:
+        # The tool_search meta-tool lives off-registry; recognize it when
+        # the orchestrator validates an LLM-issued tool call against the
+        # executor's view of available tools.
+        if tool_name == self._tool_search_meta_name():
+            return True
         if tool_name not in self._tool_registry.tools:
             return False
         if self.tool_filter and not self.tool_filter.is_allowed(tool_name):
@@ -311,11 +391,17 @@ class AgentToolExecutor:
         return True
 
     def get_tool_schema(self, tool_name: str) -> dict:
+        if tool_name == self._tool_search_meta_name():
+            return self._tool_registry.get_tool_search_tool().schema.to_universal_schema()
         tool = self._tool_registry.tools.get(tool_name)
         return tool.schema.to_universal_schema() if tool else {}
 
     def tool_needs_context(self, tool_name: str) -> bool:
         """Check if a tool requires context injection."""
+        # The meta-tool runs without a context (it operates on the registry,
+        # not on user data).
+        if tool_name == self._tool_search_meta_name():
+            return False
         tool = self._tool_registry.tools.get(tool_name)
         if not tool:
             return False

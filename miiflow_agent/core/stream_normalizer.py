@@ -338,31 +338,14 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             return chunk.delta.text
 
         if hasattr(chunk.delta, "partial_json"):
-            # Handle regular tool_use JSON accumulation
+            # Defer JSON parsing until content_block_stop. Parsing mid-stream
+            # has a partial-dict failure mode: a coincidentally-parseable prefix
+            # overwrites args, then the next delta makes the buffer unparseable
+            # but the partial dict stays — so later keys silently disappear.
             if self._state.current_tool_use:
                 self._state.accumulated_tool_json += chunk.delta.partial_json
-
-                # Try to parse accumulated JSON
-                try:
-                    self._state.current_tool_use["function"]["arguments"] = json.loads(
-                        self._state.accumulated_tool_json
-                    )
-                except json.JSONDecodeError:
-                    # Still accumulating
-                    pass
-
-            # Handle MCP tool_use JSON accumulation
             elif self._state.current_mcp_tool_use:
                 self._state.accumulated_mcp_tool_json += chunk.delta.partial_json
-
-                # Try to parse accumulated JSON
-                try:
-                    self._state.current_mcp_tool_use["function"]["arguments"] = json.loads(
-                        self._state.accumulated_mcp_tool_json
-                    )
-                except json.JSONDecodeError:
-                    # Still accumulating
-                    pass
 
         # Handle MCP tool result content
         if self._state.mcp_tool_results and hasattr(chunk.delta, "type"):
@@ -392,14 +375,9 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
 
         # Handle regular tool_use block completion
         if self._state.current_tool_use:
-            if self._state.accumulated_tool_json:
-                try:
-                    self._state.current_tool_use["function"]["arguments"] = json.loads(
-                        self._state.accumulated_tool_json
-                    )
-                except json.JSONDecodeError:
-                    self._state.current_tool_use["function"]["arguments"] = {}
-
+            self._finalize_tool_args(
+                self._state.current_tool_use, self._state.accumulated_tool_json
+            )
             self._state.tool_calls.append(self._state.current_tool_use)
             result = [self._state.current_tool_use]
 
@@ -410,14 +388,9 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
 
         # Handle MCP tool_use block completion
         if self._state.current_mcp_tool_use:
-            if self._state.accumulated_mcp_tool_json:
-                try:
-                    self._state.current_mcp_tool_use["function"]["arguments"] = json.loads(
-                        self._state.accumulated_mcp_tool_json
-                    )
-                except json.JSONDecodeError:
-                    self._state.current_mcp_tool_use["function"]["arguments"] = {}
-
+            self._finalize_tool_args(
+                self._state.current_mcp_tool_use, self._state.accumulated_mcp_tool_json
+            )
             self._state.tool_calls.append(self._state.current_mcp_tool_use)
             result = [self._state.current_mcp_tool_use]
 
@@ -427,6 +400,34 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             return result
 
         return None
+
+    @staticmethod
+    def _finalize_tool_args(tool_call: Dict[str, Any], accumulated_json: str) -> None:
+        """Parse accumulated tool_use JSON and attach a truncation marker on failure.
+
+        A JSONDecodeError here almost always means the model hit max_tokens
+        mid-tool-call. Surface it via _truncation_error so the orchestrator can
+        feed an actionable retry message back to the LLM rather than running
+        schema validation against an empty dict.
+        """
+        if not accumulated_json:
+            return
+        try:
+            tool_call["function"]["arguments"] = json.loads(accumulated_json)
+        except json.JSONDecodeError as exc:
+            tool_name = tool_call.get("function", {}).get("name", "<unknown>")
+            logger.warning(
+                "Tool '%s' args failed to parse at content_block_stop "
+                "(len=%d, error=%s) — likely max_tokens truncation",
+                tool_name, len(accumulated_json), exc,
+            )
+            tool_call["function"]["arguments"] = {}
+            tool_call["_truncation_error"] = {
+                "kind": "json_parse_failed",
+                "message": str(exc),
+                "accumulated_length": len(accumulated_json),
+                "raw_prefix": accumulated_json[:500],
+            }
 
     def _extract_usage(self, chunk: Any) -> Optional[TokenCount]:
         """Extract usage information from chunk."""

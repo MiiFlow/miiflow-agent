@@ -25,7 +25,7 @@ class OpenRouterClient(ModelClient):
         self,
         model: str,
         api_key: Optional[str] = None,
-        timeout: float = 60.0,
+        timeout: float = 120.0,
         max_retries: int = 3,
         app_name: Optional[str] = None,
         app_url: Optional[str] = None,

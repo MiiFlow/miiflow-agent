@@ -33,6 +33,7 @@ from .tools import (
     get_fun_schema
 )
 from .schema_normalizer import normalize_json_schema, SchemaMode
+from .data_reference import put_render_data, get_render_data
 from .agent import (
     # Core agent architecture - Stateless framework
     Agent,
@@ -140,6 +141,10 @@ __all__ = [
     # Schema normalization
     "normalize_json_schema",
     "SchemaMode",
+
+    # Data-reference cache for render tools
+    "put_render_data",
+    "get_render_data",
 
     # Observability (optional)
     "ObservabilityConfig",

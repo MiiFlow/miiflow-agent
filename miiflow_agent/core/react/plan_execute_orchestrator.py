@@ -513,11 +513,17 @@ class PlanAndExecuteOrchestrator:
             # 1. Add system prompt FIRST
             messages.append(Message(role=MessageRole.SYSTEM, content=planning_prompt))
 
-            # 2. Add conversation history (USER/ASSISTANT only, no SYSTEM messages to avoid conflicts)
+            # 2. Add conversation history. Drop SYSTEM messages so they don't
+            # conflict with the planner's own system prompt above. Keep TOOL
+            # messages — they pair with tool_calls on prior ASSISTANT messages
+            # (reconstructed from execution_timeline in
+            # enhanced_response_generator._reconstruct_tool_pairs_from_timeline).
+            # Dropping them orphans the tool_use blocks and Anthropic 400s with
+            # "tool_use ids were found without tool_result blocks".
             conversation_history = [
                 msg
                 for msg in context.messages
-                if msg.role in (MessageRole.USER, MessageRole.ASSISTANT)
+                if msg.role in (MessageRole.USER, MessageRole.ASSISTANT, MessageRole.TOOL)
             ]
             messages.extend(conversation_history)
 

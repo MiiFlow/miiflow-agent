@@ -1026,8 +1026,7 @@ class Agent(Generic[Deps, Result]):
             yield {"event": "llm_start", "data": {}}
 
             buffer = ""
-            final_tool_calls = None
-            has_tool_calls = False
+            streamed_tool_calls: Dict[str, Dict[str, Any]] = {}
 
             # Prepare messages for LLM (filter out mid-conversation SYSTEM messages)
             llm_messages = self._prepare_messages_for_llm(context.messages)
@@ -1044,23 +1043,19 @@ class Agent(Generic[Deps, Result]):
                     buffer += chunk.delta
                     yield {"event": "llm_chunk", "data": {"delta": chunk.delta, "content": buffer}}
 
-                # Check if we have tool calls
+                # Accumulate tool calls from the stream. Each provider re-emits the
+                # same id with progressively more complete arguments (Anthropic:
+                # empty dict at start, parsed dict at stop; OpenAI: deltas growing
+                # the args string), so last-write-wins by id yields the final call.
                 if chunk.tool_calls:
-                    has_tool_calls = True
+                    for tc in chunk.tool_calls:
+                        tc_id = tc.get("id") or f"_idx_{len(streamed_tool_calls)}"
+                        streamed_tool_calls[tc_id] = tc
 
                 if chunk.finish_reason:
                     break
 
-            # If we had tool calls, get them properly by making a non-streaming call
-            if has_tool_calls:
-                response = await self.client.achat(
-                    messages=llm_messages,
-                    tools=self._tools if self._tools else None,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    json_schema=self.json_schema,
-                )
-                final_tool_calls = response.message.tool_calls
+            final_tool_calls = list(streamed_tool_calls.values()) or None
 
             response_message = Message(
                 role=MessageRole.ASSISTANT, content=buffer, tool_calls=final_tool_calls

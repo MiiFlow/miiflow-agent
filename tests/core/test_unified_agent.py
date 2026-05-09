@@ -292,6 +292,62 @@ class TestStreamSingleHop:
         assert len(user_messages) == 1
         assert user_messages[0].content == user_prompt
 
+    @pytest.mark.asyncio
+    async def test_stream_single_hop_doesnt_duplicate_multimodal_message(self):
+        """Multimodal messages (content = list of blocks) shouldn't be re-appended
+        as a flat-string duplicate. Regression for the bug where the model saw
+        the same user turn twice — once as multimodal, once as flat text — when
+        an image was attached, doubling input tokens on every image turn.
+        """
+        from unittest.mock import MagicMock
+        from miiflow_agent.core.agent import Agent, RunContext
+        from miiflow_agent.core.message import (
+            ImageBlock,
+            Message,
+            MessageRole,
+            TextBlock,
+        )
+        from miiflow_agent.core.client import StreamChunk
+
+        mock_client = MagicMock()
+
+        async def mock_stream(*args, **kwargs):
+            yield StreamChunk(content="ok", delta="ok", finish_reason="stop")
+
+        mock_client.astream_chat = mock_stream
+
+        agent = Agent(client=mock_client, agent_type="single_hop")
+
+        # Multimodal user message: text + image + text-fallback (the URL).
+        # Mirrors what enhanced_response_generator builds for an image-bearing turn.
+        multimodal_user = Message(
+            role=MessageRole.USER,
+            content=[
+                TextBlock(text="can you read this"),
+                ImageBlock(image_url="https://example.com/img.png"),
+                TextBlock(text="[Attached image: img.png — URL: https://example.com/img.png]"),
+            ],
+        )
+        context = RunContext(
+            deps=None,
+            messages=[Message.system("You are helpful"), multimodal_user],
+        )
+
+        # `user_prompt` is the text-extracted version of the multimodal content
+        # (joined TextBlock contents) — what _extract_text_from_history produces.
+        user_prompt = (
+            "can you read this "
+            "[Attached image: img.png — URL: https://example.com/img.png]"
+        )
+
+        async for _ in agent._stream_single_hop(user_prompt, context=context):
+            pass
+
+        # The multimodal turn should be the ONLY user message — no flat-text duplicate.
+        user_messages = [m for m in context.messages if m.role == MessageRole.USER]
+        assert len(user_messages) == 1
+        assert isinstance(user_messages[0].content, list)
+
 
 class TestImportPatterns:
     """Test that imports work correctly."""

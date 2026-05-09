@@ -29,6 +29,28 @@ from .exceptions import ErrorType, MiiflowLLMError
 from .message import Message, MessageRole
 from .tools import FunctionTool, ToolRegistry
 
+
+def _content_text(content: Any) -> str:
+    """Return the textual representation of message content.
+
+    Handles plain-string content as well as multimodal block lists (e.g.
+    ``[TextBlock, ImageBlock, TextBlock]``). Used to dedupe a query against an
+    existing user message in chat history regardless of content shape — a
+    naive ``content == query`` check fails for multimodal because list != str.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            text = getattr(block, "text", None)
+            if text is None and isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+            if text:
+                parts.append(text)
+        return " ".join(parts)
+    return ""
+
 Deps = TypeVar("Deps")
 Result = TypeVar("Result")
 
@@ -520,10 +542,12 @@ class Agent(Generic[Deps, Result]):
 
         effective_type = agent_type or self.agent_type
 
-        # Ensure context has the query as a USER message (similar to run())
-        # This is needed for orchestrators that expect the query in context.messages
+        # Ensure context has the query as a USER message (similar to run()).
+        # Compare on extracted text, not raw content, so multimodal messages
+        # (list of blocks) aren't mistaken for a different message and re-
+        # appended as a flat-string duplicate.
         has_user_message = any(
-            msg.role == MessageRole.USER and msg.content == query
+            msg.role == MessageRole.USER and _content_text(msg.content) == query
             for msg in context.messages
         )
         if not has_user_message and query and query.strip():
@@ -1007,9 +1031,12 @@ class Agent(Generic[Deps, Result]):
     ) -> AsyncIterator[Dict[str, Any]]:
         """Internal: Stream single-hop execution - uses context from run() (no duplication)."""
 
-        # Add user message to context if not already present
-        # This handles cases where stream_single_hop is called directly (not from run())
-        if not context.messages or context.messages[-1].content != user_prompt:
+        # Add user message to context if not already present.
+        # Compare on extracted text, not raw content, so multimodal messages
+        # (list of blocks) aren't mistaken for a missing turn and re-appended
+        # as a flat-string duplicate that doubles input tokens.
+        last = context.messages[-1] if context.messages else None
+        if not last or _content_text(last.content) != user_prompt:
             user_msg = Message(role=MessageRole.USER, content=user_prompt)
             context.messages.append(user_msg)
 

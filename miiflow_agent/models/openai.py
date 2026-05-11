@@ -203,7 +203,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "o3": ModelConfig(
         model_identifier="o3",
         name="o3",
-        description="OpenAI's advanced reasoning model with strong math, science, and coding performance.",
+        description="Legacy — succeeded by GPT-5.x series. Reasoning model with strong math, science, and coding performance.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -220,7 +220,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "o3-mini": ModelConfig(
         model_identifier="o3-mini",
         name="o3-mini",
-        description="o3-mini is a fast, cost-efficient reasoning model optimized for math, coding, and science.",
+        description="Legacy — succeeded by GPT-5.4 Nano. Fast, cost-efficient reasoning model optimized for math, coding, and science.",
         support_images=False,
         support_files=False,
         support_streaming=True,
@@ -237,7 +237,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "o3-pro": ModelConfig(
         model_identifier="o3-pro",
         name="o3-pro",
-        description="OpenAI's premium reasoning model for maximum accuracy on the hardest problems in math, science, and coding.",
+        description="Legacy — succeeded by GPT-5.5 Pro. Premium reasoning model for maximum accuracy on the hardest problems in math, science, and coding.",
         support_images=True,
         support_files=True,
         support_streaming=True,

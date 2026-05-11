@@ -100,7 +100,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-haiku-4.5": ModelConfig(
         model_identifier="claude-haiku-4-5-20251001",
         name="claude-haiku-4.5",
-        description="Our fastest and most intelligent Haiku model. Delivers Sonnet-4-level coding performance at one-third the cost and more than twice the speed.",
+        description="Anthropic's fastest and most intelligent Haiku model. Delivers Sonnet-4-level coding performance at one-third the cost and more than twice the speed.",
         support_images=True,
         support_files=True,
         support_streaming=True,

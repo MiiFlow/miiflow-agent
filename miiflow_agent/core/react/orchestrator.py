@@ -12,9 +12,9 @@ from .exceptions import ToolApprovalRequired
 from .events import EventBus, EventFactory
 from .react_events import ReActEvent
 from .execution import ExecutionState
-from .models import ReActResult, ReActStep
+from .models import ReActResult, ReActStep, ToolInvocation
 from .safety import SafetyManager
-from .tool_executor import AgentToolExecutor
+from .tool_executor import AgentToolExecutor, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +254,49 @@ class ReActOrchestrator:
 
         try:
             self._setup_context(query, context)
+
+            # Provision a per-turn DispatchCounter on ctx.deps so the
+            # synthesized dispatch_assistant tool can do race-safe budget
+            # accounting under parallel dispatch. Counter is fresh per
+            # ReAct turn — cross-turn budgets (if needed) are a Django
+            # adapter concern. Safe in-place assignment because the
+            # orchestrator owns ctx lifecycle for the duration of this run.
+            if context is not None:
+                from .dispatch import DispatchCounter
+
+                # Provision a per-turn DispatchCounter so the synthesized
+                # dispatch_assistant tool can do race-safe budget accounting
+                # under parallel dispatch. Counter is fresh per ReAct turn —
+                # cross-turn budgets (if needed) are a Django adapter concern.
+                # Honor a counter the caller already installed on EITHER
+                # surface (lets Django swap in a cross-turn counter, and lets
+                # test fixtures that still seed ctx.deps continue to work).
+                deps_is_dict = isinstance(getattr(context, "deps", None), dict)
+                preseeded_counter = (
+                    context.deps.get("dispatch_counter") if deps_is_dict else None
+                )
+                if preseeded_counter is not None:
+                    context.run_state.dispatch_counter = preseeded_counter
+                elif context.run_state.dispatch_counter is None:
+                    context.run_state.dispatch_counter = DispatchCounter()
+
+                # Attach this orchestrator's event_bus so tools that publish
+                # back to the parent's stream (notably dispatch_assistant
+                # forwarding subagent lifecycle events) find it regardless
+                # of whether they're invoked through the single-tool path
+                # (_execute_tool) or the parallel batch path
+                # (_handle_parallel_tool_batch → execute_many). The bus is
+                # invariant for the run, so set-once here beats per-step
+                # injection that the batch path was missing.
+                context.run_state.event_bus = self.event_bus
+
+                # Legacy dual-write to ctx.deps for callers that haven't
+                # migrated to ctx.run_state.* yet. Remove once every reader
+                # (the dispatch closures, batch_executor, memory_fs_tools)
+                # has been switched. New code should NOT read these keys.
+                if deps_is_dict:
+                    context.deps["dispatch_counter"] = context.run_state.dispatch_counter
+                    context.deps["event_bus"] = self.event_bus
 
             # Apply context compression before starting if available
             if self.context_compressor:
@@ -594,9 +637,38 @@ class ReActOrchestrator:
                             _preview(buffer, 200),
                         )
                     for tool_call_dict in chunk.tool_calls:
-                        # All tool calls are now dicts thanks to provider normalizers
-                        # Extract index (use 0 for first/only tool in ReAct single-action mode)
-                        idx = len(accumulated_tool_calls) if len(accumulated_tool_calls) == 0 else 0
+                        # All tool calls are now dicts thanks to provider normalizers.
+                        # Resolve the index for this tool call chunk so parallel
+                        # tool_use blocks accumulate as distinct entries.
+                        #
+                        # Resolution order:
+                        # 1. Use the provider-supplied `index` field when present
+                        #    (Anthropic streams it on every content_block_start;
+                        #    OpenAI's delta also carries it).
+                        # 2. Else, key off the chunk's `id` — first time we see
+                        #    an id, allocate the next slot; subsequent chunks
+                        #    with the same id reuse it.
+                        # 3. Else, fall back to slot 0 (legacy single-tool path
+                        #    when no index/id signal is available).
+                        provider_idx = tool_call_dict.get("index")
+                        chunk_id = tool_call_dict.get("id")
+                        if isinstance(provider_idx, int):
+                            idx = provider_idx
+                        elif chunk_id is not None:
+                            # Find existing slot by id, else allocate next.
+                            idx = None
+                            for slot, slot_data in accumulated_tool_calls.items():
+                                if slot_data.get("id") == chunk_id:
+                                    idx = slot
+                                    break
+                            if idx is None:
+                                idx = len(accumulated_tool_calls)
+                        else:
+                            # No index, no id — keep merging into slot 0.
+                            # Either we haven't seen the id yet (first chunk
+                            # of the only tool call) or this is a single-tool
+                            # turn that streamed across multiple chunks.
+                            idx = 0 if accumulated_tool_calls else 0
 
                         # Initialize on first chunk, merge on subsequent chunks
                         if idx not in accumulated_tool_calls:
@@ -759,7 +831,29 @@ class ReActOrchestrator:
             # finish_reason == "length" = response truncated, nudge model.
             # Otherwise = answer turn, accumulated text is the final answer.
 
-            if accumulated_tool_calls:
+            if accumulated_tool_calls and len(accumulated_tool_calls) > 1:
+                # Parallel batch path — 2+ tool_use blocks emitted by the model
+                # in this assistant turn. Routes through the batch executor
+                # which applies the all-or-nothing parallelism rule (parallel
+                # only when every tool is parallelizable=True and not
+                # require_approval; otherwise serial in input order).
+                tool_names = [
+                    accumulated_tool_calls[k].get("function", {}).get("name", "?")
+                    for k in sorted(accumulated_tool_calls.keys())
+                ]
+                logger.info(
+                    "[ORCH] step=%d PARALLEL_BATCH tools=%s",
+                    state.current_step,
+                    tool_names,
+                )
+                await self._handle_parallel_tool_batch(
+                    step=step,
+                    context=context,
+                    state=state,
+                    accumulated_tool_calls=accumulated_tool_calls,
+                    assistant_content=assistant_content,
+                )
+            elif accumulated_tool_calls:
                 # Take first tool call (ReAct is single-action per step)
                 tool_call_data = accumulated_tool_calls.get(0)
                 if not tool_call_data:
@@ -1094,6 +1188,295 @@ class ReActOrchestrator:
         # Add observation to context if present (from tool execution)
         # NOTE: This is actually added in _handle_tool_action now with proper tool_call_id
         return step
+
+    async def _handle_parallel_tool_batch(
+        self,
+        step: ReActStep,
+        context: RunContext,
+        state: "ExecutionState",
+        accumulated_tool_calls: Dict[int, Dict[str, Any]],
+        assistant_content: str,
+    ) -> None:
+        """Execute 2+ tool_use blocks the model emitted in one assistant turn.
+
+        Parses each tool call's args, validates schema, appends ONE
+        ASSISTANT message preserving Anthropic's tool_use/tool_result
+        pairing invariant, dispatches the batch through
+        ``executor.execute_many`` (which applies the all-or-nothing
+        parallelism rule), and appends N TOOL messages with each
+        observation paired by ``tool_call_id``.
+
+        Per-invocation results are stored on ``step.tool_invocations``.
+        For back-compat with single-action consumers, ``step.action``,
+        ``step.action_input``, and ``step.observation`` mirror the FIRST
+        invocation's fields. Per-call errors land on
+        ``step.tool_invocations[i].error``; ``step.error`` is set only
+        for step-level failures (e.g. malformed transcript), not for
+        individual tool failures (those still surface as observations
+        the LLM can react to).
+
+        Rich result types (visualizations, artifacts, media collections,
+        LLM block injections) get FULL observation processing when the
+        executor's serial fallback fires (mixed-parallelizability or
+        approval-required batches). When the batch runs in true parallel
+        mode (every tool is ``parallelizable=True``), only visualization
+        markers + simple stringification are handled — by construction
+        parallelizable tools shouldn't return media/artifact/llm-block
+        results, so this is a documented v1 trade-off rather than a
+        correctness gap.
+        """
+        from ..tools import ToolResult
+
+        # ── Phase 1: parse, validate, and build invocations ─────────────
+        ordered_keys = sorted(accumulated_tool_calls.keys())
+        invocations: List[ToolInvocation] = []
+        tool_call_dicts: List[Dict[str, Any]] = []  # for the ASSISTANT message
+        pre_exec_errors: Dict[str, str] = {}  # tool_call_id -> error string
+
+        for key in ordered_keys:
+            tool_call_data = accumulated_tool_calls[key]
+            name = tool_call_data.get("function", {}).get("name")
+            raw_args = tool_call_data.get("function", {}).get("arguments")
+            tool_call_id = tool_call_data.get("id") or f"call_{state.current_step}_{key}"
+
+            # Parse args (OpenAI sends string; Anthropic sends dict)
+            _preparse_tool_args_string(tool_call_data, state.current_step, name)
+            raw_args = tool_call_data.get("function", {}).get("arguments")
+
+            inputs: Optional[Dict[str, Any]]
+            if raw_args is None:
+                inputs = {}
+            elif isinstance(raw_args, str):
+                if not raw_args or raw_args.strip() == "":
+                    inputs = {}
+                else:
+                    try:
+                        inputs = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        inputs = {}
+                        pre_exec_errors[tool_call_id] = (
+                            f"Malformed tool arguments for '{name}': invalid JSON"
+                        )
+            elif isinstance(raw_args, dict):
+                inputs = raw_args
+            else:
+                inputs = {}
+                pre_exec_errors[tool_call_id] = (
+                    f"Malformed tool arguments for '{name}': "
+                    f"unexpected type {type(raw_args).__name__}"
+                )
+
+            # Extract __description for UI labels
+            description = None
+            if isinstance(inputs, dict):
+                description = inputs.pop("__description", None)
+
+            # Truncation / malformed name guards (mirror single-tool path)
+            if tool_call_data.get("_truncation_error"):
+                pre_exec_errors[tool_call_id] = (
+                    f"Tool call to '{name}' was truncated mid-stream. "
+                    "Retry with a narrower scope or split into smaller calls."
+                )
+            if not name:
+                pre_exec_errors[tool_call_id] = (
+                    "Malformed tool call: function name is missing."
+                )
+
+            # Schema validation — required-params check (mirrors single-tool path)
+            if name and tool_call_id not in pre_exec_errors and inputs is not None:
+                try:
+                    tool_schema = self.tool_executor.get_tool_schema(name)
+                    required_params = (
+                        tool_schema.get("parameters", {}).get("required") or []
+                    )
+                    if required_params:
+                        missing = [p for p in required_params if p not in inputs]
+                        if missing:
+                            pre_exec_errors[tool_call_id] = _format_missing_params_error(
+                                tool_name=name,
+                                missing_params=missing,
+                                provided_params=list(inputs.keys()),
+                                tool_schema=tool_schema,
+                            )
+                except Exception as exc:
+                    # Schema lookup failure is non-fatal; let the
+                    # executor surface the real error.
+                    logger.debug(
+                        "Step %d - Schema lookup failed for '%s': %s",
+                        state.current_step,
+                        name,
+                        exc,
+                    )
+
+            invocations.append(
+                ToolInvocation(
+                    tool_call_id=tool_call_id,
+                    name=name,
+                    inputs=inputs or {},
+                    description=description,
+                )
+            )
+            tool_call_dicts.append(tool_call_data)
+
+        # ── Phase 2: append the assistant message with ALL tool_calls ──
+        # This satisfies the Anthropic invariant that every tool_use block
+        # in an assistant message must be followed (across messages) by a
+        # matching tool_result keyed on the same tool_call_id.
+        context.messages.append(
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=assistant_content,
+                tool_calls=tool_call_dicts,
+            )
+        )
+
+        # ── Phase 3: execute the batch ─────────────────────────────────
+        # Tools that pre-failed (schema/truncation/missing-name) get a
+        # synthetic error observation and don't get sent to the executor.
+        # Successfully-parsed tools go through execute_many, which decides
+        # parallel vs serial based on the all-or-nothing rule.
+        runnable: List[ToolCall] = []
+        runnable_indices: List[int] = []
+        for i, inv in enumerate(invocations):
+            if inv.tool_call_id in pre_exec_errors or not inv.name:
+                continue
+            runnable.append(
+                ToolCall(tool_call_id=inv.tool_call_id, name=inv.name, inputs=inv.inputs)
+            )
+            runnable_indices.append(i)
+
+        # Publish action_planned events for visibility (one per invocation).
+        for inv in invocations:
+            if inv.name:
+                try:
+                    await self.event_bus.publish(
+                        EventFactory.action_planned(
+                            state.current_step, inv.name, inv.inputs, inv.description
+                        )
+                    )
+                except Exception as evt_err:
+                    logger.debug("Failed to publish action_planned: %s", evt_err)
+
+        results: List[Optional[ToolResult]] = [None] * len(invocations)
+        if runnable:
+            # Mirror the per-step ctx.run_state injection that _execute_tool
+            # does on the single-tool path. Without this, tools running in a
+            # parallel batch (notably dispatch_assistant) see stale or absent
+            # step_number / media_store. Each parallel branch then gets its
+            # OWN Context copy via _execute_parallel's create_task, so this
+            # write is visible to all branches at the moment of fan-out.
+            if context is not None:
+                context.run_state.media_store = state.media_store
+                context.run_state.step_number = state.current_step
+                context.run_state.event_bus = self.event_bus
+                # Legacy dual-write — remove once readers move to run_state.
+                if isinstance(getattr(context, "deps", None), dict):
+                    context.deps["media_store"] = state.media_store
+                    context.deps["step_number"] = state.current_step
+                    context.deps["event_bus"] = self.event_bus
+
+            # Provide context only if any tool needs it (single-tool path
+            # checks per-tool; here we pass it always — execute_tool
+            # internally handles the per-tool needs_context check).
+            batch_results = await self.tool_executor.execute_many(
+                runnable, context=context
+            )
+            for runnable_pos, idx in enumerate(runnable_indices):
+                results[idx] = batch_results[runnable_pos]
+
+        # ── Phase 4: process results into observations ─────────────────
+        # Per-invocation observation handling: basic stringification +
+        # visualization marker detection. More exotic result types
+        # (media/artifact/llm_block_injection) fall through to str() in
+        # batch mode — see method docstring for the v1 trade-off.
+        from miiflow_agent.visualization import (
+            extract_visualization_data,
+            is_visualization_result,
+        )
+
+        for i, inv in enumerate(invocations):
+            # Pre-execution error case
+            if inv.tool_call_id in pre_exec_errors:
+                err = pre_exec_errors[inv.tool_call_id]
+                inv.error = err
+                inv.observation = err
+                continue
+
+            result = results[i]
+            if result is None:
+                inv.error = "Tool execution returned no result"
+                inv.observation = inv.error
+                continue
+
+            if not result.success:
+                sanitized = _sanitize_error_message(result.error or "Unknown error")
+                inv.error = result.error
+                inv.observation = f"Tool execution failed: {sanitized}"
+            else:
+                # Visualization → emit event + use [VIZ:id] marker
+                if is_visualization_result(result.output):
+                    viz_data = extract_visualization_data(result.output)
+                    if viz_data:
+                        try:
+                            await self.event_bus.publish(
+                                EventFactory.visualization(
+                                    state.current_step, viz_data, inv.name
+                                )
+                            )
+                        except Exception as evt_err:
+                            logger.debug(
+                                "Failed to publish visualization event: %s", evt_err
+                            )
+                        inv.observation = f"[VIZ:{viz_data['id']}]"
+                    else:
+                        inv.observation = _observation_with_citation_ref(result.output)
+                else:
+                    inv.observation = _observation_with_citation_ref(result.output)
+
+            # Per-invocation observation event for downstream consumers.
+            try:
+                await self.event_bus.publish(
+                    EventFactory.observation(
+                        state.current_step,
+                        inv.observation,
+                        inv.name,
+                        inv.error is None,
+                    )
+                )
+            except Exception as evt_err:
+                logger.debug("Failed to publish observation event: %s", evt_err)
+
+        # ── Phase 5: append N TOOL messages, paired by tool_call_id ────
+        for inv in invocations:
+            context.messages.append(
+                Message(
+                    role=MessageRole.TOOL,
+                    content=inv.observation or "",
+                    tool_call_id=inv.tool_call_id,
+                )
+            )
+
+        # ── Phase 6: write to step (canonical + back-compat) ───────────
+        step.tool_invocations = invocations
+        # Back-compat: mirror the first invocation's fields on legacy
+        # singular attributes so consumers that haven't migrated still
+        # observe sensible values.
+        first = invocations[0] if invocations else None
+        if first is not None:
+            step.action = first.name
+            step.action_input = first.inputs
+            step.observation = first.observation
+            # step.error is set ONLY if every invocation failed — this
+            # signals "this whole step failed" to recovery_manager.
+            # Per-invocation failures stay on each invocation.error and
+            # don't trigger step-level recovery (the LLM sees the errors
+            # as tool observations and can react).
+            if all(inv.error is not None for inv in invocations):
+                step.error = (
+                    f"All {len(invocations)} parallel tool calls failed. "
+                    f"First error: {first.error}"
+                )
+                step.metadata["failure_kind"] = "all_failed"
 
     async def _handle_tool_action(
         self,
@@ -1449,18 +1832,27 @@ class ReActOrchestrator:
         if isinstance(step.action_input, dict) and state:
             step.action_input = self._resolve_media_refs(step.action_input, state)
 
-        # Expose media_store on ctx.deps so tools (e.g. analyze_creative) can
-        # resolve media_ref IDs without re-implementing the resolution logic.
+        # Expose media_store + event_bus + step_number to tools so they can:
+        #   - resolve media_ref IDs without re-implementing resolution logic
+        #     (e.g. analyze_creative)
+        #   - publish events back to the parent's stream during execution
+        #     (e.g. dispatch_assistant streaming a sub-assistant's progress)
         # Safe in-place assignment because the orchestrator owns ctx lifecycle
         # for the duration of a ReAct run.
-        if state is not None and context is not None:
-            try:
-                if isinstance(context.deps, dict):
+        if context is not None:
+            if state is not None:
+                context.run_state.media_store = state.media_store
+                context.run_state.step_number = state.current_step
+            context.run_state.event_bus = self.event_bus
+
+            # Legacy dual-write to ctx.deps (see RunState docstring). Remove
+            # once every reader of these keys has been switched to
+            # ctx.run_state.*.
+            if isinstance(getattr(context, "deps", None), dict):
+                if state is not None:
                     context.deps["media_store"] = state.media_store
-            except Exception:
-                # deps may be a custom type; tools that need media_store use
-                # ctx.deps.get which would silently miss — acceptable v1.
-                pass
+                    context.deps["step_number"] = state.current_step
+                context.deps["event_bus"] = self.event_bus
 
         # Determine if tool needs context injection
         needs_context = self.tool_executor.tool_needs_context(step.action)

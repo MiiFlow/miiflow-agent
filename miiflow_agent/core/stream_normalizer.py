@@ -451,6 +451,24 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
     - protobuf chunks from the SDK (legacy fallback)
     """
 
+    def __init__(self) -> None:
+        super().__init__()
+        # Monotonic per-stream counter for synthesizing unique tool call
+        # ids. Gemini's wire format does not carry call_ids, so we
+        # generate one — but it must be unique within a stream so that
+        # the orchestrator's id-based accumulator doesn't collapse two
+        # parallel calls to the same function into one slot.
+        self._gemini_call_counter = 0
+
+    def _gemini_next_call_index(self) -> int:
+        idx = self._gemini_call_counter
+        self._gemini_call_counter += 1
+        return idx
+
+    def reset_state(self) -> None:  # pragma: no cover - thin override
+        super().reset_state()
+        self._gemini_call_counter = 0
+
     def normalize_chunk(self, chunk: Any) -> StreamChunk:
         """Normalize Gemini streaming format to unified StreamChunk."""
         # Route dict chunks (from REST API) to dedicated handler
@@ -476,13 +494,18 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
             candidate = candidates[0]
             parts = candidate.get("content", {}).get("parts", [])
 
+            # Per-stream call counter, so parallel calls to the same
+            # function get distinct synthetic ids. Gemini doesn't emit
+            # call_ids; without this, the orchestrator collapses two
+            # render_chart calls in one turn into a single slot.
+            call_index = self._gemini_next_call_index()
             for part in parts:
                 if "functionCall" in part:
                     fc = part["functionCall"]
                     func_name = fc.get("name", "")
                     if func_name:
                         tool_call: Dict[str, Any] = {
-                            "id": f"gemini_{func_name}",
+                            "id": f"gemini_{call_index}_{func_name}",
                             "type": "function",
                             "function": {
                                 "name": func_name,
@@ -500,6 +523,7 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
                         if tool_calls is None:
                             tool_calls = []
                         tool_calls.append(tool_call)
+                        call_index = self._gemini_next_call_index()
 
                 if "text" in part:
                     delta += part["text"]
@@ -552,9 +576,12 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
                                 else:
                                     func_args = {}
 
-                                # Format as OpenAI-compatible tool call structure
+                                # Synthesize a per-call unique id so parallel
+                                # calls to the same function don't collide
+                                # in the orchestrator's id-based accumulator.
+                                call_index = self._gemini_next_call_index()
                                 tool_call = {
-                                    "id": f"gemini_{func_name}",  # Gemini doesn't provide IDs
+                                    "id": f"gemini_{call_index}_{func_name}",
                                     "type": "function",
                                     "function": {
                                         "name": func_name,

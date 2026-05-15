@@ -33,8 +33,46 @@ logger = logging.getLogger(__name__)
 
 # ---- configuration constants -------------------------------------------------
 
-#: Default tool count threshold above which ToolSearch activates.
+#: Generic fallback threshold above which ToolSearch activates. Used when
+#: the provider is unknown or not in ``PROVIDER_TOOL_SEARCH_THRESHOLDS``.
+#: Most callers should rely on ``provider_safe_threshold(provider_name)``
+#: instead so they get a value calibrated to the actual LLM compiler.
 DEFAULT_TOOL_SEARCH_THRESHOLD = 25
+
+#: Per-provider safe ceilings on tool count before the provider's tool-use
+#: grammar compiler starts rejecting requests with errors like Anthropic's
+#: "Schema is too complex for compilation". Empirically derived against the
+#: combined schema size of a representative mid-complexity tool surface
+#: (memory_fs + ad_platform + google_ads + creative_analysis ~ 14 tools).
+#:
+#: Anthropic's compiler is the strict one — it materializes the full
+#: grammar of every tool's JSON schema before issuing the model call and
+#: trips on the combined size around 13-15 tools for our schemas. OpenAI
+#: and Gemini handle the same load fine because they don't pre-compile.
+#:
+#: Adapters can still override per-registry by passing
+#: ``tool_search_threshold=`` to ``ToolRegistry(...)``; calibration only
+#: runs when the caller hasn't set it explicitly (see
+#: ``ToolRegistry.calibrate_for_provider``).
+PROVIDER_TOOL_SEARCH_THRESHOLDS: Dict[str, int] = {
+    "anthropic": 12,
+    "openai": 25,
+    "gemini": 25,
+    "google": 25,  # alias used by some clients
+    "bedrock": 12,  # bedrock fronts Claude; share its limit
+}
+
+
+def provider_safe_threshold(provider_name: Optional[str]) -> int:
+    """Return the tool-count ceiling above which ToolSearch should activate
+    for the given provider. Falls back to ``DEFAULT_TOOL_SEARCH_THRESHOLD``
+    when the provider isn't recognized."""
+    if not provider_name:
+        return DEFAULT_TOOL_SEARCH_THRESHOLD
+    return PROVIDER_TOOL_SEARCH_THRESHOLDS.get(
+        provider_name.lower(), DEFAULT_TOOL_SEARCH_THRESHOLD
+    )
+
 
 #: Default max number of tools returned per ``tool_search`` call.
 DEFAULT_MAX_RESULTS = 5

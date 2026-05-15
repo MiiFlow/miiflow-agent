@@ -604,6 +604,47 @@ class EventFactory:
         )
 
     @staticmethod
+    def subagent_dispatch(
+        step_number: int,
+        sub_event: str,
+        payload: dict,
+        action: str = "dispatch_assistant",
+    ) -> ReActEvent:
+        """Create a sub-assistant dispatch event.
+
+        These events stream from the dispatch_assistant tool out to the parent's
+        event bus so the UI can render a nested SubagentPanel that updates
+        progressively as the child runs.
+
+        Args:
+            step_number: Parent's current step number (the step in which dispatch fired).
+            sub_event: One of "start", "progress", "complete", "failed".
+            payload: Sub-event specific data. Expected fields by sub_event:
+                - start:    {subagent_id, subagent_path, handle, name, description, ...}
+                - progress: {subagent_id, subagent_path, chunk}
+                - complete: {subagent_id, subagent_path, result, status, duration_ms?}
+                - failed:   {subagent_id, subagent_path, error, status, duration_ms?}
+              `subagent_path` is the full chain of subagent_ids from the root
+              parent down to this event's emitter, used by the UI to nest
+              chunks inside their parent's nestedChunks array. The emitter
+              MUST include `subagent_path` in `payload`; the dispatch tool
+              prepends its own subagent_id when forwarding nested events.
+            action: Tool name that produced the dispatch ("dispatch_assistant").
+
+        Returns:
+            ReActEvent with SUBAGENT_DISPATCH type. `data` carries `sub_event` plus payload.
+        """
+        return ReActEvent(
+            event_type=ReActEventType.SUBAGENT_DISPATCH,
+            step_number=step_number,
+            data={
+                "sub_event": sub_event,
+                "action": action,
+                **payload,
+            },
+        )
+
+    @staticmethod
     def llm_truncated(
         step_number: int,
         finish_reason: str,

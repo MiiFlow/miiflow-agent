@@ -60,6 +60,11 @@ class ToolRegistry:
         from . import tool_search as _tool_search_mod
 
         self.tool_search_enabled = tool_search_enabled
+        # Track whether the threshold was set explicitly by the caller so
+        # ``calibrate_for_provider`` knows whether it can replace it with
+        # the provider-safe default. Explicit overrides win and survive
+        # binding to any provider.
+        self._tool_search_threshold_explicit = tool_search_threshold is not None
         self.tool_search_threshold = (
             tool_search_threshold
             if tool_search_threshold is not None
@@ -69,6 +74,27 @@ class ToolRegistry:
         self._search_index: Dict[str, str] = {}
         # The built-in tool_search FunctionTool, lazily built on first need.
         self._tool_search_tool: Optional[FunctionTool] = None
+
+    def calibrate_for_provider(self, provider_name: Optional[str]) -> None:
+        """Pin ``tool_search_threshold`` to the provider-safe ceiling unless
+        the caller already passed an explicit override at construction.
+
+        Each LLM provider compiles tool-use grammars differently — Anthropic
+        materializes the full combined schema before issuing the call and
+        trips on size around 13-15 mid-complexity tools; OpenAI and Gemini
+        handle the same load fine. Adapters used to hard-code lower
+        thresholds per assistant identity (Adlyse roots, specialists,
+        suggester) to work around this; calling this method once at
+        Agent.__init__ when the registry binds to a client makes that
+        adapter-side tuning unnecessary.
+        """
+        if self._tool_search_threshold_explicit:
+            return
+        from . import tool_search as _tool_search_mod
+
+        self.tool_search_threshold = _tool_search_mod.provider_safe_threshold(
+            provider_name
+        )
 
     def register(self, tool) -> None:
         """Register a function tool with allowlist validation."""

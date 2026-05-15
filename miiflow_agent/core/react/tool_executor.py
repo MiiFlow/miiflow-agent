@@ -1,14 +1,31 @@
 """Clean tool executor adapter."""
 
+import asyncio
 import logging
 import time
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from ..callbacks import CallbackEvent, CallbackEventType, get_global_registry
 from ..callback_context import get_callback_context
 from ..tools import ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ToolCall:
+    """One tool invocation in a (possibly parallel) batch.
+
+    `tool_call_id` is the provider-supplied id (e.g. Anthropic's `toolu_*`)
+    that must round-trip onto the matching `tool_result` block in the
+    assistant transcript — required for the Anthropic API to accept the
+    next turn (tool_use/tool_result pairing invariant).
+    """
+
+    tool_call_id: str
+    name: str
+    inputs: Dict[str, Any]
 
 
 class AgentToolExecutor:
@@ -40,6 +57,16 @@ class AgentToolExecutor:
 
         start_time = time.time()
 
+        # Respect per-tool needs_context: even if the caller passes a
+        # context defensively (e.g. the batch path forwards one to every
+        # call), only inject it for tools that actually expect it.
+        # Without this guard, context-less tools would crash on the
+        # `execute_safe_with_context` path. Safe no-op for the existing
+        # single-tool callers since they already gate externally before
+        # passing context — those keep working unchanged.
+        if context is not None and not self.tool_needs_context(tool_name):
+            context = None
+
         if context is not None:
             result = await self._tool_registry.execute_safe_with_context(tool_name, context, **inputs)
         else:
@@ -56,6 +83,142 @@ class AgentToolExecutor:
         )
 
         return result
+
+    def is_batch_parallelizable(self, tool_calls: List[ToolCall]) -> bool:
+        """Return True iff every tool in the batch can run in parallel.
+
+        Applies the "all-or-nothing" rule: if ANY tool is
+        ``parallelizable=False`` OR ``require_approval=True``, the whole
+        batch runs serially. This is strictly safer than partial parallel
+        (one mutation interleaved with reads has surprising ordering
+        semantics) and side-steps the multi-approval-modal UX problem.
+        """
+        for tc in tool_calls:
+            schema = self._get_tool_schema_obj(tc.name)
+            if schema is None:
+                # Unknown tool — be conservative; serial fallback lets the
+                # error message land in a deterministic order.
+                return False
+            if not getattr(schema, "parallelizable", False):
+                return False
+            if getattr(schema, "require_approval", False):
+                return False
+        return True
+
+    async def execute_many(
+        self,
+        tool_calls: List[ToolCall],
+        context=None,
+    ) -> List[ToolResult]:
+        """Execute a batch of tool calls; return results in input order.
+
+        If the batch is fully parallelizable (every tool ``parallelizable=True``
+        and ``require_approval=False``), runs concurrently via
+        ``asyncio.gather(return_exceptions=True)``. Otherwise falls back to
+        sequential execution in the input order — same behavior as today's
+        single-tool-per-step orchestrator path, just iterated.
+
+        Each ``ToolResult`` independently carries ``success=False`` + ``error``
+        for failures; raw exceptions from ``asyncio.gather`` are wrapped into
+        ``ToolResult`` so one bad call never tanks the whole batch.
+
+        Callbacks (PRE_TOOL_USE, TOOL_EXECUTED) fire per-tool via
+        ``execute_tool``; under parallel mode they emit concurrently — order
+        of TOOL_EXECUTED is completion-order, not input-order. Callers that
+        need strict ordering should not mark their tools parallelizable.
+
+        ``ToolApprovalRequired`` only fires in serial mode (approval-required
+        tools force the batch serial via ``is_batch_parallelizable``). When
+        raised, it propagates up to the orchestrator which pauses the run
+        for user approval — same as today.
+        """
+        if not tool_calls:
+            return []
+
+        if self.is_batch_parallelizable(tool_calls):
+            return await self._execute_parallel(tool_calls, context)
+        return await self._execute_serial(tool_calls, context)
+
+    async def _execute_serial(
+        self,
+        tool_calls: List[ToolCall],
+        context,
+    ) -> List[ToolResult]:
+        """Run the batch one-at-a-time in input order. Same semantics as
+        the single-tool path; failures don't stop subsequent tools.
+        """
+        results: List[ToolResult] = []
+        for tc in tool_calls:
+            results.append(await self.execute_tool(tc.name, tc.inputs, context=context))
+        return results
+
+    async def _execute_parallel(
+        self,
+        tool_calls: List[ToolCall],
+        context,
+    ) -> List[ToolResult]:
+        """Run the batch via ``asyncio.gather``. Each tool's success/failure
+        is independently captured. Raw exceptions get wrapped into
+        ``ToolResult(success=False)`` so the caller always gets a result
+        per input — same length, same order.
+
+        Context isolation invariant: each tool call must run in its own
+        copy of the caller's ContextVar Context so sibling tools cannot
+        observe or clobber each other's contextvar state (notably the
+        ToolSearch ``_enabled_tools`` set and any per-call mutations on
+        ``ctx.deps``-adjacent contextvars). ``asyncio.gather`` on bare
+        coroutines achieves this indirectly via ``ensure_future`` →
+        ``loop.create_task``, but that's a behavior of the gather
+        implementation, not a guarantee at this seam. We wrap each
+        coroutine in an explicit ``asyncio.create_task`` so the
+        per-branch Context copy is a property of THIS function — future
+        refactors that swap ``gather`` for a TaskGroup, a manual loop, or
+        any other scheduling primitive can't accidentally regress the
+        isolation. See the dispatch_assistant flow (Django
+        ``AssistantInvoker``) for the parent-most consumer of this
+        invariant.
+        """
+        tasks = [
+            asyncio.create_task(
+                self.execute_tool(tc.name, tc.inputs, context=context),
+                name=f"tool:{tc.name}:{tc.tool_call_id}",
+            )
+            for tc in tool_calls
+        ]
+        raw = await asyncio.gather(*tasks, return_exceptions=True)
+
+        results: List[ToolResult] = []
+        for tc, item in zip(tool_calls, raw):
+            if isinstance(item, BaseException):
+                logger.exception(
+                    "Parallel tool '%s' raised an unhandled exception",
+                    tc.name,
+                    exc_info=item,
+                )
+                results.append(
+                    ToolResult(
+                        name=tc.name,
+                        input=tc.inputs,
+                        output=None,
+                        error=f"Tool execution error: {item}",
+                        success=False,
+                    )
+                )
+            else:
+                results.append(item)
+        return results
+
+    def _get_tool_schema_obj(self, tool_name: str):
+        """Return the underlying ``ToolSchema`` instance (not the dict).
+
+        Needed for reading the ``parallelizable`` / ``require_approval``
+        booleans, which the dict-shaped ``get_tool_schema`` doesn't expose.
+        """
+        if tool_name == self._tool_search_meta_name():
+            meta = self._tool_registry.get_tool_search_tool()
+            return getattr(meta, "schema", None)
+        tool = self._tool_registry.tools.get(tool_name)
+        return getattr(tool, "schema", None) if tool else None
 
     async def _emit_pre_tool_use_callback(
         self,

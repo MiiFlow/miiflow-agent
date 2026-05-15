@@ -1375,10 +1375,11 @@ class PlanAndExecuteOrchestrator:
                         ReActEventType.VISUALIZATION,
                         ReActEventType.MEDIA,
                         ReActEventType.ARTIFACT,
+                        ReActEventType.SUBAGENT_DISPATCH,
                     ):
-                        # Forward visualization/media/artifact events directly so the
-                        # streaming service can emit them as SSE events (e.g. auth_prompt,
-                        # charts, downloadable PDFs)
+                        # Forward visualization/media/artifact/subagent_dispatch events
+                        # directly so the streaming service can emit them as SSE events
+                        # (charts, downloadable PDFs, nested SubagentPanel updates).
                         await self.event_bus.publish(react_event)
                 except Exception as e:
                     logger.error(f"Error forwarding ReAct event: {e}")

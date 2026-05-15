@@ -24,6 +24,7 @@ class ReActEventType(Enum):
     ARTIFACT = "artifact"  # Tool returned a downloadable artifact (PDF, HTML, ...)
     PROGRESS = "progress"  # Progress snapshot update
     LLM_TRUNCATED = "llm_truncated"  # Model hit max_tokens (often mid-tool-call)
+    SUBAGENT_DISPATCH = "subagent_dispatch"  # Sub-assistant dispatch (start/progress/complete/failed sub-events)
 
 
 class StopReason(Enum):

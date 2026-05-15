@@ -26,6 +26,16 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from ..message import Message, MessageRole
+from ..subagent import (
+    SubAgent as FrameworkSubAgent,
+    SubAgentHandoff,
+    SubAgentResult as FrameworkSubAgentResult,
+)
+from .dispatch import (
+    DispatchCounter,
+    DispatchGuardrailError,
+    dispatch_subagent,
+)
 from .enums import MultiAgentEventType, ReActEventType, StopReason
 from .events import EventBus
 from .models import MultiAgentResult, SubAgentConfig, SubAgentPlan, SubAgentResult
@@ -516,6 +526,11 @@ Complete this specific task. Stay focused on your assigned area."""
                                     "action": react_event.data.get("action", "unknown"),
                                 },
                             )
+                        elif react_event.event_type == ReActEventType.SUBAGENT_DISPATCH:
+                            # Forward sub-assistant dispatch events as-is so the parent's
+                            # SubagentPanel updates progressively even when the dispatch
+                            # tool fires from inside a MultiAgent subagent's own ReAct loop.
+                            await self.event_bus.publish(react_event)
                     except Exception as e:
                         logger.error(f"Error forwarding ReAct event from subagent {config.name}: {e}")
 
@@ -1195,3 +1210,237 @@ Complete this specific task. Stay focused on your assigned area."""
                 final_answer=f"Error during auto-selection execution: {str(e)}",
                 stop_reason=StopReason.FORCED_STOP,
             )
+
+    # ── Framework-SubAgent execution path (Stage 2.7) ────────────────────
+
+    async def execute_framework_subagents(
+        self,
+        handoffs: List[tuple],
+        context: "RunContext",
+        *,
+        parent_assistant_id: str = "multiagent",
+        timeout_seconds: Optional[float] = None,
+        counter: Optional[DispatchCounter] = None,
+        child_id_resolver: Optional[Callable[[FrameworkSubAgent], str]] = None,
+    ) -> List[SubAgentResult]:
+        """Execute framework `SubAgent` instances in parallel via gather.
+
+        The path Stage 2 was built for: a parent Agent with
+        ``sub_agents=[A, B, C]`` decides up-front to fan out to two of
+        them. Caller builds ``(sub_agent, handoff)`` pairs and we run
+        them concurrently through the framework's dispatch lifecycle
+        (race-safe budget via shared `DispatchCounter`, cycle/depth
+        guards, lifecycle events on the bus).
+
+        Unlike the legacy ``_execute_subagents`` path (lead-agent-
+        planned ``SubAgentConfig`` list) and ``execute_parallel_dynamic_subagents``
+        (registry-based ``DynamicSubAgentConfig``), this method does NOT
+        spin up an isolated ReActOrchestrator per task — each
+        ``SubAgent`` owns its own ``stream()`` so the orchestrator
+        coupling lives inside the SubAgent implementation. That makes
+        Django's ``DjangoAssistantSubAgent`` (which uses its own
+        ``EnhancedResponseGenerator``) and the framework's own SubAgents
+        callable through the same code path.
+
+        Args:
+            handoffs: list of ``(SubAgent, SubAgentHandoff)`` pairs.
+            context: parent run context; deep-copied per task so
+                concurrent ``stream()`` calls don't share mutable state.
+            parent_assistant_id: identifier the framework includes in
+                ``subagent_dispatch`` event payloads.
+            timeout_seconds: optional per-task timeout. ``None`` =
+                no timeout (the SubAgent itself may impose one).
+            counter: optional shared ``DispatchCounter``. ``None`` =
+                construct one per call. All tasks share the same counter
+                so per-handle and per-turn budgets account for every
+                task in the gather.
+            child_id_resolver: optional ``SubAgent -> str`` for cycle
+                detection. Defaults to ``sub.handle`` (each SubAgent's
+                ``handle`` is unique within an agent).
+
+        Returns:
+            list of legacy ``SubAgentResult`` (MultiAgent's existing
+            dataclass shape), one per input handoff, in input order.
+            Each entry reflects the framework's outcome — ``success``
+            is True iff ``framework_result.status == "completed"``.
+        """
+        if not handoffs:
+            return []
+
+        # Clear shared state for this run (mirrors the legacy paths so
+        # `_synthesize_results` can read collected outputs the same way).
+        await self.shared_state.clear()
+
+        shared_counter = counter or DispatchCounter()
+        resolver = child_id_resolver or (lambda sub: sub.handle)
+
+        def _isolate(base_context: "RunContext") -> "RunContext":
+            """Per-task deep-copied context. Matches the invariant the
+            legacy paths enforce — concurrent ``stream()`` calls must
+            not share ``context.messages`` because tool_use/tool_result
+            pairs would interleave and break Anthropic's API
+            contract."""
+            from ..agent import RunContext
+            return RunContext(
+                deps=base_context.deps,
+                messages=copy.deepcopy(base_context.messages),
+                retry=base_context.retry,
+                metadata=base_context.metadata.copy(),
+            )
+
+        async def _run_one(
+            index: int,
+            sub_agent: FrameworkSubAgent,
+            handoff: SubAgentHandoff,
+        ) -> SubAgentResult:
+            start_time = time.time()
+            child_id = resolver(sub_agent)
+            isolated_context = _isolate(context)
+
+            try:
+                coro = dispatch_subagent(
+                    sub_agent,
+                    handoff,
+                    parent_event_bus=self.event_bus,
+                    parent_step_number=0,
+                    parent_assistant_id=parent_assistant_id,
+                    child_id=child_id,
+                    counter=shared_counter,
+                )
+                if timeout_seconds is not None:
+                    fw_result: FrameworkSubAgentResult = await asyncio.wait_for(
+                        coro, timeout=timeout_seconds
+                    )
+                else:
+                    fw_result = await coro
+            except DispatchGuardrailError as guard:
+                # Framework rejected this dispatch (cycle/depth/budget).
+                # Surface as a legacy failed SubAgentResult so callers
+                # don't need to know the framework error taxonomy.
+                return SubAgentResult(
+                    agent_name=sub_agent.handle,
+                    role=sub_agent.handle,
+                    output_key=f"result_{sub_agent.handle}_{index}",
+                    result=None,
+                    success=False,
+                    error=f"{guard.kind}: {guard}",
+                    execution_time=time.time() - start_time,
+                )
+            except asyncio.TimeoutError:
+                return SubAgentResult(
+                    agent_name=sub_agent.handle,
+                    role=sub_agent.handle,
+                    output_key=f"result_{sub_agent.handle}_{index}",
+                    result=None,
+                    success=False,
+                    error=f"timeout after {timeout_seconds}s",
+                    execution_time=time.time() - start_time,
+                )
+            except Exception as exc:  # noqa: BLE001 — surface as failed task
+                logger.exception(
+                    "execute_framework_subagents: dispatch raised",
+                    extra={"handle": sub_agent.handle},
+                )
+                return SubAgentResult(
+                    agent_name=sub_agent.handle,
+                    role=sub_agent.handle,
+                    output_key=f"result_{sub_agent.handle}_{index}",
+                    result=None,
+                    success=False,
+                    error=str(exc),
+                    execution_time=time.time() - start_time,
+                )
+
+            execution_time = time.time() - start_time
+            success = fw_result.status == "completed"
+
+            output_key = f"result_{sub_agent.handle}_{index}"
+            if success:
+                await self.shared_state.write(
+                    output_key,
+                    {
+                        "answer": fw_result.answer,
+                        "role": sub_agent.handle,
+                        "focus": sub_agent.description or sub_agent.when_to_use,
+                    },
+                    agent_id=sub_agent.handle,
+                )
+
+            return SubAgentResult(
+                agent_name=sub_agent.handle,
+                role=sub_agent.handle,
+                output_key=output_key,
+                result=fw_result.answer if success else None,
+                success=success,
+                error=fw_result.error,
+                execution_time=execution_time,
+            )
+
+        # Gather all tasks concurrently. Exceptions are caught above and
+        # returned as failed SubAgentResults so a single bad SubAgent
+        # doesn't poison the whole batch (mirrors the legacy paths).
+        results = await asyncio.gather(
+            *(
+                _run_one(idx, sub, handoff)
+                for idx, (sub, handoff) in enumerate(handoffs)
+            )
+        )
+        return list(results)
+
+    async def execute_agent_sub_agents(
+        self,
+        agent: "Agent",
+        handle_tasks: List[Dict[str, Any]],
+        context: "RunContext",
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> List[SubAgentResult]:
+        """Resolve sub-agent handles from ``agent.sub_agents`` and run
+        them in parallel.
+
+        Convenience over ``execute_framework_subagents`` for the common
+        case where the caller has a list of ``{handle, task,
+        intent_summary, structured_payload?}`` dicts (e.g. what a
+        lead-agent JSON plan would produce) and a parent ``Agent``
+        constructed with ``sub_agents=[...]``.
+
+        Returns the same legacy ``SubAgentResult`` list shape as the
+        other parallel paths so callers can pipe it through
+        ``_synthesize_results`` unchanged.
+        """
+        sub_by_handle = {sub.handle: sub for sub in agent.sub_agents}
+        handoffs: List[tuple] = []
+        unknown: List[str] = []
+        for task in handle_tasks:
+            handle = task.get("handle")
+            sub = sub_by_handle.get(handle)
+            if sub is None:
+                unknown.append(handle or "<missing>")
+                continue
+            handoffs.append((
+                sub,
+                SubAgentHandoff(
+                    task=task.get("task", ""),
+                    intent_summary=task.get("intent_summary", ""),
+                    structured_payload=task.get("structured_payload"),
+                    parent_user_message=task.get("parent_user_message"),
+                ),
+            ))
+
+        if unknown:
+            # Don't silently drop bad handles — they're a planning bug
+            # in the lead agent. Surface clearly so the synthesizer can
+            # note the gap.
+            logger.warning(
+                "execute_agent_sub_agents: %d unknown handle(s) skipped: %s",
+                len(unknown),
+                unknown,
+            )
+
+        return await self.execute_framework_subagents(
+            handoffs,
+            context,
+            parent_assistant_id=getattr(agent.config, "parent_assistant_id", None)
+            or "multiagent",
+            timeout_seconds=timeout_seconds,
+        )

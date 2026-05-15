@@ -23,6 +23,7 @@ def tool(
     return_schema: Optional[Dict[str, Any]] = None,
     strict: bool = True,
     require_approval: bool = False,
+    parallelizable: bool = False,
     always_load: bool = False,
     search_keywords: Optional[List[str]] = None,
 ) -> Callable[[F], F]:
@@ -44,6 +45,16 @@ def tool(
             "object"}` arrays without nested property schemas; strict mode
             would forbid all object content there.
         require_approval: If True, tool requires user approval before execution (default: False)
+        parallelizable: If True, the orchestrator may run this tool concurrently
+            with other parallelizable tools the model emits in the same
+            assistant turn (asyncio.gather). Default False — serial is the safe
+            default for any tool with observable side effects, hidden ordering
+            dependencies, or shared mutable state. Approval-required tools
+            also force serial regardless of this flag — a batch containing any
+            require_approval=True or parallelizable=False tool runs fully
+            serially (all-or-nothing rule, in the order the model emitted them).
+            Mark True only on idempotent reads, pure renderers, and lifecycle-
+            isolated dispatchers.
 
     Example with automatic reflection:
         @tool(description="Add two numbers")
@@ -125,6 +136,7 @@ def tool(
             tool_type=ToolType.FUNCTION,
             parameters=param_schemas,
             require_approval=require_approval,
+            parallelizable=parallelizable,
         )
 
         # Add return schema if provided

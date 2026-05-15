@@ -20,7 +20,11 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from .config import AgentConfig
+    from .subagent import SubAgent
     from .tools.mcp import NativeMCPServerConfig
+    from .react.dispatch import DispatchCounter
+    from .react.events.bus import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +89,46 @@ class RunResult(Generic[Result]):
 
 
 @dataclass
+class RunState:
+    """Per-run state owned and provisioned by the orchestrator.
+
+    Tools read these via ``ctx.run_state.*``; the orchestrator (and only the
+    orchestrator) writes them. Distinct from ``ctx.deps``, which is the
+    adapter-supplied bag of caller context (org id, thread id, user id, …).
+
+    Splitting these surfaces gives every consumer an IDE-checkable contract
+    for what the framework provisions per-run and prevents adapters from
+    accidentally clobbering framework state with a string-keyed write.
+
+    Note: this is the migration target for the legacy ``ctx.deps["event_bus"]``
+    /``ctx.deps["step_number"]`` /``ctx.deps["dispatch_counter"]`` /
+    ``ctx.deps["media_store"]`` magic-key pattern. During the transition the
+    orchestrator dual-writes both surfaces — see
+    ``react/orchestrator.py:execute`` and ``_execute_tool``. Readers should
+    prefer ``ctx.run_state``; the ``ctx.deps`` entries will be removed once
+    every caller is migrated.
+    """
+
+    # The orchestrator's event bus. Tools that need to publish back to the
+    # parent stream (notably ``dispatch_assistant`` forwarding subagent
+    # lifecycle events) read this.
+    event_bus: Optional["EventBus"] = None
+
+    # The current ReAct step number. Tools that emit events tied to the step
+    # (dispatch lifecycle, observability hooks) read this.
+    step_number: int = 0
+
+    # Per-turn dispatch budget counter. Shared across concurrent dispatches in
+    # the same parent turn so per-handle and per-turn caps are accurate under
+    # parallel batches.
+    dispatch_counter: Optional["DispatchCounter"] = None
+
+    # Per-step media reference store. Tools that resolve ``media_ref:<id>``
+    # inputs to URLs (image editors, creative analyzers) read this.
+    media_store: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class RunContext(Generic[Deps]):
     """Context passed to tools and agent functions (stateless)."""
 
@@ -93,6 +137,7 @@ class RunContext(Generic[Deps]):
     retry: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
     cancel_event: Optional[asyncio.Event] = None
+    run_state: RunState = field(default_factory=RunState)
 
     @property
     def is_cancelled(self) -> bool:
@@ -126,8 +171,9 @@ class Agent(Generic[Deps, Result]):
 
     def __init__(
         self,
-        client: LLMClient,
+        client: Optional[LLMClient] = None,
         *,
+        config: Optional["AgentConfig"] = None,
         agent_type: AgentType = AgentType.SINGLE_HOP,
         system_prompt: Optional[Union[str, Callable[[RunContext[Deps]], str]]] = None,
         retries: int = 1,
@@ -135,40 +181,131 @@ class Agent(Generic[Deps, Result]):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[FunctionTool]] = None,
+        sub_agents: Optional[List["SubAgent"]] = None,
         json_schema: Optional[Dict[str, Any]] = None,
         context_compression: bool = True,
         max_context_tokens: Optional[int] = None,
     ):
-        self.client = client
-        self.agent_type = agent_type
-        self.system_prompt = system_prompt
-        self.retries = retries
-        self.max_iterations = max_iterations
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.json_schema = json_schema
+        # Two construction modes:
+        #   1) ``Agent(config=AgentConfig(...))`` — canonical, used by Stage 2+
+        #      callers that need ``sub_agents`` or want their config audited
+        #      as a single dataclass.
+        #   2) ``Agent(client, agent_type=..., tools=..., ...)`` — legacy
+        #      kwargs form. We build an internal AgentConfig so the rest of
+        #      ``__init__`` only consumes one shape.
+        if config is not None:
+            if client is not None and client is not config.client:
+                raise ValueError(
+                    "Pass `client` either positionally OR via config, not both."
+                )
+            if any(
+                v is not None
+                for v in (system_prompt, tools, sub_agents, json_schema, max_tokens, max_context_tokens)
+            ):
+                raise ValueError(
+                    "When passing `config=`, supply all knobs via the "
+                    "AgentConfig — keyword args alongside config are not "
+                    "merged (would be ambiguous about which wins)."
+                )
+            effective = config
+        else:
+            if client is None:
+                raise ValueError("Agent requires a `client` or a `config=AgentConfig(...)`.")
+            from .config import AgentConfig as _AgentConfig
+
+            effective = _AgentConfig(
+                client=client,
+                agent_type=agent_type,
+                system_prompt=system_prompt,
+                retries=retries,
+                max_iterations=max_iterations,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=list(tools) if tools else [],
+                sub_agents=list(sub_agents) if sub_agents else [],
+                json_schema=json_schema,
+                context_compression=context_compression,
+                max_context_tokens=max_context_tokens,
+            )
+
+        self.config = effective
+        self.client = effective.client
+        self.agent_type = effective.agent_type
+        self.system_prompt = effective.system_prompt
+        self.retries = effective.retries
+        self.max_iterations = effective.max_iterations
+        self.temperature = effective.temperature
+        self.max_tokens = effective.max_tokens
+        self.json_schema = effective.json_schema
 
         # Context compression: enabled by default for multi-step agent types
         self._context_compressor = None
-        if context_compression and agent_type in (
+        if effective.context_compression and effective.agent_type in (
             AgentType.REACT, AgentType.PLAN_AND_EXECUTE,
             AgentType.PARALLEL_PLAN, AgentType.MULTI_AGENT,
         ):
             from .context_compression import ContextCompressor
             self._context_compressor = ContextCompressor(
-                client=client,
-                max_context_tokens=max_context_tokens,
+                client=effective.client,
+                max_context_tokens=effective.max_context_tokens,
             )
 
         # Share the tool registry with LLMClient for consistency
         self.tool_registry = self.client.tool_registry
+        # Calibrate ToolSearch threshold to the bound provider's grammar
+        # limit. Anthropic's tool-use compiler is the strict one and 400s
+        # at ~13-15 mid-complexity tools; OpenAI / Gemini handle the same
+        # load without issue. This used to require per-adapter tuning
+        # (Django was overriding the threshold for every Adlyse-family
+        # assistant); now the framework picks the right default based on
+        # the provider attached to the client. Explicit overrides at
+        # registry construction still win — see
+        # ToolRegistry.calibrate_for_provider docstring.
+        #
+        # Note: self.client is the LLMClient wrapper; the underlying
+        # provider client (Anthropic/OpenAI/Gemini) hangs off
+        # self.client.client and is where provider_name lives.
+        _provider_client = getattr(self.client, "client", None)
+        self.tool_registry.calibrate_for_provider(
+            getattr(_provider_client, "provider_name", None)
+        )
         self._tools: List[FunctionTool] = []
+        self._sub_agents: List["SubAgent"] = []
 
         # Register provided tools
-        if tools:
-            for tool in tools:
-                self.tool_registry.register(tool)
-                self._tools.append(tool)
+        for tool in effective.tools:
+            self.tool_registry.register(tool)
+            self._tools.append(tool)
+
+        # Register provided sub-agents. When at least one is present we
+        # also synthesize a `dispatch_assistant`-shaped FunctionTool that
+        # routes calls through the framework's dispatch lifecycle
+        # (guardrails, counter, event bubbling). Stage 1's parallel tool
+        # batch executor will then gather multiple dispatcher calls
+        # automatically — that's how this Stage 2 design unlocks parallel
+        # dispatch without orchestrator surgery.
+        for sub in effective.sub_agents:
+            self._sub_agents.append(sub)
+
+        if self._sub_agents:
+            from .react.dispatch import (
+                DISPATCH_TOOL_NAME,
+                make_subagent_dispatcher_tool,
+            )
+
+            existing_tool_names = {t.name for t in self._tools}
+            if DISPATCH_TOOL_NAME not in existing_tool_names:
+                # `parent_assistant_id` defaults to a synthetic id because
+                # the framework Agent doesn't (and shouldn't) know about
+                # Django Assistant rows. The Django adapter in Stage 3
+                # passes the real Assistant.id via AgentConfig.
+                parent_id = effective.parent_assistant_id or "framework_agent"
+                dispatcher = make_subagent_dispatcher_tool(
+                    self._sub_agents,
+                    parent_assistant_id=parent_id,
+                )
+                self.tool_registry.register(dispatcher)
+                self._tools.append(dispatcher)
 
     def add_tool(self, func: Callable) -> None:
         """Add a tool function (decorated with global @tool) to this agent.
@@ -219,6 +356,37 @@ class Agent(Generic[Deps, Result]):
 
         self.tool_registry.register_native_mcp_server(config)
         logger.info(f"Registered native MCP server: {config.name} -> {config.url}")
+
+    @property
+    def sub_agents(self) -> List["SubAgent"]:
+        """SubAgent instances this agent can dispatch to.
+
+        Mutable through `add_sub_agent()`; mostly read-only for callers.
+        """
+        return self._sub_agents
+
+    def add_sub_agent(self, sub_agent: "SubAgent") -> None:
+        """Register an additional SubAgent post-construction.
+
+        Useful for Django callers that discover sub-assistants from the
+        ORM after the parent Agent has been constructed. The framework's
+        dispatch tool synthesis reads from `self._sub_agents` at
+        orchestrator boundary time, so adding here before `stream()` is
+        sufficient.
+        """
+        # No-collision invariant — mirrors AgentConfig.__post_init__.
+        existing_handles = {s.handle for s in self._sub_agents}
+        if sub_agent.handle in existing_handles:
+            raise ValueError(
+                f"Sub-agent '{sub_agent.handle}' already registered on this agent."
+            )
+        tool_names = {t.name for t in self._tools}
+        if sub_agent.handle in tool_names:
+            raise ValueError(
+                f"Sub-agent handle '{sub_agent.handle}' collides with a "
+                f"tool of the same name."
+            )
+        self._sub_agents.append(sub_agent)
 
     async def run(
         self,

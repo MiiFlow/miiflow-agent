@@ -126,13 +126,20 @@ def _parse_rest_response(
     if candidates:
         candidate = candidates[0]
         parts = candidate.get("content", {}).get("parts", [])
+        # Per-call counter: Gemini's wire format doesn't carry a call_id,
+        # so we synthesize one. Including the part position keeps the id
+        # unique even when the model emits multiple parallel calls to
+        # the SAME function (e.g. two render_chart calls in one turn) —
+        # without this, the orchestrator's id-based accumulator would
+        # collapse them into a single slot and lose the second call.
+        call_index = 0
         for part in parts:
             if "functionCall" in part:
                 fc = part["functionCall"]
                 gemini_name = fc.get("name", "")
                 original_name = tool_name_mapping.get(gemini_name, gemini_name)
                 tool_call: Dict[str, Any] = {
-                    "id": f"gemini_{original_name}",
+                    "id": f"gemini_{call_index}_{original_name}",
                     "type": "function",
                     "function": {
                         "name": original_name,
@@ -142,6 +149,7 @@ def _parse_rest_response(
                         "gemini_function_name": gemini_name,
                     },
                 }
+                call_index += 1
                 # thoughtSignature is a sibling of functionCall in the part,
                 # not nested inside functionCall.
                 if "thoughtSignature" in part:

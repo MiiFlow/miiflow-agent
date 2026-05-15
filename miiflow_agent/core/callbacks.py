@@ -19,6 +19,7 @@ Usage:
 """
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -177,6 +178,42 @@ class CallbackRegistry:
         """Get all registered callbacks for an event type."""
         with self._lock:
             return self._callbacks[event_type].copy()
+
+    @contextlib.contextmanager
+    def isolated_scope(self):
+        """Snapshot the registry, run, then restore.
+
+        Use this around a NESTED agent run (e.g. dispatch_assistant invoking
+        a sub-assistant) so callback churn inside the nested run cannot leak
+        out. Specifically prevents two failure modes:
+
+          - Inner code calling `clear()` (typical of ToolCollector setup)
+            wiping the outer caller's approval / billing callbacks.
+          - Inner code registering callbacks that linger after the nested
+            run completes and pollute the outer caller's continuation.
+
+        The snapshot is shallow — callback functions themselves are not
+        copied — but the per-event lists are restored exactly as they were
+        at scope entry. Thread-safe via the registry's internal lock.
+
+        Usage:
+            with get_global_registry().isolated_scope():
+                async for event in nested_run():
+                    yield event
+        """
+        with self._lock:
+            snapshot = {
+                event_type: list(callbacks)
+                for event_type, callbacks in self._callbacks.items()
+            }
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._callbacks = {
+                    event_type: list(callbacks)
+                    for event_type, callbacks in snapshot.items()
+                }
 
     async def emit(self, event: CallbackEvent) -> None:
         """Emit an event to all registered callbacks.

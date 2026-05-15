@@ -99,6 +99,15 @@ class ToolSchema:
     # Tool-level default for requiring user approval before execution
     require_approval: bool = False
 
+    # Opt-in marker: when True, the orchestrator may run this tool in
+    # parallel with other parallelizable tools the model emits in the
+    # same assistant turn (via the batch executor's asyncio.gather).
+    # Defaults False — sequential is the safe default for any tool with
+    # observable side effects, hidden ordering dependencies, or shared
+    # mutable state. Approval-required tools also force serial execution
+    # regardless of this flag (see executor docs).
+    parallelizable: bool = False
+
     # Add metadata for arbitrary data
     metadata: Dict[str, Any] = field(default_factory=dict)
     

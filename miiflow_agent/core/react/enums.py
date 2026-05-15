@@ -1,4 +1,11 @@
-"""Enumeration types for ReAct and Plan & Execute systems."""
+"""Enumeration types for the unified ReAct loop.
+
+The legacy `PlanExecuteEventType`, `ParallelPlanEventType`, and
+`MultiAgentEventType` enums were removed alongside their orchestrators
+in the unified-ReAct migration. Telemetry that used to derive subtask
+boundaries from those events now derives them from the flat
+`ReActEventType` stream — see `core/react/events/` for the bus.
+"""
 
 from enum import Enum
 
@@ -25,6 +32,9 @@ class ReActEventType(Enum):
     PROGRESS = "progress"  # Progress snapshot update
     LLM_TRUNCATED = "llm_truncated"  # Model hit max_tokens (often mid-tool-call)
     SUBAGENT_DISPATCH = "subagent_dispatch"  # Sub-assistant dispatch (start/progress/complete/failed sub-events)
+    PLAN_MODE_ENTERED = "plan_mode_entered"  # Model called enter_plan_mode; only read-only tools execute until exit
+    PLAN_MODE_EXITED = "plan_mode_exited"  # Model called exit_plan_mode; carries the proposed plan text for approval/telemetry
+    TOOL_BLOCKED_BY_PLAN_MODE = "tool_blocked_by_plan_mode"  # Executor refused a non-read-only tool while in plan mode
 
 
 class StopReason(Enum):
@@ -41,57 +51,3 @@ class StopReason(Enum):
     NEEDS_CLARIFICATION = "needs_clarification"  # Agent needs user input to continue
     RECOVERY_EXHAUSTED = "recovery_exhausted"  # All recovery strategies exhausted
 
-
-class PlanExecuteEventType(Enum):
-    """Types of events emitted during Plan and Execute."""
-
-    PLANNING_START = "planning_start"
-    PLANNING_THINKING_CHUNK = "planning_thinking_chunk"  # LLM reasoning during planning
-    PLANNING_COMPLETE = "planning_complete"
-    REPLANNING_START = "replanning_start"
-    REPLANNING_THINKING_CHUNK = "replanning_thinking_chunk"  # Streaming during replanning
-    REPLANNING_COMPLETE = "replanning_complete"
-
-    SUBTASK_START = "subtask_start"
-    SUBTASK_THINKING_CHUNK = "subtask_thinking_chunk"  # ReAct reasoning during subtask execution
-    SUBTASK_PROGRESS = "subtask_progress"
-    SUBTASK_COMPLETE = "subtask_complete"
-    SUBTASK_FAILED = "subtask_failed"
-
-    PLAN_PROGRESS = "plan_progress"  # Overall plan progress update
-    SYNTHESIS_START = "synthesis_start"  # Starting final answer synthesis
-    FINAL_ANSWER = "final_answer"
-    FINAL_ANSWER_CHUNK = "final_answer_chunk"  # Streaming chunks for final answer
-    ERROR = "error"
-    CLARIFICATION_NEEDED = "clarification_needed"  # Subtask needs user input
-
-
-class ParallelPlanEventType(Enum):
-    """Types of events emitted during Parallel Plan execution."""
-
-    WAVE_START = "wave_start"  # Starting a new parallel execution wave
-    WAVE_COMPLETE = "wave_complete"  # Wave finished executing
-    PARALLEL_SUBTASK_START = "parallel_subtask_start"  # Individual subtask in wave started
-    PARALLEL_SUBTASK_COMPLETE = "parallel_subtask_complete"  # Individual subtask in wave completed
-
-
-class MultiAgentEventType(Enum):
-    """Types of events emitted during Multi-Agent execution."""
-
-    PLANNING_START = "multi_agent_planning_start"  # Lead agent analyzing query
-    PLANNING_THINKING_CHUNK = "multi_agent_planning_thinking_chunk"  # Streaming planning
-    PLANNING_COMPLETE = "multi_agent_planning_complete"  # Subagent allocation planned
-
-    EXECUTION_START = "multi_agent_execution_start"  # Starting parallel subagent execution
-    SUBAGENT_START = "subagent_start"  # Individual subagent started
-    SUBAGENT_PROGRESS = "subagent_progress"  # Subagent making progress
-    SUBAGENT_COMPLETE = "subagent_complete"  # Subagent finished successfully
-    SUBAGENT_FAILED = "subagent_failed"  # Subagent failed
-    SUBAGENT_MEDIA = "subagent_media"  # Subagent produced media (image/video/audio)
-    SUBAGENT_VISUALIZATION = "subagent_visualization"  # Subagent produced visualization
-    SUBAGENT_ARTIFACT = "subagent_artifact"  # Subagent produced downloadable artifact
-
-    SYNTHESIS_START = "multi_agent_synthesis_start"  # Starting result synthesis
-    FINAL_ANSWER = "multi_agent_final_answer"  # Final synthesized answer
-    FINAL_ANSWER_CHUNK = "multi_agent_final_answer_chunk"  # Streaming final answer
-    CLARIFICATION_NEEDED = "multi_agent_clarification_needed"  # Subagent needs user input

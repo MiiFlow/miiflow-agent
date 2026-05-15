@@ -52,6 +52,17 @@ class AgentToolExecutor:
                 error=f"Tool '{tool_name}' is not available in the current execution context.",
                 success=False,
             )
+
+        # Plan-mode gate: when the run is in plan mode, only tools that
+        # declare `is_read_only=True` execute. Anything else gets a
+        # synthetic refusal so the model self-corrects by either calling
+        # a read-only alternative or exiting plan mode. We check before
+        # the PRE_TOOL_USE callback to avoid spending an approval prompt
+        # on a tool we're about to refuse anyway.
+        blocked_result = self._plan_mode_block_if_needed(tool_name, inputs, context)
+        if blocked_result is not None:
+            return blocked_result
+
         # Emit PRE_TOOL_USE callback - allows blocking tool execution (e.g. for approval)
         await self._emit_pre_tool_use_callback(tool_name, inputs)
 
@@ -207,6 +218,85 @@ class AgentToolExecutor:
             else:
                 results.append(item)
         return results
+
+    def _plan_mode_block_if_needed(
+        self,
+        tool_name: str,
+        inputs: dict,
+        context,
+    ) -> Optional[ToolResult]:
+        """Return a synthetic blocked-tool result iff this call should be
+        refused for being non-read-only while plan mode is active.
+
+        Logic mirrors Claude Code's plan-mode `canUseTool`: only tools
+        declaring `is_read_only=True` execute while in plan mode. The
+        run-state flag is set by `enter_plan_mode` and cleared by
+        `exit_plan_mode` (both in `core/tools/plan_mode.py`).
+
+        Returns `None` to pass through to normal execution. Emits a
+        `TOOL_BLOCKED_BY_PLAN_MODE` event on the run's event bus when a
+        block fires so the UI can surface the refusal as a hint.
+        """
+        run_state = getattr(context, "run_state", None) if context is not None else None
+        if run_state is None:
+            return None
+
+        mode = getattr(run_state, "permission_mode", "default")
+        if mode != "plan":
+            return None
+
+        schema = self._get_tool_schema_obj(tool_name)
+        if schema is not None and getattr(schema, "is_read_only", False):
+            return None
+
+        # Fall through any tool with a known is_read_only=True flag; only
+        # block tools we can prove are NOT read-only. Unknown tools are
+        # treated as not-read-only (safer default — the model can still
+        # exit plan mode and retry).
+        message = (
+            f"Tool '{tool_name}' is blocked while plan mode is active. "
+            f"Plan mode only permits read-only tools (search/list/describe). "
+            f"Finish investigating, then call `exit_plan_mode` with your plan "
+            f"as markdown. Side-effectful tools will become available again."
+        )
+
+        bus = getattr(run_state, "event_bus", None)
+        step_number = int(getattr(run_state, "step_number", 0) or 0)
+        if bus is not None:
+            # Best-effort fire-and-forget — never let the refusal pathway
+            # itself raise; the synthetic ToolResult is the contract.
+            try:
+                from .enums import ReActEventType
+                from .react_events import ReActEvent
+
+                # Don't await: execute_tool is async but the event bus
+                # publish is also async. We're inside an async function so
+                # we can schedule a task that completes alongside the
+                # return. This keeps the refusal synchronous from the
+                # caller's perspective.
+                import asyncio as _asyncio
+
+                _asyncio.create_task(
+                    bus.publish(
+                        ReActEvent(
+                            event_type=ReActEventType.TOOL_BLOCKED_BY_PLAN_MODE,
+                            step_number=step_number,
+                            data={"tool_name": tool_name, "inputs": inputs},
+                        )
+                    ),
+                    name=f"plan-mode-block:{tool_name}",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("plan-mode block event emission skipped: %s", exc)
+
+        return ToolResult(
+            name=tool_name,
+            input=inputs,
+            output=None,
+            error=message,
+            success=False,
+            metadata={"error_type": "blocked_by_plan_mode"},
+        )
 
     def _get_tool_schema_obj(self, tool_name: str):
         """Return the underlying ``ToolSchema`` instance (not the dict).

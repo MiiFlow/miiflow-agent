@@ -183,6 +183,8 @@ async def forward_subagent_events(
     parent_step_number: int,
     subagent_id: str,
     own_path: List[str],
+    handle: Optional[str] = None,
+    started_at_monotonic: Optional[float] = None,
 ) -> None:
     """Consume the child's event stream and forward the relevant events
     to the parent's bus.
@@ -202,7 +204,14 @@ async def forward_subagent_events(
     This is a *consumer*: it iterates the entire generator before
     returning. The caller is responsible for calling
     `SubAgent.final_result()` afterward.
+
+    ``handle`` + ``started_at_monotonic`` are optional and used only for
+    the ``[DISPATCH_TIMING] phase=first_chunk`` log line — emitted on
+    the first non-empty FINAL_ANSWER_CHUNK so log scraping can tell
+    whether parallel dispatches actually started producing output in
+    parallel or stacked end-to-start.
     """
+    first_chunk_logged = False
     async for child_event in child_events:
         if not isinstance(child_event, ReActEvent):
             continue
@@ -216,6 +225,16 @@ async def forward_subagent_events(
                 or ""
             )
             if chunk:
+                if not first_chunk_logged and started_at_monotonic is not None:
+                    now = time.monotonic()
+                    logger.info(
+                        "[DISPATCH_TIMING] phase=first_chunk sub=%s handle=%s elapsed_ms=%d t=%.6f",
+                        subagent_id,
+                        handle or "?",
+                        int((now - started_at_monotonic) * 1000),
+                        now,
+                    )
+                    first_chunk_logged = True
                 await parent_event_bus.publish(
                     EventFactory.subagent_dispatch(
                         parent_step_number,
@@ -289,6 +308,22 @@ async def dispatch_subagent(
     own_path: List[str] = [subagent_id]
     started_at = time.monotonic()
 
+    # [DISPATCH_TIMING] — grep these three phase lines together (start,
+    # first_chunk, complete) to tell parallel vs serial under
+    # asyncio.gather. All three carry the same `sub=` id so a single
+    # dispatch can be threaded across log lines, and `t=` is a
+    # process-monotonic timestamp so log lines from different gather
+    # branches can be ordered without relying on log arrival order.
+    logger.info(
+        "[DISPATCH_TIMING] phase=start sub=%s handle=%s parent=%s child=%s depth=%d t=%.6f",
+        subagent_id,
+        handle,
+        parent_assistant_id,
+        child_id,
+        handoff.depth,
+        started_at,
+    )
+
     if parent_event_bus is not None:
         await parent_event_bus.publish(
             EventFactory.subagent_dispatch(
@@ -299,7 +334,6 @@ async def dispatch_subagent(
                     "subagent_path": own_path,
                     "handle": handle,
                     "name": sub_agent.name,
-                    "description": sub_agent.description or "",
                     "parent_assistant_id": parent_assistant_id,
                     "child_assistant_id": child_id,
                 },
@@ -323,6 +357,8 @@ async def dispatch_subagent(
                 parent_step_number=parent_step_number,
                 subagent_id=subagent_id,
                 own_path=own_path,
+                handle=handle,
+                started_at_monotonic=started_at,
             )
         else:
             # No bus — just drain the stream so the child completes.
@@ -344,6 +380,16 @@ async def dispatch_subagent(
         )
 
     # Phase 4: lifecycle complete / failed.
+    finished_at = time.monotonic()
+    logger.info(
+        "[DISPATCH_TIMING] phase=complete sub=%s handle=%s status=%s elapsed_ms=%d t=%.6f",
+        subagent_id,
+        handle,
+        result.status,
+        int((finished_at - started_at) * 1000),
+        finished_at,
+    )
+
     if parent_event_bus is not None:
         sub_event = "complete" if result.status == "completed" else "failed"
         await parent_event_bus.publish(

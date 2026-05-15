@@ -49,34 +49,6 @@ NEVER do both in the same turn. NEVER write text alongside a tool call. Do not n
 - Before declaring a task complete, verify the result if possible.
 - Be accurate about what happened — don't claim success if something failed."""
 
-PLAN_AND_EXECUTE_REPLAN_PROMPT = """The current plan has encountered issues and needs replanning.
-
-Original Goal: {goal}
-
-Current Plan Status:
-{plan_status}
-
-Failed Subtask: {failed_subtask}
-Error: {error}
-{completed_context}
-Your task: Create a revised plan that addresses the failure and completes the goal.
-
-Respond with a new JSON plan in the same format as before:
-{{
-  "reasoning": "Why the previous plan failed and how this plan fixes it",
-  "subtasks": [...]
-}}
-
-Guidelines for replanning:
-1. **Learn from failure**: Address the specific error that occurred
-2. **Build on completed work**: Use results from completed subtasks (shown above) without re-executing them
-3. **Adjust approach**: Try different tools or methods if previous ones failed
-4. **Simplify if needed**: Break down failed subtasks into smaller steps
-5. **Add validation**: Include verification subtasks if data issues occurred
-
-Respond with ONLY the revised JSON plan."""
-
-
 # System prompt for planning with tool call (unified pattern with ReAct)
 # NOTE: This prompt does NOT include tool descriptions because native tool calling
 # sends tool schemas via the API's tools parameter. Including them here would be redundant.

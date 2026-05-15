@@ -8,9 +8,9 @@ from typing import List
 
 from miiflow_agent import RunContext
 from miiflow_agent.core.react.events import EventBus, EventFactory
-from miiflow_agent.core.react.enums import ReActEventType, PlanExecuteEventType, StopReason
+from miiflow_agent.core.react.enums import ReActEventType, StopReason
 from miiflow_agent.core.react.models import ReActStep
-from miiflow_agent.core.react.react_events import ReActEvent, PlanExecuteEvent
+from miiflow_agent.core.react.react_events import ReActEvent
 
 
 class TestEventFactory:
@@ -297,31 +297,6 @@ class TestReActEventTypes:
         assert len(values) == len(set(values)), "Event type values not unique"
 
 
-class TestPlanExecuteEventTypes:
-    """Test Plan & Execute event type coverage."""
-
-    def test_all_event_types_exist(self):
-        """Test all expected Plan & Execute event types exist."""
-        expected_types = [
-            "PLANNING_START",
-            "PLANNING_COMPLETE",
-            "PLANNING_THINKING_CHUNK",
-            "SUBTASK_START",
-            "SUBTASK_COMPLETE",
-            "SUBTASK_FAILED",
-            "SUBTASK_THINKING_CHUNK",
-            "PLAN_PROGRESS",
-            "REPLANNING_START",
-            "REPLANNING_COMPLETE",
-            "FINAL_ANSWER",
-            "FINAL_ANSWER_CHUNK",
-            "ERROR",
-        ]
-
-        for type_name in expected_types:
-            assert hasattr(PlanExecuteEventType, type_name), f"Missing event type: {type_name}"
-
-
 class TestStreamingPatterns:
     """Test common streaming patterns."""
 
@@ -446,18 +421,6 @@ class TestEventDataIntegrity:
         assert step_dict["step_number"] == 1
         assert step_dict["thought"] == "Test thought"
         assert step_dict["action"] == "test_action"
-
-    def test_plan_execute_event_creation(self):
-        """Test PlanExecuteEvent creation."""
-        event = PlanExecuteEvent(
-            event_type=PlanExecuteEventType.PLANNING_START,
-            data={"goal": "Test goal"}
-        )
-
-        assert event.event_type == PlanExecuteEventType.PLANNING_START
-        assert event.data["goal"] == "Test goal"
-        assert hasattr(event, "timestamp")
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

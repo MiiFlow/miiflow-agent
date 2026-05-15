@@ -108,6 +108,13 @@ class ToolSchema:
     # regardless of this flag (see executor docs).
     parallelizable: bool = False
 
+    # Plan-mode marker: when True, this tool may execute even while the
+    # agent is inside `enter_plan_mode`. Read-only tools (search, list,
+    # describe, ToolSearch itself) should set this; anything with side
+    # effects (write/edit/send/post) MUST leave it False so the executor
+    # synthesizes a "blocked — call exit_plan_mode first" tool result.
+    is_read_only: bool = False
+
     # Add metadata for arbitrary data
     metadata: Dict[str, Any] = field(default_factory=dict)
     

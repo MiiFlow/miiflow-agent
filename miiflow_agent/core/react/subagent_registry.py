@@ -101,7 +101,7 @@ class DynamicSubAgentConfig:
         model: Model override (haiku/sonnet/opus, None = use default)
         max_steps: Maximum reasoning steps for this agent
         timeout_seconds: Maximum execution time
-        can_spawn_subagents: Whether this agent can use TaskTool
+        can_spawn_subagents: Whether this agent can dispatch to sub-agents
         output_schema: Optional JSON schema for structured output
         priority: Priority for selection when multiple agents match
     """

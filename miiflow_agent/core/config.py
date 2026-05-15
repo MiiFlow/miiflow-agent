@@ -103,6 +103,13 @@ class AgentConfig:
     # SSE events the FE consumes carry the right linkage.
     parent_assistant_id: Optional[str] = None
 
+    # When True, the framework auto-registers the two plan-mode deferred
+    # tools (`enter_plan_mode` / `exit_plan_mode`) so the model can
+    # self-escalate into a planning gate that refuses non-read-only
+    # tools. Default False to keep registries small for assistants that
+    # don't need planning (single-purpose lookups, quick answers).
+    enable_plan_mode: bool = False
+
     def __post_init__(self) -> None:
         # Resolve the AgentType default lazily so we don't have to import
         # at module load (would create a circular: agent.py → config.py →

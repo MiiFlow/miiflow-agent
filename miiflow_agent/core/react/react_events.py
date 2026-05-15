@@ -1,10 +1,17 @@
-"""Event dataclasses for ReAct, Plan & Execute, and Multi-Agent systems."""
+"""Event dataclass for the unified ReAct loop.
+
+`PlanExecuteEvent`, `ParallelPlanEvent`, and `MultiAgentEvent` were
+removed alongside their orchestrators in the unified-ReAct migration —
+planning is now an `enter_plan_mode` / `exit_plan_mode` tool call inside
+ReAct, and multi-agent dispatch is the `dispatch_assistant` tool. Both
+emit ReActEventType events on the same bus.
+"""
 
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
-from .enums import MultiAgentEventType, ParallelPlanEventType, PlanExecuteEventType, ReActEventType
+from .enums import ReActEventType
 
 
 @dataclass
@@ -31,54 +38,3 @@ class ReActEvent:
         import json
 
         return json.dumps(self.to_dict())
-
-
-@dataclass
-class PlanExecuteEvent:
-    """Event emitted during Plan and Execute."""
-
-    event_type: PlanExecuteEventType
-    data: Dict[str, Any]
-    timestamp: float = field(default_factory=time.time)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert event to dictionary."""
-        return {
-            "event_type": self.event_type.value,
-            "data": self.data,
-            "timestamp": self.timestamp,
-        }
-
-
-@dataclass
-class ParallelPlanEvent:
-    """Event emitted during Parallel Plan execution."""
-
-    event_type: ParallelPlanEventType
-    data: Dict[str, Any]
-    timestamp: float = field(default_factory=time.time)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert event to dictionary."""
-        return {
-            "event_type": self.event_type.value,
-            "data": self.data,
-            "timestamp": self.timestamp,
-        }
-
-
-@dataclass
-class MultiAgentEvent:
-    """Event emitted during Multi-Agent execution."""
-
-    event_type: MultiAgentEventType
-    data: Dict[str, Any]
-    timestamp: float = field(default_factory=time.time)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert event to dictionary."""
-        return {
-            "event_type": self.event_type.value,
-            "data": self.data,
-            "timestamp": self.timestamp,
-        }

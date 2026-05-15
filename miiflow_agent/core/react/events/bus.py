@@ -7,9 +7,9 @@ import asyncio
 import logging
 from typing import List, Optional, Callable, Any, Union, Literal, TYPE_CHECKING
 
-from ..enums import ReActEventType, PlanExecuteEventType
+from ..enums import ReActEventType
 from ..models import ReActStep
-from ..react_events import ReActEvent, PlanExecuteEvent
+from ..react_events import ReActEvent
 
 logger = logging.getLogger(__name__)
 
@@ -121,27 +121,22 @@ class EventBus:
         if callback in self.subscribers:
             self.subscribers.remove(callback)
 
-    async def publish(self, event: Union[ReActEvent, PlanExecuteEvent, "AGUIBaseEvent", Any]):
+    async def publish(self, event: Union[ReActEvent, "AGUIBaseEvent", Any]):
         """Publish an event to all subscribers.
 
-        This method works with ReActEvent, PlanExecuteEvent, and AG-UI BaseEvent types.
-        When in AG-UI mode, legacy events are automatically converted.
+        This method works with ReActEvent and AG-UI BaseEvent types. When in
+        AG-UI mode, ReActEvents are auto-converted; events without an AG-UI
+        equivalent are dropped.
 
         Args:
             event: The event to publish
         """
         # Auto-convert legacy events to AG-UI if in AG-UI mode
-        if self.is_agui_mode:
-            if isinstance(event, ReActEvent):
-                agui_event = self._convert_react_to_agui(event)
-                if agui_event is None:
-                    return  # Skip events that don't have AG-UI equivalents
-                event = agui_event
-            elif isinstance(event, PlanExecuteEvent):
-                agui_event = self._convert_plan_execute_to_agui(event)
-                if agui_event is None:
-                    return  # Skip events that don't have AG-UI equivalents
-                event = agui_event
+        if self.is_agui_mode and isinstance(event, ReActEvent):
+            agui_event = self._convert_react_to_agui(event)
+            if agui_event is None:
+                return  # Skip events that don't have AG-UI equivalents
+            event = agui_event
 
         # Add to buffer
         self.event_buffer.append(event)
@@ -270,119 +265,6 @@ class EventBus:
                 "stop_reason": data.get("stop_reason", ""),
                 "description": data.get("description", "")
             })
-
-        return None
-
-    def _convert_plan_execute_to_agui(self, plan_event: PlanExecuteEvent) -> Optional[Any]:
-        """Convert a PlanExecuteEvent to an AG-UI event.
-
-        This method is called automatically when the EventBus is in AG-UI mode.
-        It maps Plan & Execute event types to their AG-UI equivalents.
-
-        Args:
-            plan_event: The PlanExecuteEvent to convert
-
-        Returns:
-            An AG-UI event, or None if the event should be skipped
-        """
-        if not self._agui_factory:
-            return None
-
-        import json
-
-        event_type = plan_event.event_type
-        data = plan_event.data
-
-        if event_type == PlanExecuteEventType.PLANNING_START:
-            return self._agui_factory.step_started("planning")
-
-        elif event_type == PlanExecuteEventType.PLANNING_THINKING_CHUNK:
-            return self._agui_factory.thinking_chunk(
-                data.get("delta", ""),
-                data.get("accumulated", "")
-            )
-
-        elif event_type == PlanExecuteEventType.PLANNING_COMPLETE:
-            # Emit planning status and step finished
-            return self._agui_factory.planning_status("complete", data.get("plan"))
-
-        elif event_type == PlanExecuteEventType.REPLANNING_START:
-            return self._agui_factory.step_started("replanning")
-
-        elif event_type == PlanExecuteEventType.REPLANNING_THINKING_CHUNK:
-            return self._agui_factory.thinking_chunk(
-                data.get("delta", ""),
-                data.get("content", "")
-            )
-
-        elif event_type == PlanExecuteEventType.REPLANNING_COMPLETE:
-            return self._agui_factory.step_finished("replanning")
-
-        elif event_type == PlanExecuteEventType.SUBTASK_START:
-            subtask = data.get("subtask", {})
-            subtask_id = subtask.get("id", "unknown")
-            return self._agui_factory.step_started(f"subtask_{subtask_id}")
-
-        elif event_type == PlanExecuteEventType.SUBTASK_THINKING_CHUNK:
-            # Check if this is a tool event
-            if data.get("is_tool"):
-                tool_name = data.get("tool_name", "unknown")
-                if data.get("is_tool_planned"):
-                    return self._agui_factory.tool_call_start(
-                        tool_name,
-                        data.get("tool_description")
-                    )
-                elif data.get("is_tool_executing"):
-                    args = data.get("tool_args", {})
-                    args_json = json.dumps(args) if isinstance(args, dict) else str(args)
-                    return self._agui_factory.tool_call_args(tool_name, args_json)
-            elif data.get("is_observation"):
-                tool_name = data.get("tool_name", "unknown")
-                observation = data.get("delta", "")
-                success = data.get("success", True)
-                return self._agui_factory.tool_call_result(tool_name, observation, success)
-            else:
-                # Regular thinking chunk
-                return self._agui_factory.thinking_chunk(
-                    data.get("delta", ""),
-                    data.get("thought", "")
-                )
-
-        elif event_type == PlanExecuteEventType.SUBTASK_COMPLETE:
-            subtask = data.get("subtask", {})
-            subtask_id = subtask.get("id", "unknown")
-            return self._agui_factory.step_finished(f"subtask_{subtask_id}")
-
-        elif event_type == PlanExecuteEventType.SUBTASK_FAILED:
-            error = data.get("error", "Unknown error")
-            return self._agui_factory.custom("subtask_failed", {
-                "subtask": data.get("subtask"),
-                "error": error
-            })
-
-        elif event_type == PlanExecuteEventType.PLAN_PROGRESS:
-            return self._agui_factory.progress(
-                data.get("completed", 0),
-                data.get("total", 0),
-                data.get("progress_percentage", 0)
-            )
-
-        elif event_type == PlanExecuteEventType.SYNTHESIS_START:
-            return self._agui_factory.step_started("synthesis")
-
-        elif event_type == PlanExecuteEventType.FINAL_ANSWER_CHUNK:
-            delta = data.get("delta", "")
-            # Start message if not already started
-            if not self._agui_factory.message_started:
-                pass  # Caller needs to handle message start
-            return self._agui_factory.text_message_content(delta)
-
-        elif event_type == PlanExecuteEventType.FINAL_ANSWER:
-            return self._agui_factory.text_message_end()
-
-        elif event_type == PlanExecuteEventType.ERROR:
-            error_msg = data.get("error", "Unknown error")
-            return self._agui_factory.run_error(error_msg)
 
         return None
 

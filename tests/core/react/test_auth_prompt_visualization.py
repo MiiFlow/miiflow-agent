@@ -1,18 +1,17 @@
-"""Tests for auth_prompt visualization across all orchestrator types.
+"""Tests for auth_prompt visualization in the unified ReAct loop.
 
-Verifies that when a tool returns a dict with __visualization__: True (as happens
-when the PRE_TOOL_USE auth callback blocks a tool), the correct events are emitted
-across all orchestrator types: ReAct, Plan & Execute, and Multi-Agent.
+Verifies that when a tool returns a dict with __visualization__: True (as
+happens when the PRE_TOOL_USE auth callback blocks a tool), the
+VISUALIZATION event is emitted by the ReAct orchestrator. Plan & Execute
+and Multi-Agent forwarding tests were removed alongside their
+orchestrators in the unified-ReAct migration.
 """
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from miiflow_agent import Agent, RunContext
-from miiflow_agent.core.react.enums import (
-    MultiAgentEventType,
-    ReActEventType,
-)
+from miiflow_agent.core.react.enums import ReActEventType
 from miiflow_agent.core.react.events import EventBus, EventFactory
 from miiflow_agent.core.react.execution import ExecutionState
 from miiflow_agent.core.react.factory import ReActFactory
@@ -236,121 +235,6 @@ class TestReActAuthPromptVisualization:
             and e.event_type == ReActEventType.VISUALIZATION
         ]
         assert len(viz_events) == 0
-
-
-# --- Test: Plan & Execute forwards VISUALIZATION event ---
-
-
-class TestPlanExecuteAuthPromptForwarding:
-    """Test that Plan & Execute orchestrator forwards VISUALIZATION events
-    from inner ReAct orchestrator to the outer event bus."""
-
-    @pytest.mark.asyncio
-    async def test_forward_react_event_forwards_visualization(self):
-        """forward_react_event should re-publish VISUALIZATION events
-        directly to the outer event bus."""
-        from miiflow_agent.core.react.plan_execute_orchestrator import (
-            PlanAndExecuteOrchestrator,
-        )
-        from miiflow_agent.core.react.safety import SafetyManager
-
-        # Create outer event bus and collect events
-        outer_bus = EventBus()
-        outer_events = []
-        outer_bus.subscribe(lambda e: outer_events.append(e))
-
-        # Create orchestrator with the outer bus
-        mock_tool_executor = MagicMock()
-        mock_tool_executor.list_tools.return_value = ["test_tool"]
-        orchestrator = PlanAndExecuteOrchestrator(
-            tool_executor=mock_tool_executor,
-            event_bus=outer_bus,
-            safety_manager=SafetyManager(max_steps=5),
-        )
-
-        # Create a VISUALIZATION event as would be emitted by inner ReAct
-        viz_event = EventFactory.visualization(
-            step_number=1,
-            viz_data=AUTH_PROMPT_VIZ_DICT,
-            action="test_tool",
-        )
-
-        # Directly publish to outer bus (simulating forward_react_event behavior)
-        await outer_bus.publish(viz_event)
-
-        # Verify the event was received
-        viz_events = [
-            e
-            for e in outer_events
-            if isinstance(e, ReActEvent)
-            and e.event_type == ReActEventType.VISUALIZATION
-        ]
-        assert len(viz_events) == 1
-        assert viz_events[0].data["visualization"]["type"] == "auth_prompt"
-
-
-# --- Test: Multi-Agent forwards VISUALIZATION as SUBAGENT_VISUALIZATION ---
-
-
-class TestMultiAgentAuthPromptForwarding:
-    """Test that Multi-Agent orchestrator converts VISUALIZATION events
-    to SUBAGENT_VISUALIZATION events."""
-
-    @pytest.mark.asyncio
-    async def test_subagent_visualization_event_structure(self):
-        """Verify MultiAgentEventType.SUBAGENT_VISUALIZATION event has
-        the correct structure with visualization data and subagent name."""
-        from miiflow_agent.core.react.react_events import PlanExecuteEvent
-
-        # Create the event as would be emitted by the multi-agent orchestrator
-        # (it converts ReActEvent.VISUALIZATION → MultiAgentEvent.SUBAGENT_VISUALIZATION)
-        event = PlanExecuteEvent(
-            event_type=MultiAgentEventType.SUBAGENT_VISUALIZATION,
-            data={
-                "subagent_name": "data_analyst",
-                "visualization": AUTH_PROMPT_VIZ_DICT,
-                "action": "test_tool",
-            },
-        )
-
-        assert event.event_type == MultiAgentEventType.SUBAGENT_VISUALIZATION
-        assert event.data["visualization"]["type"] == "auth_prompt"
-        assert event.data["subagent_name"] == "data_analyst"
-        assert event.data["visualization"]["data"]["providerName"] == "Google Ads"
-
-    @pytest.mark.asyncio
-    async def test_forward_subagent_react_event_publishes_visualization(self):
-        """When a subagent emits a VISUALIZATION event, it should be
-        forwarded as SUBAGENT_VISUALIZATION to the outer bus."""
-        outer_bus = EventBus()
-        outer_events = []
-        outer_bus.subscribe(lambda e: outer_events.append(e))
-
-        # Simulate what forward_subagent_react_event does:
-        # Convert ReActEvent.VISUALIZATION → MultiAgentEvent.SUBAGENT_VISUALIZATION
-        from miiflow_agent.core.react.react_events import PlanExecuteEvent
-
-        subagent_viz_event = PlanExecuteEvent(
-            event_type=MultiAgentEventType.SUBAGENT_VISUALIZATION,
-            data={
-                "subagent_name": "data_analyst",
-                "visualization": AUTH_PROMPT_VIZ_DICT,
-                "action": "test_tool",
-            },
-        )
-        await outer_bus.publish(subagent_viz_event)
-
-        assert len(outer_events) == 1
-        assert (
-            outer_events[0].event_type
-            == MultiAgentEventType.SUBAGENT_VISUALIZATION
-        )
-        viz = outer_events[0].data["visualization"]
-        assert viz["type"] == "auth_prompt"
-        assert viz["__visualization__"] is True
-
-
-# --- Test: EventFactory.visualization creates correct event ---
 
 
 class TestEventFactoryVisualization:

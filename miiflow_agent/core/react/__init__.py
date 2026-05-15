@@ -1,26 +1,30 @@
-"""ReAct (Reasoning + Acting) and Plan & Execute - Architecture
+"""ReAct (Reasoning + Acting) — the unified agent loop.
 
-Usage - ReAct:
+Planning and multi-agent fan-out used to be separate orchestrators
+(`PlanAndExecuteOrchestrator`, `MultiAgentOrchestrator`). They are now
+emergent behaviors of the same ReAct loop:
+
+  - Planning: the model calls `enter_plan_mode` / `exit_plan_mode`
+    (deferred tools in `miiflow_agent.core.tools.plan_mode`). While in
+    plan mode the executor refuses any tool that doesn't declare
+    `is_read_only=True`.
+  - Multi-agent dispatch: the model calls `dispatch_assistant` (the
+    framework synthesizes it from `Agent.sub_agents`). Multiple calls
+    in one turn run in parallel via the batch executor.
+
+Usage:
     from miiflow_agent.core.react import ReActOrchestrator, ReActFactory
 
     orchestrator = ReActFactory.create_orchestrator(agent, max_steps=25)
     result = await orchestrator.execute("Find today's top news", context)
-
-Usage - Plan & Execute:
-    from miiflow_agent.core.react import PlanAndExecuteOrchestrator
-
-    orchestrator = PlanAndExecuteOrchestrator(tool_executor, event_bus, safety_manager)
-    result = await orchestrator.execute("Create Q4 sales report", context)
 """
 
-# New clean architecture - no legacy imports
 from .orchestrator import ReActOrchestrator
-from .plan_execute_orchestrator import PlanAndExecuteOrchestrator
 from .factory import ReActFactory
 from .events import EventBus, EventFactory
 
 # Enums
-from .enums import ReActEventType, StopReason, PlanExecuteEventType
+from .enums import ReActEventType, StopReason
 
 # Models
 from .models import (
@@ -29,13 +33,10 @@ from .models import (
     ToolCall,
     ParseResult,
     ReasoningContext,
-    SubTask,
-    Plan,
-    PlanExecuteResult,
 )
 
 # Events
-from .react_events import ReActEvent, PlanExecuteEvent
+from .react_events import ReActEvent
 
 # Exceptions
 from .exceptions import ReActParsingError, ReActExecutionError, SafetyViolationError
@@ -46,8 +47,8 @@ from .safety import StopCondition, SafetyManager
 # Execution state
 from .execution import ExecutionState
 
-# Multi-agent components
-from .multi_agent_orchestrator import MultiAgentOrchestrator
+# SubAgent registry (still useful for sub-agent metadata even though
+# dispatch is now a normal tool — see core/react/dispatch.py)
 from .subagent_registry import (
     DynamicSubAgentConfig,
     SubAgentRegistry,
@@ -61,12 +62,10 @@ from .model_selector import (
     select_model_for_task,
     detect_complexity,
 )
-from .task_tool import TaskTool, TaskToolResult, create_task_tool
 
 __all__ = [
     # Main interfaces
     "ReActOrchestrator",
-    "PlanAndExecuteOrchestrator",
     "ReActFactory",
     # Event system
     "EventBus",
@@ -74,19 +73,14 @@ __all__ = [
     # Enums
     "ReActEventType",
     "StopReason",
-    "PlanExecuteEventType",
     # Models
     "ReActStep",
     "ReActResult",
     "ToolCall",
     "ParseResult",
     "ReasoningContext",
-    "SubTask",
-    "Plan",
-    "PlanExecuteResult",
     # Events
     "ReActEvent",
-    "PlanExecuteEvent",
     # Exceptions
     "ReActParsingError",
     "ReActExecutionError",
@@ -96,8 +90,7 @@ __all__ = [
     "SafetyManager",
     # Execution state
     "ExecutionState",
-    # Multi-agent components
-    "MultiAgentOrchestrator",
+    # SubAgent metadata
     "DynamicSubAgentConfig",
     "SubAgentRegistry",
     "get_global_registry",
@@ -107,9 +100,6 @@ __all__ = [
     "ComplexityDetector",
     "select_model_for_task",
     "detect_complexity",
-    "TaskTool",
-    "TaskToolResult",
-    "create_task_tool",
 ]
 
-__version__ = "0.5.0"  # Added dynamic multi-agent components
+__version__ = "0.6.0"  # Migration to unified ReAct loop; legacy orchestrators removed

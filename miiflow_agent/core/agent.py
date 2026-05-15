@@ -70,11 +70,24 @@ class _NullCM:
 
 
 class AgentType(Enum):
-    SINGLE_HOP = "single_hop"  # Simple, direct response
-    REACT = "react"  # ReAct with multi-hop reasoning
-    PLAN_AND_EXECUTE = "plan_and_execute"  # Plan then execute for complex multi-step tasks
-    PARALLEL_PLAN = "parallel_plan"  # Parallel subtask execution using dependency waves
-    MULTI_AGENT = "multi_agent"  # Multiple specialized subagents working in parallel
+    """Agent execution path.
+
+    Post unified-ReAct migration there are only two real paths:
+
+    - ``SINGLE_HOP``: one LLM call (plus an optional finalization call
+      after tools fire once). Used for chat-only assistants with zero
+      tools or when ``json_schema`` structured output is required.
+    - ``REACT``: the unified ReAct loop. Planning and multi-agent
+      fan-out are emergent — the model self-escalates via
+      ``enter_plan_mode`` / ``exit_plan_mode`` and parallel
+      ``dispatch_assistant`` tool calls. The legacy
+      ``PLAN_AND_EXECUTE`` / ``PARALLEL_PLAN`` / ``MULTI_AGENT`` types
+      were removed in the migration; if you want their behavior, you
+      want REACT.
+    """
+
+    SINGLE_HOP = "single_hop"
+    REACT = "react"
 
 
 @dataclass
@@ -126,6 +139,16 @@ class RunState:
     # Per-step media reference store. Tools that resolve ``media_ref:<id>``
     # inputs to URLs (image editors, creative analyzers) read this.
     media_store: Dict[str, str] = field(default_factory=dict)
+
+    # Current permission mode for this run. ``"default"`` lets every tool
+    # execute. ``"plan"`` short-circuits non-read-only tools with a
+    # synthetic "blocked — plan mode active" tool result so the model has
+    # to call ``exit_plan_mode`` before resuming side-effectful work.
+    # ``"bypass"`` disables the plan-mode gate entirely (used by the
+    # Django adapter when a user has already approved a high-trust run).
+    # Mutated by the ``enter_plan_mode`` / ``exit_plan_mode`` deferred
+    # tools; read by ``AgentToolExecutor.execute_tool``.
+    permission_mode: str = "default"
 
 
 @dataclass
@@ -185,6 +208,7 @@ class Agent(Generic[Deps, Result]):
         json_schema: Optional[Dict[str, Any]] = None,
         context_compression: bool = True,
         max_context_tokens: Optional[int] = None,
+        enable_plan_mode: bool = False,
     ):
         # Two construction modes:
         #   1) ``Agent(config=AgentConfig(...))`` — canonical, used by Stage 2+
@@ -201,7 +225,7 @@ class Agent(Generic[Deps, Result]):
             if any(
                 v is not None
                 for v in (system_prompt, tools, sub_agents, json_schema, max_tokens, max_context_tokens)
-            ):
+            ) or enable_plan_mode:
                 raise ValueError(
                     "When passing `config=`, supply all knobs via the "
                     "AgentConfig — keyword args alongside config are not "
@@ -226,6 +250,7 @@ class Agent(Generic[Deps, Result]):
                 json_schema=json_schema,
                 context_compression=context_compression,
                 max_context_tokens=max_context_tokens,
+                enable_plan_mode=enable_plan_mode,
             )
 
         self.config = effective
@@ -237,13 +262,12 @@ class Agent(Generic[Deps, Result]):
         self.temperature = effective.temperature
         self.max_tokens = effective.max_tokens
         self.json_schema = effective.json_schema
+        self.enable_plan_mode = getattr(effective, "enable_plan_mode", False)
 
-        # Context compression: enabled by default for multi-step agent types
+        # Context compression: enabled for the multi-step ReAct path
+        # (SINGLE_HOP has at most two LLM calls and doesn't need it).
         self._context_compressor = None
-        if effective.context_compression and effective.agent_type in (
-            AgentType.REACT, AgentType.PLAN_AND_EXECUTE,
-            AgentType.PARALLEL_PLAN, AgentType.MULTI_AGENT,
-        ):
+        if effective.context_compression and effective.agent_type == AgentType.REACT:
             from .context_compression import ContextCompressor
             self._context_compressor = ContextCompressor(
                 client=effective.client,
@@ -306,6 +330,20 @@ class Agent(Generic[Deps, Result]):
                 )
                 self.tool_registry.register(dispatcher)
                 self._tools.append(dispatcher)
+
+        # Plan-mode wiring: register `enter_plan_mode` / `exit_plan_mode`
+        # so the model can self-escalate into a plan-only gate. The pair
+        # is registered AFTER sub-agents so a user-supplied tool of the
+        # same name still wins; conflict-detection happens in
+        # `register_plan_mode_tools` itself (idempotent + skip-on-exists).
+        if self.enable_plan_mode:
+            from .tools.plan_mode import register_plan_mode_tools
+
+            registered = register_plan_mode_tools(self.tool_registry)
+            existing_names = {t.name for t in self._tools}
+            for plan_tool in registered:
+                if plan_tool.name not in existing_names:
+                    self._tools.append(plan_tool)
 
     def add_tool(self, func: Callable) -> None:
         """Add a tool function (decorated with global @tool) to this agent.
@@ -486,7 +524,15 @@ class Agent(Generic[Deps, Result]):
         raise MiiflowLLMError("Agent execution failed", ErrorType.MODEL_ERROR)
 
     async def _execute_with_context(self, context: RunContext[Deps]) -> str:
-        """Route to appropriate execution based on agent type."""
+        """Route to the unified ReAct loop (SINGLE_HOP keeps its own path).
+
+        Plan-and-execute / parallel-plan / multi-agent are no longer
+        separate orchestrators — they are emergent behaviors of the
+        ReAct loop with `enter_plan_mode` and `dispatch_assistant`
+        tools. The legacy ``AgentType`` enum values still pass through
+        the constructor (so callers don't have to change config) but
+        they all behave like REACT now.
+        """
         # Extract user prompt from context messages
         user_prompt = ""
         for msg in reversed(context.messages):
@@ -501,41 +547,16 @@ class Agent(Generic[Deps, Result]):
                 if isinstance(event, dict) and event.get("event") == "execution_complete":
                     final_answer = event.get("data", {}).get("result", "")
                     break
-
-        elif self.agent_type == AgentType.REACT:
+        else:
+            # REACT, PLAN_AND_EXECUTE, PARALLEL_PLAN, MULTI_AGENT all
+            # collapse to the same ReAct loop. The model decides whether
+            # to plan, dispatch, or answer per turn via tool calls.
             async for event in self._stream_react(
                 user_prompt, context, max_steps=self.max_iterations
             ):
                 if event.event_type.value == "final_answer":
                     final_answer = event.data.get("answer", "")
                     break
-
-        elif self.agent_type == AgentType.PLAN_AND_EXECUTE:
-            async for event in self._stream_plan_execute(
-                user_prompt, context, max_replans=self.max_iterations // 5
-            ):
-                if hasattr(event, "event_type") and event.event_type.value == "final_answer":
-                    final_answer = event.data.get("answer", "")
-                    break
-
-        elif self.agent_type == AgentType.PARALLEL_PLAN:
-            async for event in self._stream_parallel_plan(
-                user_prompt, context, max_replans=self.max_iterations // 5
-            ):
-                if hasattr(event, "event_type") and event.event_type.value == "final_answer":
-                    final_answer = event.data.get("answer", "")
-                    break
-
-        elif self.agent_type == AgentType.MULTI_AGENT:
-            async for event in self._stream_multi_agent(
-                user_prompt, context, max_subagents=5
-            ):
-                if hasattr(event, "event_type") and event.event_type.value == "multi_agent_final_answer":
-                    final_answer = event.data.get("answer", "")
-                    break
-
-        else:
-            raise ValueError(f"Unknown agent type: {self.agent_type}")
 
         return final_answer or "No final answer received"
 
@@ -682,15 +703,17 @@ class Agent(Generic[Deps, Result]):
             max_steps: Maximum ReAct steps (for REACT type)
             max_budget: Optional budget limit (for REACT type)
             max_time_seconds: Optional time limit (for REACT type)
-            max_replans: Maximum replanning attempts (for PLAN_AND_EXECUTE type)
-            existing_plan: Optional pre-generated plan (for PLAN_AND_EXECUTE type)
+            max_replans: Kept for signature compat — ignored after the
+                unified-ReAct migration (replanning is now a model-driven
+                choice via repeated ``enter_plan_mode`` calls).
+            existing_plan: Kept for signature compat — ignored.
             event_format: Event format - "react" for legacy events, "agui" for AG-UI protocol
             thread_id: Thread ID (required for agui format)
             message_id: Message ID (required for agui format)
 
         Yields:
             Streaming events specific to the agent type.
-            In "react" mode: ReActEvent or PlanExecuteEvent objects
+            In "react" mode: ReActEvent objects
             In "agui" mode: AG-UI protocol events (TextMessageContentEvent, etc.)
         """
         from .callback_context import get_callback_context
@@ -747,35 +770,20 @@ class Agent(Generic[Deps, Result]):
         _session_cm = tool_search_session() if _own_session else _NullCM()
         with _session_cm:
             try:
+                # SINGLE_HOP keeps its own one-shot LLM call (preserves
+                # the json_schema response path). Every other agent_type
+                # collapses to the unified ReAct loop — the model picks
+                # its own behavior via plan-mode and dispatch_assistant
+                # tool calls, no top-level mode selection needed.
                 if effective_type == AgentType.SINGLE_HOP:
                     async for event in self._stream_single_hop(query, context=context):
                         yield event
-                elif effective_type == AgentType.REACT:
+                else:
                     async for event in self._stream_react(
                         query, context, max_steps, max_budget, max_time_seconds,
                         event_format=event_format, thread_id=thread_id, message_id=message_id
                     ):
                         yield event
-                elif effective_type == AgentType.PLAN_AND_EXECUTE:
-                    async for event in self._stream_plan_execute(
-                        query, context, max_replans, existing_plan,
-                        event_format=event_format, thread_id=thread_id, message_id=message_id
-                    ):
-                        yield event
-                elif effective_type == AgentType.PARALLEL_PLAN:
-                    async for event in self._stream_parallel_plan(
-                        query, context, max_replans, existing_plan,
-                        event_format=event_format, thread_id=thread_id, message_id=message_id
-                    ):
-                        yield event
-                elif effective_type == AgentType.MULTI_AGENT:
-                    async for event in self._stream_multi_agent(
-                        query, context, max_subagents=5,
-                        event_format=event_format, thread_id=thread_id, message_id=message_id
-                    ):
-                        yield event
-                else:
-                    raise ValueError(f"Unknown agent type: {effective_type}")
 
                 # Emit run_finished event for AG-UI mode
                 if agui_factory:
@@ -879,292 +887,6 @@ class Agent(Generic[Deps, Result]):
 
         finally:
             orchestrator.event_bus.unsubscribe(real_time_stream)
-
-    async def _stream_plan_execute(
-        self,
-        query: str,
-        context: RunContext,
-        max_replans: int = 2,
-        existing_plan=None,
-        event_format: str = "react",
-        thread_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-    ):
-        """Internal: Run agent in Plan and Execute mode with streaming events.
-
-        Args:
-            query: User's query/goal
-            context: Run context with messages and deps
-            max_replans: Maximum number of replanning attempts
-            existing_plan: Optional pre-generated Plan object from combined routing step.
-                          If provided, skips initial plan generation (saves ~2-5s)
-            event_format: Event format - "react" for legacy, "agui" for AG-UI protocol
-            thread_id: Thread ID (required for agui format)
-            message_id: Message ID (required for agui format)
-        """
-        from .react import ReActFactory
-        from .react.events import EventBus
-        from .react.plan_execute_orchestrator import PlanAndExecuteOrchestrator
-        from .react.safety import SafetyManager
-        from .react.tool_executor import AgentToolExecutor
-
-        # Create dependencies with AG-UI support
-        tool_executor = AgentToolExecutor(self)
-        event_bus = EventBus(
-            event_format=event_format,
-            thread_id=thread_id,
-            message_id=message_id,
-        )
-        safety_manager = SafetyManager(max_steps=999)  # High limit for Plan & Execute
-
-        # Create ReAct orchestrator for subtask execution (composition pattern)
-        # Note: subtask orchestrator uses the same event_format for consistent event handling
-        react_orchestrator = ReActFactory.create_orchestrator(
-            agent=self,
-            max_steps=10,  # Each subtask gets up to 10 ReAct steps
-            event_format=event_format,
-            thread_id=thread_id,
-            message_id=message_id,
-            context_compressor=self._context_compressor,
-        )
-
-        # Create Plan and Execute orchestrator
-        orchestrator = PlanAndExecuteOrchestrator(
-            tool_executor=tool_executor,
-            event_bus=event_bus,
-            safety_manager=safety_manager,
-            subtask_orchestrator=react_orchestrator,
-            max_replans=max_replans,
-        )
-
-        # Real-time streaming setup
-        event_queue = asyncio.Queue()
-
-        def real_time_stream(event):
-            """Stream events immediately as they're published."""
-            try:
-                event_queue.put_nowait(event)
-            except asyncio.QueueFull:
-                logger.warning("Event queue full, dropping event")
-
-        event_bus.subscribe(real_time_stream)
-        # NEW: Pass existing_plan if provided (saves ~2-5s by skipping plan generation)
-        execution_task = asyncio.create_task(
-            orchestrator.execute(query, context, existing_plan=existing_plan)
-        )
-
-        try:
-            while not execution_task.done():
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
-                    yield event
-                    event_queue.task_done()
-                except asyncio.TimeoutError:
-                    continue
-
-            # Drain remaining events
-            while not event_queue.empty():
-                try:
-                    event = event_queue.get_nowait()
-                    yield event
-                    event_queue.task_done()
-                except asyncio.QueueEmpty:
-                    break
-
-            await execution_task
-
-        finally:
-            event_bus.unsubscribe(real_time_stream)
-
-    async def _stream_parallel_plan(
-        self,
-        query: str,
-        context: RunContext,
-        max_replans: int = 2,
-        existing_plan=None,
-        event_format: str = "react",
-        thread_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-    ):
-        """Internal: Run agent in Parallel Plan mode with streaming events.
-
-        Parallel Plan executes independent subtasks in parallel waves based on
-        their dependency graph, reducing execution time for parallelizable tasks.
-
-        Args:
-            query: User's query/goal
-            context: Run context with messages and deps
-            max_replans: Maximum number of replanning attempts
-            existing_plan: Optional pre-generated Plan object
-            event_format: Event format - "react" for legacy, "agui" for AG-UI protocol
-            thread_id: Thread ID (required for agui format)
-            message_id: Message ID (required for agui format)
-        """
-        from .react import ReActFactory
-        from .react.events import EventBus
-        from .react.plan_execute_orchestrator import PlanAndExecuteOrchestrator
-        from .react.safety import SafetyManager
-        from .react.tool_executor import AgentToolExecutor
-
-        # Create dependencies
-        tool_executor = AgentToolExecutor(self)
-        event_bus = EventBus(
-            event_format=event_format,
-            thread_id=thread_id,
-            message_id=message_id,
-        )
-        safety_manager = SafetyManager(max_steps=999)
-
-        # Create ReAct orchestrator for subtask execution
-        react_orchestrator = ReActFactory.create_orchestrator(
-            agent=self,
-            max_steps=10,
-            event_format=event_format,
-            thread_id=thread_id,
-            message_id=message_id,
-            context_compressor=self._context_compressor,
-        )
-
-        # Create Plan&Execute orchestrator with parallel execution enabled
-        orchestrator = PlanAndExecuteOrchestrator(
-            tool_executor=tool_executor,
-            event_bus=event_bus,
-            safety_manager=safety_manager,
-            subtask_orchestrator=react_orchestrator,
-            max_replans=max_replans,
-            parallel_execution=True,  # Enable parallel wave execution
-            max_parallel_subtasks=5,
-        )
-
-        # Real-time streaming setup
-        event_queue = asyncio.Queue()
-
-        def real_time_stream(event):
-            """Stream events immediately as they're published."""
-            try:
-                event_queue.put_nowait(event)
-            except asyncio.QueueFull:
-                logger.warning("Event queue full, dropping event")
-
-        event_bus.subscribe(real_time_stream)
-        execution_task = asyncio.create_task(
-            orchestrator.execute(query, context, existing_plan=existing_plan)
-        )
-
-        try:
-            while not execution_task.done():
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
-                    yield event
-                    event_queue.task_done()
-                except asyncio.TimeoutError:
-                    continue
-
-            # Drain remaining events
-            while not event_queue.empty():
-                try:
-                    event = event_queue.get_nowait()
-                    yield event
-                    event_queue.task_done()
-                except asyncio.QueueEmpty:
-                    break
-
-            await execution_task
-
-        finally:
-            event_bus.unsubscribe(real_time_stream)
-
-    async def _stream_multi_agent(
-        self,
-        query: str,
-        context: RunContext,
-        max_subagents: int = 5,
-        event_format: str = "react",
-        thread_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-    ):
-        """Internal: Run agent in Multi-Agent mode with streaming events.
-
-        Multi-Agent spawns multiple specialized subagents that work in parallel
-        on different aspects of the query, then synthesizes their results.
-
-        Args:
-            query: User's query/goal
-            context: Run context with messages and deps
-            max_subagents: Maximum number of subagents to spawn
-            event_format: Event format - "react" for legacy, "agui" for AG-UI protocol
-            thread_id: Thread ID (required for agui format)
-            message_id: Message ID (required for agui format)
-        """
-        from .react import ReActFactory
-        from .react.events import EventBus
-        from .react.multi_agent_orchestrator import MultiAgentOrchestrator
-        from .react.safety import SafetyManager
-        from .react.tool_executor import AgentToolExecutor
-
-        # Create dependencies
-        tool_executor = AgentToolExecutor(self)
-        event_bus = EventBus(
-            event_format=event_format,
-            thread_id=thread_id,
-            message_id=message_id,
-        )
-        safety_manager = SafetyManager(max_steps=999)
-
-        # Create ReAct orchestrator for subagent execution
-        react_orchestrator = ReActFactory.create_orchestrator(
-            agent=self,
-            max_steps=10,
-            event_format=event_format,
-            thread_id=thread_id,
-            message_id=message_id,
-            context_compressor=self._context_compressor,
-        )
-
-        # Create Multi-Agent orchestrator
-        orchestrator = MultiAgentOrchestrator(
-            tool_executor=tool_executor,
-            event_bus=event_bus,
-            safety_manager=safety_manager,
-            subagent_orchestrator=react_orchestrator,
-            max_subagents=max_subagents,
-        )
-
-        # Real-time streaming setup
-        event_queue = asyncio.Queue()
-
-        def real_time_stream(event):
-            """Stream events immediately as they're published."""
-            try:
-                event_queue.put_nowait(event)
-            except asyncio.QueueFull:
-                logger.warning("Event queue full, dropping event")
-
-        event_bus.subscribe(real_time_stream)
-        execution_task = asyncio.create_task(orchestrator.execute(query, context))
-
-        try:
-            while not execution_task.done():
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
-                    yield event
-                    event_queue.task_done()
-                except asyncio.TimeoutError:
-                    continue
-
-            # Drain remaining events
-            while not event_queue.empty():
-                try:
-                    event = event_queue.get_nowait()
-                    yield event
-                    event_queue.task_done()
-                except asyncio.QueueEmpty:
-                    break
-
-            await execution_task
-
-        finally:
-            event_bus.unsubscribe(real_time_stream)
 
     def _prepare_messages_for_llm(self, messages: List[Message]) -> List[Message]:
         """Prepare messages for LLM by filtering out mid-conversation SYSTEM messages.

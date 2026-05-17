@@ -189,17 +189,27 @@ async def forward_subagent_events(
     """Consume the child's event stream and forward the relevant events
     to the parent's bus.
 
-    Two kinds of events are forwarded:
+    Forwarded events (all surface in the parent's SubagentPanel inside
+    the child's nestedChunks):
 
-      1. FINAL_ANSWER_CHUNK → subagent_dispatch/progress so the parent's
-         SubagentPanel updates as the child types.
-      2. SUBAGENT_DISPATCH → re-published as-is, with our subagent_id
-         prepended to `subagent_path` so depth-2+ dispatches nest under
-         the right ancestor panel in the UI.
+      1. FINAL_ANSWER_CHUNK → subagent_dispatch/progress — the child's
+         final answer, streamed token-by-token into ``result``.
+      2. THINKING_CHUNK → subagent_dispatch/thinking — the child's
+         intermediate reasoning, appended to a nested thinking chunk.
+      3. ACTION_PLANNED → subagent_dispatch/tool (status="planned") —
+         a tool the child is about to call.
+      4. ACTION_EXECUTING → subagent_dispatch/tool (status="executing")
+         — same tool flipped to running.
+      5. OBSERVATION → subagent_dispatch/observation — tool result;
+         marks the matching tool chunk completed on the FE.
+      6. SUBAGENT_DISPATCH → re-published as-is, with our subagent_id
+         prepended to ``subagent_path`` so depth-2+ dispatches nest
+         correctly.
 
-    Other event types stay in the child's run (the child's own
-    orchestrator already handles them — TOOL_RESULT, OBSERVATION, etc.
-    are private to the child).
+    Other event types stay in the child's run (STEP_START / STEP_COMPLETE
+    / VISUALIZATION / MEDIA / ARTIFACT / CLARIFICATION_NEEDED / etc. are
+    private to the child — clarifications bubble through the
+    ClarificationPolicy, not through this helper).
 
     This is a *consumer*: it iterates the entire generator before
     returning. The caller is responsible for calling
@@ -216,14 +226,11 @@ async def forward_subagent_events(
         if not isinstance(child_event, ReActEvent):
             continue
 
-        if child_event.event_type == ReActEventType.FINAL_ANSWER_CHUNK:
-            chunk_data = child_event.data or {}
-            chunk = (
-                chunk_data.get("delta")
-                or chunk_data.get("chunk")
-                or chunk_data.get("content")
-                or ""
-            )
+        et = child_event.event_type
+        data = child_event.data or {}
+
+        if et == ReActEventType.FINAL_ANSWER_CHUNK:
+            chunk = data.get("delta") or data.get("chunk") or data.get("content") or ""
             if chunk:
                 if not first_chunk_logged and started_at_monotonic is not None:
                     now = time.monotonic()
@@ -246,8 +253,72 @@ async def forward_subagent_events(
                         },
                     )
                 )
-        elif child_event.event_type == ReActEventType.SUBAGENT_DISPATCH:
-            inner = dict(child_event.data or {})
+        elif et == ReActEventType.THINKING_CHUNK:
+            # Stream the child's intermediate reasoning into a nested
+            # thinking chunk on the parent's panel. The FE appends deltas
+            # to the most recent thinking chunk in nestedChunks; a
+            # non-thinking event (tool/observation) closes the streak so
+            # subsequent thinking starts a new chunk.
+            delta = data.get("delta") or data.get("content") or ""
+            if delta:
+                await parent_event_bus.publish(
+                    EventFactory.subagent_dispatch(
+                        parent_step_number,
+                        "thinking",
+                        {
+                            "subagent_id": subagent_id,
+                            "subagent_path": own_path,
+                            "chunk": delta,
+                        },
+                    )
+                )
+        elif et == ReActEventType.ACTION_PLANNED:
+            await parent_event_bus.publish(
+                EventFactory.subagent_dispatch(
+                    parent_step_number,
+                    "tool",
+                    {
+                        "subagent_id": subagent_id,
+                        "subagent_path": own_path,
+                        "tool_name": data.get("action"),
+                        "tool_description": data.get("tool_description"),
+                        "status": "planned",
+                    },
+                )
+            )
+        elif et == ReActEventType.ACTION_EXECUTING:
+            await parent_event_bus.publish(
+                EventFactory.subagent_dispatch(
+                    parent_step_number,
+                    "tool",
+                    {
+                        "subagent_id": subagent_id,
+                        "subagent_path": own_path,
+                        "tool_name": data.get("action"),
+                        "tool_description": data.get("tool_description"),
+                        "status": "executing",
+                    },
+                )
+            )
+        elif et == ReActEventType.OBSERVATION:
+            # OBSERVATION carries the tool result. The FE pushes an
+            # observation chunk AND marks the matching tool chunk
+            # completed in one branch.
+            await parent_event_bus.publish(
+                EventFactory.subagent_dispatch(
+                    parent_step_number,
+                    "observation",
+                    {
+                        "subagent_id": subagent_id,
+                        "subagent_path": own_path,
+                        "tool_name": data.get("action"),
+                        "chunk": data.get("observation") or "",
+                        "success": data.get("success", True),
+                    },
+                )
+            )
+        elif et == ReActEventType.SUBAGENT_DISPATCH:
+            inner = dict(data)
             nested_path = list(inner.get("subagent_path") or [])
             inner["subagent_path"] = [*own_path, *nested_path]
             await parent_event_bus.publish(

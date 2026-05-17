@@ -126,42 +126,22 @@ async def _enter_plan_mode(ctx, reasoning: str, __description: Optional[str] = N
 
 
 async def _exit_plan_mode(ctx, plan: str, __description: Optional[str] = None) -> Dict[str, Any]:
-    """Clear plan mode and surface the plan for downstream approval."""
-    run_state = getattr(ctx, "run_state", None)
-    previous_mode = "default"
-    if run_state is not None:
-        previous_mode = run_state.permission_mode
-        run_state.permission_mode = "default"
+    """Halt the loop and request user approval of the proposed plan.
 
-    event_bus = getattr(run_state, "event_bus", None) if run_state is not None else None
-    if event_bus is not None:
-        try:
-            from ..react.enums import ReActEventType
-            from ..react.react_events import ReActEvent
+    This tool does NOT flip ``permission_mode`` back to default itself —
+    that flip is the user's decision, made out-of-band. Raises
+    ``PlanApprovalRequired`` so the orchestrator can catch it, emit
+    ``PLAN_APPROVAL_NEEDED``, persist the pending plan on thread
+    metadata, and end the stream. The user's approve/reject decision
+    arrives in a subsequent turn (see Django ``views.py`` resume
+    handler). On approve, the resume injects a confirmation and
+    ``permission_mode`` defaults back to ``"default"``. On reject, the
+    resume keeps ``permission_mode = "plan"`` and feeds rejection text
+    in as a user message so the model has to re-plan.
+    """
+    from ..react.exceptions import PlanApprovalRequired
 
-            await event_bus.publish(
-                ReActEvent(
-                    event_type=ReActEventType.PLAN_MODE_EXITED,
-                    step_number=int(getattr(run_state, "step_number", 0) or 0),
-                    data={
-                        "plan": plan,
-                        "previous_mode": previous_mode,
-                    },
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("exit_plan_mode: event emission skipped: %s", exc)
-
-    return {
-        "status": "exited_plan_mode",
-        "plan": plan,
-        "message": (
-            "Plan recorded. Side-effectful tools are callable again. Proceed "
-            "with the plan; if the surrounding service paused for user "
-            "approval and the user rejected, you will receive feedback as a "
-            "follow-up user message."
-        ),
-    }
+    raise PlanApprovalRequired(plan_text=plan)
 
 
 def _build_enter_plan_mode_tool() -> FunctionTool:

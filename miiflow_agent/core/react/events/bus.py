@@ -500,12 +500,16 @@ class EventFactory:
 
         Args:
             step_number: Parent's current step number (the step in which dispatch fired).
-            sub_event: One of "start", "progress", "complete", "failed".
+            sub_event: One of "start", "progress", "complete", "failed",
+                "thinking", "tool", "observation".
             payload: Sub-event specific data. Expected fields by sub_event:
-                - start:    {subagent_id, subagent_path, handle, name, description, ...}
-                - progress: {subagent_id, subagent_path, chunk}
-                - complete: {subagent_id, subagent_path, result, status, duration_ms?}
-                - failed:   {subagent_id, subagent_path, error, status, duration_ms?}
+                - start:      {subagent_id, subagent_path, handle, name, description, ...}
+                - progress:   {subagent_id, subagent_path, chunk} (final-answer delta)
+                - complete:   {subagent_id, subagent_path, result, status, duration_ms?}
+                - failed:     {subagent_id, subagent_path, error, status, duration_ms?}
+                - thinking:   {subagent_id, subagent_path, chunk} (intermediate-reasoning delta)
+                - tool:       {subagent_id, subagent_path, tool_name, tool_description?, status}
+                - observation:{subagent_id, subagent_path, tool_name, chunk, success}
               `subagent_path` is the full chain of subagent_ids from the root
               parent down to this event's emitter, used by the UI to nest
               chunks inside their parent's nestedChunks array. The emitter

@@ -33,7 +33,8 @@ class ReActEventType(Enum):
     LLM_TRUNCATED = "llm_truncated"  # Model hit max_tokens (often mid-tool-call)
     SUBAGENT_DISPATCH = "subagent_dispatch"  # Sub-assistant dispatch (start/progress/complete/failed sub-events)
     PLAN_MODE_ENTERED = "plan_mode_entered"  # Model called enter_plan_mode; only read-only tools execute until exit
-    PLAN_MODE_EXITED = "plan_mode_exited"  # Model called exit_plan_mode; carries the proposed plan text for approval/telemetry
+    PLAN_MODE_EXITED = "plan_mode_exited"  # User-approved exit_plan_mode; loop resumes with permission_mode=default
+    PLAN_APPROVAL_NEEDED = "plan_approval_needed"  # exit_plan_mode raised — loop pauses for user decision
     TOOL_BLOCKED_BY_PLAN_MODE = "tool_blocked_by_plan_mode"  # Executor refused a non-read-only tool while in plan mode
 
 

@@ -34,3 +34,32 @@ class ToolApprovalRequired(Exception):
         super().__init__(
             f"Tool '{tool_name}' requires user approval: {reason or 'manual approval configured'}"
         )
+
+
+class PlanApprovalRequired(Exception):
+    """Raised by the ``exit_plan_mode`` tool to pause the run for user
+    approval of the proposed plan.
+
+    The orchestrator catches this and emits a ``PLAN_APPROVAL_NEEDED``
+    event, then halts the loop the same way it does for
+    ``ToolApprovalRequired``. The server-side streaming service
+    persists the pending plan to thread metadata; the user's
+    approve/reject decision arrives as the next user message and the
+    Django adapter resumes the run with ``permission_mode`` flipped to
+    ``"default"`` (on approve) or kept as ``"plan"`` plus rejection
+    feedback injected (on reject).
+
+    Attributes:
+        plan_text: The proposed plan text (markdown) the user is
+            being asked to approve.
+        tool_call_id: The id of the ``exit_plan_mode`` tool call;
+            preserved so the next-turn tool result block round-trips
+            correctly when the run resumes.
+    """
+
+    def __init__(self, plan_text: str, tool_call_id: str | None = None):
+        self.plan_text = plan_text
+        self.tool_call_id = tool_call_id
+        super().__init__(
+            f"Plan approval required (plan length: {len(plan_text)} chars)"
+        )

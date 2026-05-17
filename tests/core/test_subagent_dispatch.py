@@ -493,6 +493,138 @@ def test_forward_subagent_events_ignores_other_event_types():
     assert received == []
 
 
+def test_forward_subagent_events_thinking_chunk():
+    """THINKING_CHUNK should bubble up as sub_event="thinking" so the
+    parent's SubagentPanel can render the child's intermediate
+    reasoning inline."""
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    bus, received = _make_event_bus()
+    event = ReActEvent(
+        event_type=ReActEventType.THINKING_CHUNK,
+        step_number=0,
+        data={"delta": "Considering the request...", "content": "Considering the request..."},
+    )
+    asyncio.run(
+        forward_subagent_events(
+            _gen_events([event]),
+            parent_event_bus=bus,
+            parent_step_number=3,
+            subagent_id="sub_xyz",
+            own_path=["sub_xyz"],
+        )
+    )
+    assert len(received) == 1
+    out = received[0]
+    assert out.event_type == ReActEventType.SUBAGENT_DISPATCH
+    assert out.data["sub_event"] == "thinking"
+    assert out.data["chunk"] == "Considering the request..."
+    assert out.data["subagent_path"] == ["sub_xyz"]
+
+
+def test_forward_subagent_events_skips_empty_thinking():
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    bus, received = _make_event_bus()
+    event = ReActEvent(
+        event_type=ReActEventType.THINKING_CHUNK,
+        step_number=0,
+        data={"delta": "", "content": ""},
+    )
+    asyncio.run(
+        forward_subagent_events(
+            _gen_events([event]),
+            parent_event_bus=bus,
+            parent_step_number=0,
+            subagent_id="sub_x",
+            own_path=["sub_x"],
+        )
+    )
+    assert received == []
+
+
+def test_forward_subagent_events_tool_lifecycle():
+    """ACTION_PLANNED → ACTION_EXECUTING → OBSERVATION should bubble up
+    as three sub_events: tool(planned), tool(executing), observation."""
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    bus, received = _make_event_bus()
+    planned = ReActEvent(
+        event_type=ReActEventType.ACTION_PLANNED,
+        step_number=0,
+        data={
+            "action": "search_web",
+            "action_input": {"query": "Q3 earnings"},
+            "tool_description": "Searching for Q3 earnings",
+        },
+    )
+    executing = ReActEvent(
+        event_type=ReActEventType.ACTION_EXECUTING,
+        step_number=0,
+        data={
+            "action": "search_web",
+            "action_input": {"query": "Q3 earnings"},
+            "tool_description": "Searching for Q3 earnings",
+        },
+    )
+    obs = ReActEvent(
+        event_type=ReActEventType.OBSERVATION,
+        step_number=0,
+        data={"observation": "Found 14 results", "action": "search_web", "success": True},
+    )
+    asyncio.run(
+        forward_subagent_events(
+            _gen_events([planned, executing, obs]),
+            parent_event_bus=bus,
+            parent_step_number=1,
+            subagent_id="sub_t",
+            own_path=["sub_t"],
+        )
+    )
+    assert len(received) == 3
+    assert received[0].data["sub_event"] == "tool"
+    assert received[0].data["tool_name"] == "search_web"
+    assert received[0].data["status"] == "planned"
+    assert received[0].data["tool_description"] == "Searching for Q3 earnings"
+    assert received[1].data["sub_event"] == "tool"
+    assert received[1].data["status"] == "executing"
+    assert received[2].data["sub_event"] == "observation"
+    assert received[2].data["tool_name"] == "search_web"
+    assert received[2].data["chunk"] == "Found 14 results"
+    assert received[2].data["success"] is True
+
+
+def test_forward_subagent_events_observation_carries_failure():
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    bus, received = _make_event_bus()
+    obs = ReActEvent(
+        event_type=ReActEventType.OBSERVATION,
+        step_number=0,
+        data={"observation": "HTTP 500", "action": "fetch", "success": False},
+    )
+    asyncio.run(
+        forward_subagent_events(
+            _gen_events([obs]),
+            parent_event_bus=bus,
+            parent_step_number=0,
+            subagent_id="sub_o",
+            own_path=["sub_o"],
+        )
+    )
+    assert len(received) == 1
+    assert received[0].data["sub_event"] == "observation"
+    assert received[0].data["success"] is False
+
+
 # ── dispatch_subagent end-to-end ─────────────────────────────────────────
 
 

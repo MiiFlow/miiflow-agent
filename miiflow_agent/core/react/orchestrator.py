@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from ..agent import RunContext
 from ..message import Message, MessageRole
 from .enums import ReActEventType, StopReason
-from .exceptions import ToolApprovalRequired
+from .exceptions import PlanApprovalRequired, ToolApprovalRequired
 from .events import EventBus, EventFactory
 from .react_events import ReActEvent
 from .execution import ExecutionState
@@ -1775,6 +1775,43 @@ class ReActOrchestrator:
                 observation_message = Message(
                     role=MessageRole.TOOL,
                     content="Tool execution paused - waiting for user approval.",
+                    tool_call_id=tool_call_id,
+                )
+                context.messages.append(observation_message)
+
+        except PlanApprovalRequired as e:
+            # `exit_plan_mode` raised — pause the loop while the user
+            # decides whether to approve the proposed plan. Reuses the
+            # same `state.needs_clarification` pause mechanism the
+            # tool-approval path uses; the streaming service
+            # distinguishes them by `clarification_data["type"]`.
+            state.needs_clarification = True
+            state.clarification_data = {
+                "type": "plan_approval",
+                "plan": e.plan_text,
+                "tool_call_id": tool_call_id or e.tool_call_id,
+            }
+
+            await self.event_bus.publish(
+                ReActEvent(
+                    event_type=ReActEventType.PLAN_APPROVAL_NEEDED,
+                    step_number=state.current_step,
+                    data=state.clarification_data,
+                )
+            )
+
+            logger.info(
+                "exit_plan_mode raised — pausing for plan approval "
+                f"(plan length: {len(e.plan_text)} chars)"
+            )
+
+            # Same Anthropic tool_use/tool_result pairing invariant as
+            # the ToolApprovalRequired path: a tool_use without a
+            # matching tool_result block makes the next API call 4xx.
+            if tool_call_id:
+                observation_message = Message(
+                    role=MessageRole.TOOL,
+                    content="Plan submitted — waiting for user approval.",
                     tool_call_id=tool_call_id,
                 )
                 context.messages.append(observation_message)

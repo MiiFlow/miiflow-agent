@@ -603,6 +603,18 @@ class ToolRegistry:
                 metadata={"error_type": "allowlist_violation"},
             )
 
+        # Control-flow exceptions (approval pauses) bubble through the
+        # registry; wrapping them in a failure ToolResult would silently
+        # discard the pause signal.
+        try:
+            from miiflow_agent.core.react.exceptions import (
+                PlanApprovalRequired,
+                ToolApprovalRequired,
+            )
+            _CONTROL_FLOW_EXCS: tuple = (PlanApprovalRequired, ToolApprovalRequired)
+        except ImportError:  # pragma: no cover
+            _CONTROL_FLOW_EXCS = ()
+
         try:
             if function_tool:
                 result = await function_tool.acall(**kwargs)
@@ -621,6 +633,8 @@ class ToolRegistry:
 
             return result
 
+        except _CONTROL_FLOW_EXCS:
+            raise
         except Exception as e:
             error_msg = f"Registry error executing '{resolved_name}': {str(e)}"
             if self.enable_logging:
@@ -691,6 +705,19 @@ class ToolRegistry:
                 )
                 kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
 
+        # Same control-flow propagation as the no-context path above —
+        # exit_plan_mode and tool approval pauses bubble straight to
+        # the orchestrator instead of materializing as failed
+        # ToolResults that the loop would walk right past.
+        try:
+            from miiflow_agent.core.react.exceptions import (
+                PlanApprovalRequired,
+                ToolApprovalRequired,
+            )
+            _CONTROL_FLOW_EXCS: tuple = (PlanApprovalRequired, ToolApprovalRequired)
+        except ImportError:  # pragma: no cover
+            _CONTROL_FLOW_EXCS = ()
+
         try:
             if hasattr(tool, "fn"):
                 if asyncio.iscoroutinefunction(tool.fn):
@@ -719,6 +746,8 @@ class ToolRegistry:
                 metadata={"execution_pattern": "first_param"},
             )
 
+        except _CONTROL_FLOW_EXCS:
+            raise
         except Exception as e:
             execution_time = time.time() - start_time
             error_msg = f"Tool '{resolved_name}' failed: {str(e)}"

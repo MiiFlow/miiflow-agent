@@ -99,6 +99,7 @@ class CollectedEvents:
     """Minimal event capture: just the types we care about for plan-mode."""
 
     plan_entered: List[dict] = field(default_factory=list)
+    plan_approval_needed: List[dict] = field(default_factory=list)
     plan_exited: List[dict] = field(default_factory=list)
     blocked: List[dict] = field(default_factory=list)
     tool_calls: List[str] = field(default_factory=list)
@@ -115,6 +116,8 @@ class CollectedEvents:
 
         if et_value == "plan_mode_entered":
             self.plan_entered.append(data)
+        elif et_value == "plan_approval_needed":
+            self.plan_approval_needed.append(data)
         elif et_value == "plan_mode_exited":
             self.plan_exited.append(data)
         elif et_value == "tool_blocked_by_plan_mode":
@@ -197,9 +200,12 @@ def expect(name: str, condition: bool, detail: str) -> List[str]:
 
 
 async def test_plan_mode_happy_path(agent: Agent, provider_name: str) -> List[str]:
-    """Multi-file refactor: model should plan first, then act."""
+    """Multi-file refactor: model plans, then `exit_plan_mode` raises
+    PlanApprovalRequired — the loop halts here. ``PLAN_MODE_EXITED``
+    only fires after the Django resume path; an in-process run stops
+    at ``PLAN_APPROVAL_NEEDED``."""
     print("\n" + "=" * 60)
-    print(f"TEST [{provider_name}]: plan-mode happy path")
+    print(f"TEST [{provider_name}]: plan-mode happy path (loop pauses for approval)")
     print("=" * 60)
     reset_logs()
 
@@ -216,28 +222,32 @@ async def test_plan_mode_happy_path(agent: Agent, provider_name: str) -> List[st
         f"plan_mode_entered events: {len(collector.plan_entered)}",
     )
     issues += expect(
-        "model exited plan mode at least once",
-        len(collector.plan_exited) >= 1,
-        f"plan_mode_exited events: {len(collector.plan_exited)}",
+        "loop paused on plan_approval_needed (exit_plan_mode raised)",
+        len(collector.plan_approval_needed) >= 1,
+        f"plan_approval_needed events: {len(collector.plan_approval_needed)}",
     )
-    if collector.plan_exited:
-        plan_text = collector.plan_exited[-1].get("plan", "")
+    if collector.plan_approval_needed:
+        plan_text = collector.plan_approval_needed[-1].get("plan", "")
         issues += expect(
-            "exit_plan_mode carried a non-empty plan",
+            "approval payload carried a non-empty plan",
             bool(plan_text and len(plan_text) > 20),
             f"plan length: {len(plan_text)}",
         )
+    issues += expect(
+        "no final_answer emitted — loop is paused, not completed",
+        collector.final_answer is None,
+        f"final_answer was: {collector.final_answer!r}",
+    )
     return issues
 
 
 async def test_plan_mode_safety_invariant(agent: Agent, provider_name: str) -> List[str]:
-    """No write executes between PLAN_MODE_ENTERED and PLAN_MODE_EXITED.
-
-    The model may be well-behaved (never attempts rewrite_file under plan
-    mode) OR the gate may fire (model attempts, executor refuses). Both
-    are acceptable — what matters is the safety invariant: zero
-    successful writes inside the plan-mode window. This is the real
-    property the gate exists to enforce.
+    """Zero writes execute during the plan window — between
+    ``PLAN_MODE_ENTERED`` and ``PLAN_APPROVAL_NEEDED``. The loop pauses
+    on the approval event without the model ever getting an approve
+    signal, so the post-window phase doesn't exist in this in-process
+    run (the Django resume path is what reopens it). Any rewrite_file
+    call during the window must have been refused by the gate.
     """
     print("\n" + "=" * 60)
     print(f"TEST [{provider_name}]: plan-mode safety invariant (no writes in plan window)")
@@ -249,17 +259,14 @@ async def test_plan_mode_safety_invariant(agent: Agent, provider_name: str) -> L
         "First call enter_plan_mode (reasoning: 'investigate the file before "
         "writing'). While in plan mode, read src/main.py with read_file. "
         "Then call exit_plan_mode with a markdown plan describing the "
-        "change. After that, perform the rewrite with rewrite_file. "
-        "Finish with a one-sentence summary."
+        "change. (The loop will pause for user approval there.)"
     )
 
-    # Stream events but also note the ordering — we need to know whether
-    # any write fell inside the [entered, exited] window. Use a
-    # per-event index since the executor doesn't timestamp.
+    # Track per-event ordering to detect writes inside the plan window.
     collector = CollectedEvents()
     write_indices: List[int] = []
     enter_idx: List[int] = []
-    exit_idx: List[int] = []
+    approval_idx: List[int] = []
 
     context = RunContext(deps=None, messages=[])
     idx = 0
@@ -272,14 +279,16 @@ async def test_plan_mode_safety_invariant(agent: Agent, provider_name: str) -> L
         et_value = et.value if hasattr(et, "value") else str(et)
         if et_value == "plan_mode_entered":
             enter_idx.append(idx)
-        elif et_value == "plan_mode_exited":
-            exit_idx.append(idx)
+        elif et_value == "plan_approval_needed":
+            approval_idx.append(idx)
         elif et_value == "observation":
             # An observation arrives AFTER the tool runs. If rewrite_file
             # successfully wrote, _WRITE_LOG just grew; record the index.
             if len(_WRITE_LOG) > len(write_indices):
                 write_indices.append(idx)
         idx += 1
+    # Keep `exit_idx` as an alias so the assertion code below stays valid.
+    exit_idx = approval_idx
 
     issues: List[str] = []
     issues += expect(
@@ -288,9 +297,9 @@ async def test_plan_mode_safety_invariant(agent: Agent, provider_name: str) -> L
         f"enter events: {enter_idx}",
     )
     issues += expect(
-        "exit_plan_mode fired",
-        bool(exit_idx),
-        f"exit events: {exit_idx}",
+        "plan_approval_needed fired (exit_plan_mode raised)",
+        bool(approval_idx),
+        f"approval events: {approval_idx}",
     )
 
     # Safety invariant: no write_indices fall inside any [enter, exit]

@@ -100,6 +100,20 @@ class FunctionTool:
         """Async execute the function with safe error handling."""
         start_time = time.time()
 
+        # Control-flow exceptions (approval pauses) propagate to the
+        # orchestrator instead of being wrapped as failed ToolResults —
+        # otherwise the loop walks straight past the side-effect gate.
+        # Late-imported so the tools layer doesn't depend on react at
+        # module load (would create a circular).
+        try:
+            from miiflow_agent.core.react.exceptions import (
+                PlanApprovalRequired,
+                ToolApprovalRequired,
+            )
+            _CONTROL_FLOW_EXCS: tuple = (PlanApprovalRequired, ToolApprovalRequired)
+        except ImportError:  # pragma: no cover — defensive only
+            _CONTROL_FLOW_EXCS = ()
+
         try:
             validated_inputs = self.validate_inputs(**kwargs)
 
@@ -132,6 +146,8 @@ class FunctionTool:
                 metadata={"function_type": self.function_type.value}
             )
 
+        except _CONTROL_FLOW_EXCS:
+            raise
         except ToolExecutionError as e:
             # Parameter validation or execution errors - provide detailed feedback
             execution_time = time.time() - start_time

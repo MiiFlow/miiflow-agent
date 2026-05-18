@@ -8,7 +8,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.7": ModelConfig(
         model_identifier="claude-opus-4-7",
         name="claude-opus-4.7",
-        description="Anthropic's most capable model (released April 16, 2026) with superior intelligence across coding, reasoning, and complex agentic tasks. Features extended thinking, adaptive thinking, and structured outputs. 1M context window.",
+        description="Anthropic's most capable model (released April 16, 2026) with superior intelligence across coding, reasoning, and complex agentic tasks. Features adaptive thinking and structured outputs. 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -97,6 +97,24 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=3.0,
         output_cost_hint=15.0,
     ),
+    "claude-opus-4.1": ModelConfig(
+        model_identifier="claude-opus-4-1-20250805",
+        name="claude-opus-4.1",
+        description="Legacy Opus model with strong coding and agentic performance. Succeeded by Opus 4.5+. 200K context window. Higher cost than newer Opus models.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=200000,
+        maximum_output_tokens=32000,
+        token_param_name="max_tokens",
+        supports_temperature=True,
+        input_cost_hint=15.0,
+        output_cost_hint=75.0,
+    ),
     "claude-haiku-4.5": ModelConfig(
         model_identifier="claude-haiku-4-5-20251001",
         name="claude-haiku-4.5",
@@ -142,6 +160,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
             "claude-sonnet-4.6": 64000,
             "claude-opus-4.5": 64000,
             "claude-sonnet-4.5": 64000,
+            "claude-opus-4.1": 32000,
             "claude-haiku-4.5": 64000,
             "default": 8192,
         },
@@ -150,9 +169,20 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
 ]
 
 
+_NO_EXTENDED_THINKING = {"claude-opus-4.7"}
+
+
 def _get_thinking_models() -> list[str]:
-    """Get list of models that support extended thinking (reasoning=True)."""
-    return [name for name, config in ANTHROPIC_MODELS.items() if config.reasoning]
+    """Get list of models that support extended thinking.
+
+    Opus 4.7 uses adaptive thinking (always-on) instead of the explicit
+    extended-thinking API parameter, so it is excluded here.
+    """
+    return [
+        name
+        for name, config in ANTHROPIC_MODELS.items()
+        if config.reasoning and name not in _NO_EXTENDED_THINKING
+    ]
 
 
 # Add thinking_enabled parameter with dynamically derived supported models
@@ -197,30 +227,35 @@ def supports_structured_outputs(model: str) -> bool:
 
 
 def supports_thinking(model: str) -> bool:
-    """Check if model supports extended thinking mode.
+    """Check if model supports the explicit extended-thinking API parameter.
 
-    Checks the model's reasoning field from ANTHROPIC_MODELS.
+    Opus 4.7 uses adaptive thinking (always-on) and does NOT accept the
+    ``thinking`` request parameter, so this returns False for it.
 
     Args:
         model: The model identifier
 
     Returns:
-        True if model supports extended thinking
+        True if model supports the extended-thinking parameter
     """
+
+    def _check(name: str, config: ModelConfig) -> bool:
+        return config.reasoning and name not in _NO_EXTENDED_THINKING
+
     # Check exact match first
     if model in ANTHROPIC_MODELS:
-        return ANTHROPIC_MODELS[model].reasoning
+        return _check(model, ANTHROPIC_MODELS[model])
 
     # Check if model identifier matches any config's model_identifier
-    for config in ANTHROPIC_MODELS.values():
+    for name, config in ANTHROPIC_MODELS.items():
         if config.model_identifier == model:
-            return config.reasoning
+            return _check(name, config)
 
     # Check partial match
     model_lower = model.lower()
     for name, config in ANTHROPIC_MODELS.items():
         if name in model_lower or config.model_identifier in model_lower:
-            return config.reasoning
+            return _check(name, config)
 
     return False
 

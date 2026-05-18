@@ -47,7 +47,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-2.5-pro": ModelConfig(
         model_identifier="models/gemini-2.5-pro",
         name="gemini-2.5-pro",
-        description="Google's capable thinking model for complex problems. Earliest possible sunset June 17, 2026.",
+        description="Legacy — succeeded by Gemini 3.1 Pro. Capable thinking model for complex problems. Sunset June 17, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -65,7 +65,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-2.5-flash": ModelConfig(
         model_identifier="models/gemini-2.5-flash",
         name="gemini-2.5-flash",
-        description="Best price-performance model with thinking capabilities. Earliest possible sunset June 17, 2026.",
+        description="Legacy — succeeded by Gemini 3 Flash. Best price-performance model with thinking capabilities. Sunset June 17, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -83,7 +83,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-2.5-flash-lite": ModelConfig(
         model_identifier="models/gemini-2.5-flash-lite",
         name="gemini-2.5-flash-lite",
-        description="Entry-level thinking model with exceptional cost-efficiency. Fastest Flash variant optimized for high-throughput, high-volume applications with strong quality.",
+        description="Legacy — succeeded by Gemini 3.1 Flash Lite. Entry-level thinking model with exceptional cost-efficiency. Sunset June 17, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -98,10 +98,10 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=0.10,
         output_cost_hint=0.40,
     ),
-    "gemini-3.1-flash-lite-preview": ModelConfig(
-        model_identifier="models/gemini-3.1-flash-lite-preview",
-        name="gemini-3.1-flash-lite-preview",
-        description="Google's frontier-class performance at reduced cost. Fast and efficient Gemini 3.1 Flash Lite model optimized for high-throughput, cost-sensitive applications. Preview version.",
+    "gemini-3.1-flash-lite": ModelConfig(
+        model_identifier="models/gemini-3.1-flash-lite",
+        name="gemini-3.1-flash-lite",
+        description="Google's most cost-efficient Gemini 3 series model. Optimized for high-throughput, low-latency, cost-sensitive applications. GA as of May 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -159,7 +159,7 @@ GOOGLE_PARAMETERS: list[ParameterConfig] = [
         min_value=1,
         max_value={
             "gemini-3.1-pro-preview": 65536,
-            "gemini-3.1-flash-lite-preview": 65536,
+            "gemini-3.1-flash-lite": 65536,
             "gemini-3-flash-preview": 65536,
             "gemini-2.5-pro": 65536,
             "gemini-2.5-flash": 65536,

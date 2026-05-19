@@ -2,6 +2,47 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.8.0] - 2026-05-18
+
+Folds in the previously unreleased `1.7.1` (a bare version bump from PR #1001) plus the work merged since.
+
+### Added
+- **Multi-agent hand-off framework** (`core/subagent.py`, `core/react/dispatch.py`): New `SubAgent` primitive lets a parent agent delegate turns to specialist children with per-edge policy (`when_to_use`, `handoff_schema`, `clarification_policy`, `auto_approve_child_tools`). Dispatch lifecycle and event bubbling are first-class so the streaming layer can surface sub-agent reasoning.
+- **`AgentConfig` dataclass** (`core/config.py`): Canonical agent construction. Centralizes client, system prompt, tools, sub-agents, max iterations, etc. The `Agent()` constructor now accepts either the legacy positional args or `config=AgentConfig(...)`.
+- **OAuth-enabled MCP servers**: The Anthropic provider client handles OAuth flows for authenticated MCP servers, so agents can call Notion/HubSpot/Stripe/Airtable tools after a one-time consent.
+- **Plan-mode tools** (`core/tools/plan_mode.py`): New deferred `enter_plan_mode` / `exit_plan_mode` tools let a model temporarily restrict itself to read-only work while drafting an approach.
+- **`tool_search` registry tool**: Agents operating over large tool catalogs can now query for relevant tools by intent rather than seeing every entry up front. Backed by registry-level filter hooks.
+- **Data reference helpers** (`core/data_reference.py`): `put_render_data()` / `get_render_data()` share structured payloads across tool calls without re-serializing through the model context.
+- **Truncation + recovery events** (`core/react/events/bus.py`): New event types report tool description and parameter truncation, plus error-recovery transitions, so the UI can explain why a tool call was reshaped.
+- **Deterministic suggestion scanners + action-taking framework**: New scanner pipeline produces structured suggestions independent of LLM generation, plus an action-taking framework for executing the recommended response.
+- **Slack workspace selection**: Slack tool calls can target a specific installed workspace when the org has multiple connections.
+
+### Changed
+- **Unified ReAct orchestration**: Planning and parallel multi-agent execution are now emergent behaviors inside the single ReAct loop — `dispatch_assistant` and plan-mode are normal tool calls — rather than separate orchestrators with their own event types. Collapses the agentic-mode surface area significantly.
+- **Anthropic responder batching**: Streaming events are batched in `providers/anthropic_client.py` for lower per-chunk overhead.
+- **Google Gemini provider** (`providers/gemini_client.py`, `models/google.py`): Migrated from `google-generativeai` to `google-genai`; the SDK is no longer imported at runtime — direct REST via `httpx`. Context window values and model descriptions also refreshed.
+- **Tool executor resilience** (`core/tools/exceptions.py`): Clearer exception types for tool failures, truncated schemas, and malformed tool calls; recovery paths route through the new event bus.
+- **Tool registry**: Tool descriptions support optional fields and strict-schema compliance.
+- **Reasoning panel + dispatch events**: Enhanced dispatch tracing (DD trace context propagation fixed) and sub-agent lifecycle callbacks.
+- **Memory + agent consolidation**: Memory orchestration reworked alongside agent consolidation; tool registry and schema normalizer updated to support the new memory tools.
+
+### Fixed
+- **Suggested actions error**: Tool preparation failures during suggested-action generation are now handled gracefully instead of aborting the run.
+- **Tool feedback to planner**: Tool results now flow into subsequent planning steps as intended.
+- **DD tracing in multi-agent dispatch**: Distributed tracing context propagates correctly into sub-agent calls.
+- **Asyncio test plumbing**: Tests updated to use `asyncio.run()` instead of deprecated `get_event_loop().run_until_complete()`.
+
+### Removed
+- **Legacy orchestrator classes** (breaking for direct importers): `PlanAndExecuteOrchestrator`, `MultiAgentOrchestrator`, `TaskTool` / `TaskToolResult` / `create_task_tool`, and `SubTask` / `Plan` / `PlanExecuteResult` dataclasses are gone — the same outcomes are now expressed via the unified ReAct loop and the new `SubAgent` framework.
+- **Legacy `AgentType` enum values** (breaking): `PLAN_AND_EXECUTE`, `PARALLEL_PLAN`, and `MULTI_AGENT` removed; `REACT` is the only mode.
+- **`examples/plan_execute.py`**: Replaced by unified ReAct examples.
+- **Deprecated OpenAI models**: `gpt-4o` and `gpt-4o-mini` removed from `models/openai.py` (superseded by newer GPT-4.x / GPT-5 variants).
+
+### Migration notes
+- If you previously instantiated `Agent(client, ...)`, that signature still works. To opt into the new shape, construct an `AgentConfig(...)` and pass it as the `config=` keyword.
+- If you imported `PlanAndExecuteOrchestrator` or `MultiAgentOrchestrator` directly, switch to a single `Agent` with `sub_agents=[SubAgent(...)]` and let the ReAct loop dispatch.
+- If you pinned `google-generativeai`, remove the pin — `miiflow-agent` now depends on `google-genai` and uses HTTP directly.
+
 ## [1.7.0] - 2026-04-26
 
 ### Added

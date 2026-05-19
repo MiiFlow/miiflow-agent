@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "miiflow-agent"
-version = "1.7.1"
+version = "1.8.0"
 description = "A lightweight Python SDK for building AI agents with unified LLM providers, ReAct orchestration, and tool calling"
 authors = [ "Yaozhong Kang <yaozhong@miiflow.ai>" , "Debjyoti Ray <dev@miiflow.ai>" ]
 maintainers = [ "Yaozhong Kang <yaozhong@miiflow.ai>" ]
@@ -37,7 +37,7 @@ typing-extensions = "^4.8.0"
 
 # Optional dependencies for specific providers
 groq = { version = "^0.13.0", optional = true }
-google-generativeai = { version = "^0.8.0", optional = true }
+google-genai = { version = "^1.0.0", optional = true }
 mistralai = { version = "^1.0.0", optional = true }
 
 # Optional multimedia dependencies
@@ -78,7 +78,7 @@ python-dotenv = "^1.2.1"
 
 [tool.poetry.extras]
 groq = ["groq"]
-google = ["google-generativeai"]
+google = ["google-genai"]
 mistral = ["mistralai"]
 pdf = ["PyMuPDF"]
 multimedia = ["PyMuPDF", "Pillow"]
@@ -87,7 +87,7 @@ examples = ["yfinance"]
 mcp = ["mcp"]
 agui = ["ag-ui-protocol"]
 observability = ["opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client", "arize-phoenix", "openinference-instrumentation-openai", "openinference-instrumentation-anthropic", "openinference-instrumentation-google-genai"]
-all = ["groq", "google-generativeai", "mistralai", "PyMuPDF", "yfinance", "mcp", "ag-ui-protocol", "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client", "arize-phoenix", "openinference-instrumentation-openai", "openinference-instrumentation-anthropic", "openinference-instrumentation-google-genai"]
+all = ["groq", "google-genai", "mistralai", "PyMuPDF", "yfinance", "mcp", "ag-ui-protocol", "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client", "arize-phoenix", "openinference-instrumentation-openai", "openinference-instrumentation-anthropic", "openinference-instrumentation-google-genai"]
 
 [build-system]
 requires = ["poetry-core"]

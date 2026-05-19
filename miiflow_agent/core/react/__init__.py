@@ -54,6 +54,17 @@ from .subagent_registry import (
     SubAgentRegistry,
     get_global_registry,
 )
+
+# Concrete SubAgent adapter — turns a DynamicSubAgentConfig + child
+# Agent into a dispatchable SubAgent, plus a convenience helper that
+# wires a whole registry into a `dispatch_assistant` tool.
+from .configured_subagent import (
+    ChildAgentFactory,
+    ConfiguredSubAgent,
+    DepsFactory,
+    configured_subagents_from_registry,
+    make_registry_dispatcher_tool,
+)
 from .model_selector import (
     ModelSelector,
     ModelTier,
@@ -94,6 +105,12 @@ __all__ = [
     "DynamicSubAgentConfig",
     "SubAgentRegistry",
     "get_global_registry",
+    # Configured SubAgent adapter + registry → dispatcher tool helper
+    "ChildAgentFactory",
+    "ConfiguredSubAgent",
+    "DepsFactory",
+    "configured_subagents_from_registry",
+    "make_registry_dispatcher_tool",
     "ModelSelector",
     "ModelTier",
     "TaskComplexity",

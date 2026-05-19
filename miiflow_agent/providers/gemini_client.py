@@ -1,10 +1,10 @@
 """Google Gemini client implementation.
 
-Uses direct REST API calls via httpx instead of the google-generativeai SDK
+Uses direct REST API calls via httpx instead of the google-genai SDK
 for API communication. This allows preserving fields like `thoughtSignature`
 on functionCall parts, which the SDK's protobuf layer strips out.
 
-The SDK is still imported for GEMINI_AVAILABLE detection only.
+No SDK import is needed — `httpx` handles everything.
 """
 
 import asyncio
@@ -36,14 +36,7 @@ def _sanitize_tool_name_for_gemini(name: str) -> str:
     return sanitized or "_unnamed"
 
 
-try:
-    import google.generativeai as genai  # noqa: F401 – presence check only
-
-    GEMINI_AVAILABLE = True
-except ImportError:
-    # SDK is no longer required for API calls (we use httpx REST API directly),
-    # but we keep it as an install-time dependency marker.
-    GEMINI_AVAILABLE = True
+GEMINI_AVAILABLE = True
 
 from ..core.client import ModelClient
 from ..core.exceptions import AuthenticationError, ProviderError
@@ -185,7 +178,7 @@ class GeminiClient(ModelClient):
     ):
         if not GEMINI_AVAILABLE:
             raise ImportError(
-                "google-generativeai is required for Gemini. Install with: pip install google-generativeai"
+                "google-genai is required for Gemini. Install with: pip install google-genai"
             )
 
         super().__init__(

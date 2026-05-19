@@ -8,7 +8,7 @@ from miiflow_agent.core import Message, MessageRole, TokenCount, StreamChunk, Ch
 
 
 # Patch GEMINI_AVAILABLE to True so GeminiClient can be instantiated
-# even when google-generativeai is not installed
+# even when google-genai is not installed
 @pytest.fixture(autouse=True)
 def mock_gemini_available():
     """Mock GEMINI_AVAILABLE for all tests."""

@@ -100,6 +100,16 @@ from .clarification import (
     create_clarification_tool,
 )
 
+# Opt-in coding kit (file_read / file_edit / file_write). Not auto-loaded;
+# callers register explicitly with ``register_coding_tools(registry)``.
+from .coding import (
+    FILE_EDIT_TOOL_NAME,
+    FILE_READ_TOOL_NAME,
+    FILE_WRITE_TOOL_NAME,
+    build_coding_tools,
+    register_coding_tools,
+)
+
 # HTTP utilities (for advanced users)
 from .http.proxy_utils import (
     get_proxy_config,
@@ -194,6 +204,12 @@ __all__ = [
     "ask_user_clarification",
     "create_clarification_tool",
 
+    # Coding kit (opt-in)
+    "FILE_READ_TOOL_NAME",
+    "FILE_EDIT_TOOL_NAME",
+    "FILE_WRITE_TOOL_NAME",
+    "build_coding_tools",
+    "register_coding_tools",
 ]
 
 

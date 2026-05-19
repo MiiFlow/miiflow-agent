@@ -113,7 +113,7 @@ def test_tool_search_session_enables_discovered_tools():
             # At least one discovered tool is now visible.
             assert names & set(enabled)
 
-    asyncio.get_event_loop().run_until_complete(go())
+    asyncio.run(go())
 
 
 def test_session_isolation_between_runs():
@@ -132,4 +132,4 @@ def test_session_isolation_between_runs():
         # Outside any session, no enabled set is visible.
         assert get_enabled_tool_names() is None
 
-    asyncio.get_event_loop().run_until_complete(go())
+    asyncio.run(go())

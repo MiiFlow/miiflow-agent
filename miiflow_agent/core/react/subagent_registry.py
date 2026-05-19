@@ -1,13 +1,25 @@
 """Dynamic subagent configuration and registry.
 
-This module provides a flexible system for defining and managing specialized subagents
-that can be dynamically spawned during agent execution.
+This module provides a flexible system for defining and managing
+specialized subagents that can be dynamically spawned during agent
+execution.
 
 Key features:
-- DynamicSubAgentConfig: Enhanced configuration with model/tools/prompt scoping
-- SubAgentRegistry: Central registry for available subagent types
-- Default subagent types: explorer, researcher, implementer, reviewer
-- Support for custom subagent registration
+- ``DynamicSubAgentConfig``: declarative configuration with model /
+  tools / prompt scoping
+- ``SubAgentRegistry``: central registry for available subagent types
+
+Default templates (``explorer`` / ``researcher`` / ``implementer`` /
+``reviewer`` / ``planner``) used to ship as auto-registered defaults
+but were removed because they referenced tool names the SDK doesn't
+own. Equivalent templates now live in
+``packages/miiflow-agent/examples/subagents.py`` as documentation —
+copy them into your own setup code and adapt the ``tools`` list to the
+tools you actually register.
+
+To turn registered configs into a working ``dispatch_assistant`` tool,
+see ``ConfiguredSubAgent`` and ``make_registry_dispatcher_tool`` in
+``miiflow_agent.core.react.configured_subagent``.
 
 Based on patterns from:
 - Claude Agent SDK's AgentDefinition pattern
@@ -15,72 +27,11 @@ Based on patterns from:
 """
 
 import logging
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
-
-
-# Default prompts for specialized subagents
-EXPLORER_PROMPT = """You are a codebase exploration specialist.
-
-Your role is to efficiently find and understand code:
-- Use Glob to find files by pattern
-- Use Grep to search for specific code patterns
-- Use Read to examine file contents
-
-Be thorough but focused. Report what you find clearly and concisely.
-Do not make changes to any files — observation only.
-If a search returns unexpected results, note what you expected vs what you found."""
-
-RESEARCHER_PROMPT = """You are a research specialist focused on gathering information.
-
-Your role is to find accurate, up-to-date information:
-- Use WebSearch to find relevant sources
-- Use WebFetch to read page content
-- Cross-reference multiple sources for accuracy
-
-Cite your sources and note the date of information when relevant.
-Focus on authoritative sources and official documentation.
-If sources conflict, note the disagreement — don't silently pick one."""
-
-IMPLEMENTER_PROMPT = """You are a code implementation specialist.
-
-Your role is to write clean, correct code:
-- Read existing code to understand conventions before writing
-- Make focused, minimal changes — don't refactor surrounding code
-- Follow project patterns and style guides
-- Test changes when possible
-
-Write code that is:
-- Well-structured and readable
-- Consistent with existing codebase
-- Properly handling edge cases
-
-After making changes, verify they work. Be accurate about what succeeded and what didn't.
-Do not perform destructive actions (delete files, drop tables) without explicit instruction."""
-
-REVIEWER_PROMPT = """You are a code review specialist.
-
-Your role is to analyze code for:
-- Bugs and logic errors
-- Security vulnerabilities
-- Performance issues
-- Code style and best practices
-
-Be thorough but constructive. Explain issues clearly and suggest improvements.
-Do not make changes — only report findings.
-Distinguish between confirmed bugs and potential concerns. Be specific about severity."""
-
-PLANNER_PROMPT = """You are a planning and architecture specialist.
-
-Your role is to:
-- Break down complex tasks into manageable steps
-- Identify dependencies between tasks
-- Consider trade-offs between approaches
-- Plan for error handling and edge cases
-
-Provide clear, actionable plans with specific steps."""
 
 
 @dataclass
@@ -162,103 +113,56 @@ class DynamicSubAgentConfig:
 class SubAgentRegistry:
     """Central registry for available subagent types.
 
-    The registry maintains a collection of DynamicSubAgentConfig instances
-    that can be looked up by name or matched to tasks.
+    The registry maintains a collection of DynamicSubAgentConfig
+    instances that can be looked up by name or matched to tasks. Ships
+    empty — register the configs your application needs. See
+    ``examples/subagents.py`` for adaptable templates.
 
     Usage:
         registry = SubAgentRegistry()
 
-        # Get a specific agent
+        # Register a custom agent
+        registry.register(DynamicSubAgentConfig(
+            name="explorer",
+            description="Explore the codebase to find relevant files.",
+            system_prompt="You are a codebase exploration specialist...",
+            tools=["file_read"],
+            max_steps=5,
+        ))
+
+        # Look it up
         explorer = registry.get("explorer")
 
         # Find agents suitable for a task
         agents = registry.find_by_task("search for files containing 'error'")
-
-        # Register a custom agent
-        registry.register(DynamicSubAgentConfig(
-            name="custom_agent",
-            description="Custom specialized agent",
-            system_prompt="You are a custom agent...",
-            tools=["Read", "Write"],
-        ))
     """
 
-    def __init__(self, register_defaults: bool = True):
+    def __init__(self, register_defaults: bool = False):
         """Initialize the registry.
 
         Args:
-            register_defaults: Whether to register default subagent types
+            register_defaults: Deprecated. The default subagent templates
+                that this flag used to register referenced tool names
+                (``Glob``/``Grep``/``Read``/``Edit``/``Write``/``Bash``/
+                ``WebSearch``/``WebFetch``) that this SDK does not ship
+                — registering them produced configs that looked real
+                but couldn't dispatch. Passing ``True`` now emits a
+                ``DeprecationWarning`` and is otherwise a no-op. See
+                ``examples/subagents.py`` for adaptable template
+                configs.
         """
         self._agents: Dict[str, DynamicSubAgentConfig] = {}
 
         if register_defaults:
-            self._register_defaults()
-
-    def _register_defaults(self) -> None:
-        """Register default subagent types."""
-
-        # Explorer: Fast codebase navigation
-        self.register(DynamicSubAgentConfig(
-            name="explorer",
-            description="Explore codebase to find relevant files, understand patterns, and trace code paths. Use for file discovery, code navigation, and understanding project structure.",
-            system_prompt=EXPLORER_PROMPT,
-            tools=["Glob", "Grep", "Read"],
-            model="haiku",  # Fast model for exploration
-            max_steps=5,
-            timeout_seconds=60.0,
-            priority=10,
-        ))
-
-        # Researcher: Web search and information gathering
-        self.register(DynamicSubAgentConfig(
-            name="researcher",
-            description="Search the web and gather information on topics. Use for documentation lookups, finding solutions, and researching best practices.",
-            system_prompt=RESEARCHER_PROMPT,
-            tools=["WebSearch", "WebFetch"],
-            model="haiku",  # Fast for web lookups
-            max_steps=5,
-            timeout_seconds=60.0,
-            priority=5,
-        ))
-
-        # Implementer: Code writing and modification
-        self.register(DynamicSubAgentConfig(
-            name="implementer",
-            description="Write and modify code. Use for implementing features, fixing bugs, and making code changes.",
-            system_prompt=IMPLEMENTER_PROMPT,
-            tools=["Read", "Edit", "Write", "Bash", "Glob"],
-            model="sonnet",  # Better model for code generation
-            max_steps=15,
-            timeout_seconds=180.0,
-            priority=8,
-        ))
-
-        # Reviewer: Code review and analysis
-        self.register(DynamicSubAgentConfig(
-            name="reviewer",
-            description="Review code for bugs, security issues, and best practices. Use for code quality analysis and finding issues.",
-            system_prompt=REVIEWER_PROMPT,
-            tools=["Read", "Glob", "Grep"],
-            model="sonnet",  # Need good reasoning for review
-            max_steps=10,
-            timeout_seconds=360.0,
-            priority=7,
-        ))
-
-        # Planner: Architecture and planning
-        self.register(DynamicSubAgentConfig(
-            name="planner",
-            description="Plan implementation approaches and break down complex tasks. Use for architecture decisions and multi-step planning.",
-            system_prompt=PLANNER_PROMPT,
-            tools=["Read", "Glob", "Grep"],
-            model="sonnet",  # Need good reasoning for planning
-            max_steps=8,
-            timeout_seconds=90.0,
-            can_spawn_subagents=True,  # Planner can delegate
-            priority=9,
-        ))
-
-        logger.info(f"Registered {len(self._agents)} default subagent types")
+            warnings.warn(
+                "SubAgentRegistry(register_defaults=True) is deprecated "
+                "and no longer registers any configs. The previous "
+                "templates referenced tool names the SDK does not own; "
+                "copy from examples/subagents.py and register the "
+                "configs you actually want.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     def register(self, config: DynamicSubAgentConfig) -> None:
         """Register a subagent configuration.

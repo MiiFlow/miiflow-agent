@@ -88,7 +88,7 @@ from .core.exceptions import (
     ToolError,
 )
 
-__version__ = "0.1.0"
+__version__ = "1.8.0"
 __author__ = "Miiflow Team"
 
 __all__ = [

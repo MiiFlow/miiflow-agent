@@ -150,6 +150,12 @@ class RunState:
     # tools; read by ``AgentToolExecutor.execute_tool``.
     permission_mode: str = "default"
 
+    # File paths the model has read this run, mapped to the file mtime at
+    # read time. The opt-in ``file_edit`` / ``file_write`` tools in
+    # ``core/tools/coding`` enforce read-before-edit + on-disk-mtime-match
+    # by consulting this map. Empty when the coding kit isn't registered.
+    read_files: Dict[str, float] = field(default_factory=dict)
+
 
 @dataclass
 class RunContext(Generic[Deps]):

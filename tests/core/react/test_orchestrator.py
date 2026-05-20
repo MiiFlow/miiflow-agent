@@ -9,9 +9,9 @@ from miiflow_agent import LLMClient, Agent, AgentType, RunContext, Message, tool
 from miiflow_agent.core.react.orchestrator import ReActOrchestrator, ExecutionState
 from miiflow_agent.core.react.factory import ReActFactory
 from miiflow_agent.core.react.enums import ReActEventType, StopReason
-from miiflow_agent.core.react.models import ReActStep, ReActResult
+from miiflow_agent.core.react.models import ReActStep, ReActResult, ToolInvocation
 from miiflow_agent.core.react.events import EventBus
-from miiflow_agent.core.react.safety import SafetyManager
+from miiflow_agent.core.react.safety import RepeatedToolErrorCondition, SafetyManager
 from miiflow_agent.core.react.tool_executor import AgentToolExecutor
 from miiflow_agent.core.message import MessageRole
 
@@ -145,6 +145,194 @@ class TestReActOrchestratorSafetyConditions:
         condition = manager.should_stop(steps, current_step)
         assert condition is not None
         assert condition.get_stop_reason() == StopReason.MAX_BUDGET
+
+
+def _step_with_invocation(
+    step_number: int,
+    *,
+    name: str,
+    observation: str,
+    error: Optional[str] = None,
+) -> ReActStep:
+    """Build a ReActStep carrying one ToolInvocation. Centralised so the
+    error-condition tests below stay focused on the matching logic."""
+    inv = ToolInvocation(
+        tool_call_id=f"toolu_{step_number}",
+        name=name,
+        observation=observation,
+        error=error,
+    )
+    return ReActStep(
+        step_number=step_number,
+        thought="",
+        action=name,
+        tool_invocations=[inv],
+    )
+
+
+class TestRepeatedToolErrorCondition:
+    """RepeatedToolErrorCondition catches loops where the model retries
+    the same tool with varying inputs and the tool keeps rejecting with
+    the same error code. ErrorThresholdCondition can't see these because
+    soft tool errors (observations containing ``{"error": "..."}``) are
+    deliberately not classified as step-level failures."""
+
+    def test_fires_on_three_same_code_errors_in_a_row(self):
+        cond = RepeatedToolErrorCondition(max_repeats=3)
+        steps = [
+            _step_with_invocation(
+                i,
+                name="recommend_action",
+                observation=(
+                    "{'error': 'investigation_report failed validation', "
+                    "'code': 'investigation_report_invalid'}"
+                ),
+            )
+            for i in range(1, 4)
+        ]
+        assert cond.should_stop(steps, current_step=3) is True
+
+    def test_does_not_fire_on_two_errors(self):
+        cond = RepeatedToolErrorCondition(max_repeats=3)
+        steps = [
+            _step_with_invocation(
+                i,
+                name="recommend_action",
+                observation="{'error': 'x', 'code': 'investigation_report_invalid'}",
+            )
+            for i in range(1, 3)
+        ]
+        assert cond.should_stop(steps, current_step=2) is False
+
+    def test_does_not_fire_when_codes_differ(self):
+        """Different error codes mean the model is making progress
+        (each retry uncovers a new issue); not a loop."""
+        cond = RepeatedToolErrorCondition(max_repeats=3)
+        steps = [
+            _step_with_invocation(
+                1,
+                name="recommend_action",
+                observation="{'error': 'a', 'code': 'investigation_report_invalid'}",
+            ),
+            _step_with_invocation(
+                2,
+                name="recommend_action",
+                observation="{'error': 'b', 'code': 'enrich_action_type_mismatch'}",
+            ),
+            _step_with_invocation(
+                3,
+                name="recommend_action",
+                observation="{'error': 'c', 'code': 'investigation_report_invalid'}",
+            ),
+        ]
+        assert cond.should_stop(steps, current_step=3) is False
+
+    def test_does_not_fire_when_tools_differ(self):
+        """Same error code on different tools is also progress, not a loop."""
+        cond = RepeatedToolErrorCondition(max_repeats=3)
+        steps = [
+            _step_with_invocation(
+                1,
+                name="recommend_action",
+                observation="{'error': 'x', 'code': 'foo'}",
+            ),
+            _step_with_invocation(
+                2,
+                name="set_investigation",
+                observation="{'error': 'x', 'code': 'foo'}",
+            ),
+            _step_with_invocation(
+                3,
+                name="recommend_action",
+                observation="{'error': 'x', 'code': 'foo'}",
+            ),
+        ]
+        assert cond.should_stop(steps, current_step=3) is False
+
+    def test_success_in_streak_resets(self):
+        """A successful invocation between failures breaks the streak —
+        the model recovered and is now retrying for a different reason."""
+        cond = RepeatedToolErrorCondition(max_repeats=3)
+        steps = [
+            _step_with_invocation(
+                1,
+                name="recommend_action",
+                observation="{'error': 'x', 'code': 'foo'}",
+            ),
+            _step_with_invocation(
+                2,
+                name="recommend_action",
+                observation="{'success': True}",
+            ),
+            _step_with_invocation(
+                3,
+                name="recommend_action",
+                observation="{'error': 'x', 'code': 'foo'}",
+            ),
+            _step_with_invocation(
+                4,
+                name="recommend_action",
+                observation="{'error': 'x', 'code': 'foo'}",
+            ),
+        ]
+        assert cond.should_stop(steps, current_step=4) is False
+
+    def test_framework_error_also_counted(self):
+        """Framework-level errors (transport, malformed tool_use) count
+        toward the streak even though they don't carry a ``code``."""
+        cond = RepeatedToolErrorCondition(max_repeats=3)
+        steps = [
+            _step_with_invocation(
+                i,
+                name="google_ads_query",
+                observation="",
+                error="Tool 'google_ads_query' failed: API error: ...",
+            )
+            for i in range(1, 4)
+        ]
+        assert cond.should_stop(steps, current_step=3) is True
+
+    def test_handles_observation_without_code(self):
+        """Observations carrying ``{"error": "..."}`` but no ``code``
+        field still count — fall back to the observation prefix as the
+        signature. Same prefix N times → loop."""
+        cond = RepeatedToolErrorCondition(max_repeats=3)
+        steps = [
+            _step_with_invocation(
+                i,
+                name="some_tool",
+                observation='{"error": "exact same message every time"}',
+            )
+            for i in range(1, 4)
+        ]
+        assert cond.should_stop(steps, current_step=3) is True
+
+    def test_wired_into_safety_manager_by_default(self):
+        """SafetyManager opts the condition in by default so all agents
+        get the protection without per-config wiring."""
+        manager = SafetyManager(max_steps=100)
+        types = [type(c).__name__ for c in manager.conditions]
+        assert "RepeatedToolErrorCondition" in types
+
+    def test_safety_manager_returns_condition_when_triggered(self):
+        """End-to-end via SafetyManager. Inputs must differ so the
+        plain RepeatedActionsCondition (which matches on action +
+        action_input) doesn't fire first — that's the whole point of
+        the new condition: catch loops where the model varies input."""
+        manager = SafetyManager(max_steps=100, max_repeated_tool_errors=3)
+        steps = []
+        for i in range(1, 4):
+            step = _step_with_invocation(
+                i,
+                name="recommend_action",
+                observation="{'error': 'x', 'code': 'foo'}",
+            )
+            step.action_input = {"attempt": i}  # vary input each retry
+            step.tool_invocations[0].inputs = {"attempt": i}
+            steps.append(step)
+        result = manager.should_stop(steps, current_step=3)
+        assert result is not None
+        assert result.get_stop_reason() == StopReason.REPEATED_TOOL_ERROR
 
 
 class TestReActResult:

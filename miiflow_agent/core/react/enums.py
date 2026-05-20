@@ -47,6 +47,7 @@ class StopReason(Enum):
     MAX_TIME = "max_time"
     REPEATED_ACTIONS = "repeated_actions"
     ERROR_THRESHOLD = "error_threshold"
+    REPEATED_TOOL_ERROR = "repeated_tool_error"
     FORCED_STOP = "forced_stop"
     USER_CANCELLED = "user_cancelled"
     NEEDS_CLARIFICATION = "needs_clarification"  # Agent needs user input to continue

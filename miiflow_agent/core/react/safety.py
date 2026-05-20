@@ -181,6 +181,140 @@ class ErrorThresholdCondition(StopCondition):
 
 
 @dataclass
+class RepeatedToolErrorCondition(StopCondition):
+    """Stop when the same tool returns an error observation N times in a row.
+
+    Complements ``ErrorThresholdCondition``, which only fires on step-level
+    failures (``step.is_error_step``). Tool calls that return a dict with an
+    ``error`` key are deliberately NOT classified as error steps so the LLM
+    can react naturally to the observation. The intended behavior is one
+    or two corrective retries, then move on.
+
+    The failure mode this catches: the model keeps retrying the same tool
+    with slightly different inputs, each attempt failing with the same
+    error code (e.g., ``recommend_action`` schema validation failing on
+    ``options_considered`` over and over). ``RepeatedActionsCondition``
+    misses it because the input varies; ``InfiniteLoopDetector`` misses
+    it for the same reason; ``ErrorThresholdCondition`` misses it because
+    the observation-level errors don't propagate to step-level. Without
+    this check the loop runs until ``MaxStepsCondition`` or
+    ``MaxTimeCondition`` fires, which can take a long time and exhaust
+    the caller's wall-clock budget (e.g., a Celery task's
+    ``soft_time_limit``).
+
+    Match on ``(tool_name, error_signature)``. The signature is a short
+    fingerprint of the error message — stable across the model's input
+    variations but distinct enough that different error codes are not
+    collapsed together. Defaults are conservative: 3 consecutive failures
+    of the same (tool, error) pair, looking at the last 8 invocations.
+    """
+
+    max_repeats: int = 3
+    lookback_invocations: int = 8
+    signature_length: int = 80
+
+    def should_stop(self, steps: List[ReActStep], current_step: int) -> bool:
+        invocations = []
+        for step in steps:
+            for inv in getattr(step, "tool_invocations", None) or []:
+                invocations.append(inv)
+
+        if len(invocations) < self.max_repeats:
+            return False
+
+        recent = invocations[-self.lookback_invocations:]
+        # Walk from the most recent backwards, looking for a streak of
+        # ``max_repeats`` consecutive same-(tool, error_sig) errored
+        # invocations. Streak resets on a successful invocation or a
+        # mismatch.
+        streak_key: Optional[tuple] = None
+        streak_len = 0
+        for inv in reversed(recent):
+            key = self._error_key(inv)
+            if key is None:
+                # Non-error or unidentifiable invocation breaks the streak.
+                break
+            if streak_key is None:
+                streak_key = key
+                streak_len = 1
+            elif key == streak_key:
+                streak_len += 1
+            else:
+                break
+            if streak_len >= self.max_repeats:
+                return True
+        return False
+
+    def _error_key(self, inv) -> Optional[tuple]:
+        """Return ``(tool_name, error_signature)`` for an errored invocation,
+        or None if this invocation didn't carry an error we should count.
+
+        We inspect, in order of preference:
+          - ``inv.error``: framework-level errors (transport, malformed
+            tool_use, recovery-exhausted).
+          - ``inv.observation``: the stringified tool return value. Most
+            miiflow tools return a dict like ``{"error": "...", "code":
+            "..."}`` when a call fails the business rules — this is
+            JSON-serialized into the observation string. We treat any
+            observation containing an ``error`` key marker as a soft
+            error and use a code-prefix (when present) as the stable
+            signature; otherwise fall back to a prefix of the message.
+        """
+        tool_name = getattr(inv, "name", None) or getattr(inv, "tool_name", None)
+        if not tool_name:
+            return None
+
+        framework_err = getattr(inv, "error", None)
+        if framework_err:
+            return (tool_name, str(framework_err)[: self.signature_length])
+
+        observation = getattr(inv, "observation", None)
+        if not isinstance(observation, str) or not observation:
+            return None
+
+        # Cheap substring probes — the orchestrator stringifies dicts
+        # with repr(), so both single- and double-quoted forms appear
+        # depending on the serialiser. We only need to identify a soft
+        # tool error here, not parse the whole observation.
+        if "'error'" not in observation and '"error"' not in observation:
+            return None
+
+        # Prefer the structured `code` field for the signature — codes
+        # are stable across retries even when the model varies its
+        # input, so a (tool, code) pair fingerprints the failure mode
+        # exactly. Fall back to a leading prefix of the observation.
+        code = self._extract_code(observation)
+        if code:
+            return (tool_name, f"code={code}")
+        return (tool_name, observation[: self.signature_length])
+
+    @staticmethod
+    def _extract_code(observation: str) -> Optional[str]:
+        """Best-effort extraction of a structured error ``code`` from a
+        stringified tool return. Tolerates either ``'code': 'foo'`` or
+        ``"code": "foo"`` quoting; returns None if not found.
+        """
+        for needle in ("'code': '", '"code": "'):
+            start = observation.find(needle)
+            if start < 0:
+                continue
+            start += len(needle)
+            end = observation.find(needle[0], start)
+            if end > start:
+                return observation[start:end]
+        return None
+
+    def get_stop_reason(self) -> StopReason:
+        return StopReason.REPEATED_TOOL_ERROR
+
+    def get_description(self) -> str:
+        return (
+            f"Same tool returned the same error {self.max_repeats} times "
+            "in a row"
+        )
+
+
+@dataclass
 class InfiniteLoopDetector(StopCondition):
     """Detect various forms of infinite loops."""
 
@@ -296,6 +430,7 @@ class SafetyManager:
         max_time_seconds: Optional[float] = None,
         max_repeated_actions: int = 3,
         max_consecutive_errors: int = 3,
+        max_repeated_tool_errors: int = 3,
         max_thinking_only_steps: int = 3,
         max_empty_responses: int = 2,
         enable_loop_detection: bool = True,
@@ -317,6 +452,11 @@ class SafetyManager:
 
         if max_consecutive_errors > 0:
             self.conditions.append(ErrorThresholdCondition(max_consecutive_errors))
+
+        if max_repeated_tool_errors > 0:
+            self.conditions.append(
+                RepeatedToolErrorCondition(max_repeats=max_repeated_tool_errors)
+            )
 
         if max_thinking_only_steps > 0:
             self.conditions.append(ThinkingOnlyCondition(max_thinking_only_steps))

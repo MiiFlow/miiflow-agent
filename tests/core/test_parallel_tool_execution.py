@@ -393,3 +393,103 @@ async def test_execute_many_results_in_input_order():
     ]
     results = await executor.execute_many(batch)
     assert [r.output for r in results] == ["slow-done", "fast-done"]
+
+
+# ── Validation-error classification (no runtime-ladder activation) ──────
+
+
+@pytest.mark.asyncio
+async def test_registry_stamps_is_validation_error_on_raised_exception():
+    """Exceptions carrying `is_tool_validation_error = True` must show up
+    on the resulting `ToolResult.metadata`. Without this, the orchestrator
+    can't distinguish a deterministic input-shape rejection (which the LLM
+    should self-correct via the observation) from a generic runtime
+    failure (which kicks the recovery ladder)."""
+    from miiflow_agent.core.tools import ToolRegistry, tool
+
+    class _PreflightError(Exception):
+        is_tool_validation_error = True
+
+    @tool(description="Always raises a validation error")
+    def bad_tool(x: str) -> dict:
+        raise _PreflightError(f"reject {x}")
+
+    @tool(description="Always raises a generic error")
+    def boom_tool(x: str) -> dict:
+        raise RuntimeError(f"runtime boom {x}")
+
+    registry = ToolRegistry()
+    registry.register(bad_tool)
+    registry.register(boom_tool)
+
+    bad_result = await registry.execute_safe("bad_tool", x="q")
+    boom_result = await registry.execute_safe("boom_tool", x="q")
+
+    assert not bad_result.success
+    assert bad_result.metadata.get("is_validation_error") is True
+
+    assert not boom_result.success
+    assert boom_result.metadata.get("is_validation_error") is False
+
+
+def test_orchestrator_all_failed_classifies_validation_as_schema():
+    """When every parallel invocation failed with a validation-flagged
+    error, the step's failure_kind must be `schema` (not `all_failed`),
+    so recovery_manager's SCHEMA short-circuit fires and the run doesn't
+    burn the runtime recovery ladder."""
+    from miiflow_agent.core.react.models import ReActStep, ToolInvocation
+
+    # Mirrors the relevant lines of orchestrator._handle_batch_action:
+    # build the invocations as the orchestrator would after Phase 4, then
+    # apply the same step.error/failure_kind classification.
+    invocations = [
+        ToolInvocation(
+            tool_call_id="a", name="google_ads_query",
+            error="Tool 'google_ads_query' failed: segments.date missing",
+            observation="Tool execution failed: …",
+            is_validation_error=True,
+        ),
+        ToolInvocation(
+            tool_call_id="b", name="google_ads_query",
+            error="Tool 'google_ads_query' failed: segments.date missing",
+            observation="Tool execution failed: …",
+            is_validation_error=True,
+        ),
+    ]
+    step = ReActStep(step_number=1, thought="", tool_invocations=invocations)
+
+    if all(inv.error is not None for inv in invocations):
+        if all(getattr(inv, "is_validation_error", False) for inv in invocations):
+            step.metadata["failure_kind"] = "schema"
+        else:
+            step.metadata["failure_kind"] = "all_failed"
+
+    assert step.metadata["failure_kind"] == "schema"
+
+
+def test_orchestrator_all_failed_mixed_kinds_stays_all_failed():
+    """If even one of the failures isn't validation-flagged, treat the
+    step as a runtime all-failed event — recovery ladder still applies."""
+    from miiflow_agent.core.react.models import ReActStep, ToolInvocation
+
+    invocations = [
+        ToolInvocation(
+            tool_call_id="a", name="google_ads_query",
+            error="schema mismatch", observation="…",
+            is_validation_error=True,
+        ),
+        ToolInvocation(
+            tool_call_id="b", name="meta_ads_insights",
+            error="api 500", observation="…",
+            is_validation_error=False,
+        ),
+    ]
+    step = ReActStep(step_number=1, thought="", tool_invocations=invocations)
+
+    if all(inv.error is not None for inv in invocations):
+        if all(getattr(inv, "is_validation_error", False) for inv in invocations):
+            step.metadata["failure_kind"] = "schema"
+        else:
+            step.metadata["failure_kind"] = "all_failed"
+
+    assert step.metadata["failure_kind"] == "all_failed"

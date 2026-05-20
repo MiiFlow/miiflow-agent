@@ -271,7 +271,11 @@ class FunctionTool:
                 error=error_msg,
                 success=False,
                 execution_time=execution_time,
-                metadata={"function_type": self.function_type.value, "error_type": error_type}
+                metadata={
+                    "function_type": self.function_type.value,
+                    "error_type": error_type,
+                    "is_validation_error": getattr(e, "is_tool_validation_error", False),
+                },
             )
     
     def _filter_context_parameters(self):

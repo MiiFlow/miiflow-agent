@@ -1412,6 +1412,13 @@ class ReActOrchestrator:
                 sanitized = _sanitize_error_message(result.error or "Unknown error")
                 inv.error = result.error
                 inv.observation = f"Tool execution failed: {sanitized}"
+                # Propagate the validation marker the registry stamped from the
+                # raised exception's `is_tool_validation_error` attribute. Used
+                # below to classify an all-failed step as schema-kind so the
+                # recovery_manager skips the runtime ladder.
+                inv.is_validation_error = bool(
+                    (result.metadata or {}).get("is_validation_error")
+                )
             else:
                 # Visualization → emit event + use [VIZ:id] marker
                 if is_visualization_result(result.output):
@@ -1476,7 +1483,16 @@ class ReActOrchestrator:
                     f"All {len(invocations)} parallel tool calls failed. "
                     f"First error: {first.error}"
                 )
-                step.metadata["failure_kind"] = "all_failed"
+                # If every failure was a deterministic input-shape rejection
+                # (e.g. GAQL preflight), classify as schema so recovery_manager
+                # short-circuits: the per-invocation tool observations already
+                # carry the corrective hint the LLM needs to fix its next call.
+                # Without this, two parallel preflight failures would burn the
+                # 3-attempt recovery ladder and force a fallback answer.
+                if all(getattr(inv, "is_validation_error", False) for inv in invocations):
+                    step.metadata["failure_kind"] = "schema"
+                else:
+                    step.metadata["failure_kind"] = "all_failed"
 
     async def _handle_tool_action(
         self,

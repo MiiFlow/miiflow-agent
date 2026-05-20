@@ -650,7 +650,11 @@ class ToolRegistry:
                 output=None,
                 error=error_msg,
                 success=False,
-                metadata={"error_type": "registry_error", "original_error": str(e)},
+                metadata={
+                    "error_type": "registry_error",
+                    "original_error": str(e),
+                    "is_validation_error": getattr(e, "is_tool_validation_error", False),
+                },
             )
 
     async def execute_safe_with_context(self, tool_name: str, context: Any, **kwargs) -> ToolResult:
@@ -763,7 +767,11 @@ class ToolRegistry:
                 error=error_msg,
                 success=False,
                 execution_time=execution_time,
-                metadata={"execution_pattern": "first_param", "error_type": type(e).__name__},
+                metadata={
+                    "execution_pattern": "first_param",
+                    "error_type": type(e).__name__,
+                    "is_validation_error": getattr(e, "is_tool_validation_error", False),
+                },
             )
 
     def get_stats(self) -> Dict[str, Dict[str, Any]]:

@@ -23,6 +23,12 @@ class ToolInvocation:
     observation: Optional[str] = None
     error: Optional[str] = None
     description: Optional[str] = None  # LLM-supplied __description for status UI
+    # True when the underlying exception declared `is_tool_validation_error`
+    # (e.g. GAQL preflight). The orchestrator uses this to classify an
+    # all-failed parallel step as schema-kind so recovery_manager skips the
+    # runtime ladder — the per-invocation observation already carries the
+    # corrective hint the LLM needs.
+    is_validation_error: bool = False
 
     @property
     def is_success(self) -> bool:

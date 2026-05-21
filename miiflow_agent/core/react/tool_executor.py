@@ -307,7 +307,7 @@ class AgentToolExecutor:
         if tool_name == self._tool_search_meta_name():
             meta = self._tool_registry.get_tool_search_tool()
             return getattr(meta, "schema", None)
-        tool = self._tool_registry.tools.get(tool_name)
+        tool = self._lookup_any_tool(tool_name)
         return getattr(tool, "schema", None) if tool else None
 
     async def _emit_pre_tool_use_callback(
@@ -631,13 +631,28 @@ class AgentToolExecutor:
             return self.tool_filter.filter_tool_names(tools)
         return tools
 
+    def _lookup_any_tool(self, tool_name: str):
+        """Return the registered tool object across function/http/mcp dicts, or None.
+
+        The registry partitions tools into three separate dicts; lookups that
+        only consult ``tools`` silently miss every MCP/HTTP tool. Callers that
+        just need "is this name registered, and give me the object" should use
+        this single helper instead of touching the dicts directly.
+        """
+        reg = self._tool_registry
+        return (
+            reg.tools.get(tool_name)
+            or reg.http_tools.get(tool_name)
+            or reg.mcp_tools.get(tool_name)
+        )
+
     def has_tool(self, tool_name: str) -> bool:
         # The tool_search meta-tool lives off-registry; recognize it when
         # the orchestrator validates an LLM-issued tool call against the
         # executor's view of available tools.
         if tool_name == self._tool_search_meta_name():
             return True
-        if tool_name not in self._tool_registry.tools:
+        if self._lookup_any_tool(tool_name) is None:
             return False
         if self.tool_filter and not self.tool_filter.is_allowed(tool_name):
             return False
@@ -646,7 +661,7 @@ class AgentToolExecutor:
     def get_tool_schema(self, tool_name: str) -> dict:
         if tool_name == self._tool_search_meta_name():
             return self._tool_registry.get_tool_search_tool().schema.to_universal_schema()
-        tool = self._tool_registry.tools.get(tool_name)
+        tool = self._lookup_any_tool(tool_name)
         return tool.schema.to_universal_schema() if tool else {}
 
     def tool_needs_context(self, tool_name: str) -> bool:
@@ -655,7 +670,7 @@ class AgentToolExecutor:
         # not on user data).
         if tool_name == self._tool_search_meta_name():
             return False
-        tool = self._tool_registry.tools.get(tool_name)
+        tool = self._lookup_any_tool(tool_name)
         if not tool:
             return False
         # Check if tool has context_injection attribute and if pattern is not 'none'

@@ -229,20 +229,39 @@ class ToolRegistry:
                 f"(server: {tool.server_name}, original: {tool.original_name})"
             )
 
-    def register_mcp_manager(self, manager: MCPToolManager) -> None:
-        """Register all tools from an MCPToolManager.
+    def register_mcp_manager(
+        self,
+        manager: MCPToolManager,
+        allowed_names: Optional[set] = None,
+    ) -> None:
+        """Register tools from an MCPToolManager.
 
         Args:
             manager: Connected MCPToolManager with discovered tools
+            allowed_names: Optional set of namespaced tool names
+                (``"<server>__<tool>"``) to register. When provided, only
+                matching tools are registered — the manager still holds the
+                full discovery for reconnect/health, but the registry (and
+                therefore the LLM's tool surface) sees only the user's
+                selection. ``None`` registers every discovered tool.
         """
         self.mcp_manager = manager
+        registered = 0
         for tool in manager.get_all_tools():
+            if allowed_names is not None and tool.name not in allowed_names:
+                continue
             self.register_mcp_tool(tool)
+            registered += 1
 
         if self.enable_logging:
-            logger.info(
-                f"Registered {len(manager.get_all_tools())} MCP tools from manager"
-            )
+            total = len(manager.get_all_tools())
+            if allowed_names is None:
+                logger.info(f"Registered {registered} MCP tools from manager")
+            else:
+                logger.info(
+                    f"Registered {registered}/{total} MCP tools from manager "
+                    f"(filtered by selection)"
+                )
 
     def get_mcp_tool(self, name: str) -> Optional[MCPTool]:
         """Get an MCP tool by name (supports sanitized names from OpenAI).

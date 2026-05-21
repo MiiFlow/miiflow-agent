@@ -1,5 +1,6 @@
 """Safety mechanisms for ReAct loops."""
 
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -7,6 +8,22 @@ from typing import Any, Dict, List, Optional, Set
 
 from .enums import StopReason
 from .models import ReActStep
+
+
+# An observation registers as a soft tool error only when it carries an
+# `'error': <truthy>` value. The pre-fix substring check matched any
+# observation containing the literal `'error'` — including the very common
+# success shape `{'handle': '...', 'status': 'completed', 'error': None}`
+# returned by `dispatch_assistant`. That false positive collided with the
+# loose signature (first 80 chars) and made N parallel dispatches to the
+# same sub-agent handle look like N consecutive same-error invocations,
+# tripping RepeatedToolErrorCondition and forcing the root to stop before
+# it could call recommend_action on the dispatch results.
+_TRUTHY_ERROR_VALUE_PATTERN = re.compile(
+    # Match `'error':` or `"error":` followed by a quoted string value.
+    # Excludes None / null / 0 / false (those don't start with a quote).
+    r"""['"]error['"]\s*:\s*['"][^'"\s]"""
+)
 
 
 def make_hashable(obj: Any) -> Any:
@@ -272,11 +289,14 @@ class RepeatedToolErrorCondition(StopCondition):
         if not isinstance(observation, str) or not observation:
             return None
 
-        # Cheap substring probes — the orchestrator stringifies dicts
-        # with repr(), so both single- and double-quoted forms appear
-        # depending on the serialiser. We only need to identify a soft
-        # tool error here, not parse the whole observation.
-        if "'error'" not in observation and '"error"' not in observation:
+        # Identify a soft tool error by `'error': '<truthy>'` —
+        # observations carrying `'error': None` (the default success
+        # shape for `dispatch_assistant` and many other tools) are
+        # NOT errors. Without this distinction, a parallel batch of
+        # 3+ successful dispatches to the same handle (same prefix
+        # signature) was tripping the condition and stopping the root
+        # agent before it could persist the results.
+        if not _TRUTHY_ERROR_VALUE_PATTERN.search(observation):
             return None
 
         # Prefer the structured `code` field for the signature — codes

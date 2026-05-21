@@ -528,6 +528,18 @@ class ReActOrchestrator:
         """Check safety conditions."""
         stop_condition = self.safety_manager.should_stop(state.steps, state.current_step)
         if stop_condition:
+            # Log which condition fired — invaluable when an
+            # unexpected stop happens in production. The stop_reason
+            # alone (event.data.reason) doesn't distinguish e.g.
+            # ThinkingOnlyCondition from EmptyResponseCondition since
+            # both map to FORCED_STOP.
+            logger.warning(
+                "[ORCH] safety condition fired class=%s reason=%s description=%r at step=%d",
+                type(stop_condition).__name__,
+                stop_condition.get_stop_reason().value,
+                stop_condition.get_description(),
+                state.current_step,
+            )
             event = EventFactory.stop_condition(
                 state.current_step,
                 stop_condition.get_stop_reason().value,

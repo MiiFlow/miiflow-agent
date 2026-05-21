@@ -307,6 +307,52 @@ class TestRepeatedToolErrorCondition:
         ]
         assert cond.should_stop(steps, current_step=3) is True
 
+    def test_ignores_observations_with_error_none(self):
+        """Regression: dispatch_assistant returns
+        ``{'handle': ..., 'status': 'completed', 'error': None}`` on
+        every successful sub-agent dispatch. The pre-fix substring
+        check matched any observation containing the literal
+        ``'error'`` — so 3+ parallel dispatches to the same sub-agent
+        handle registered as the same (tool, prefix) error key and
+        tripped the condition. The root agent stopped before it could
+        process the investigator results and call recommend_action.
+
+        After the fix: ``'error': None`` (and any falsy/non-string
+        value) does NOT count as an error invocation."""
+        cond = RepeatedToolErrorCondition(max_repeats=3)
+        steps = [
+            _step_with_invocation(
+                i,
+                name="dispatch_assistant",
+                observation=(
+                    "{'handle': 'opportunity_investigator', "
+                    "'child_assistant_id': 'assistant_X', "
+                    "'subagent_id': 'sub_aaa', "
+                    "'status': 'completed', "
+                    "'answer': '...long JSON report...', "
+                    "'error': None}"
+                ),
+            )
+            for i in range(1, 5)  # 4 successful parallel dispatches
+        ]
+        assert cond.should_stop(steps, current_step=4) is False, (
+            "successful dispatches with 'error': None must not be classified as errors"
+        )
+
+    def test_ignores_observations_with_error_null_json(self):
+        """Same regression in JSON-quoted form: ``\"error\": null``
+        on a successful tool return must not register as an error."""
+        cond = RepeatedToolErrorCondition(max_repeats=3)
+        steps = [
+            _step_with_invocation(
+                i,
+                name="dispatch_assistant",
+                observation='{"handle": "x", "status": "completed", "error": null}',
+            )
+            for i in range(1, 5)
+        ]
+        assert cond.should_stop(steps, current_step=4) is False
+
     def test_wired_into_safety_manager_by_default(self):
         """SafetyManager opts the condition in by default so all agents
         get the protection without per-config wiring."""

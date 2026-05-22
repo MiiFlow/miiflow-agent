@@ -116,7 +116,7 @@ class ModelClient(ABC):
         self,
         model: str,
         api_key: Optional[str] = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
         max_retries: int = 3,
         metrics_collector: Optional[MetricsCollector] = None,
         **kwargs,

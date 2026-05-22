@@ -860,11 +860,19 @@ class AnthropicClient(ModelClient):
            Uses output_format parameter with guaranteed schema compliance (streaming supported!)
         3. Tool-based workaround (for older models):
            Uses a synthetic tool to force JSON output
+
+        Emits a structured warning on completion if the call took longer
+        than the legacy 120s default, so we can measure whether the bump
+        to 300s is masking a real perf regression.
         """
         import json
         import logging
+        import time
 
         logger = logging.getLogger(__name__)
+
+        _slow_threshold_s = 120.0
+        _astream_started_at = time.monotonic()
 
         try:
             # Offload sync image-download + Pillow resize work off the event loop.
@@ -1043,6 +1051,22 @@ class AnthropicClient(ModelClient):
                 if hasattr(event, "type") and event.type == "message_stop":
                     break
 
+            # Slow-call observability (rec #5 review finding): emit a
+            # structured warning when a successful stream exceeded the
+            # legacy 120s default. Tells us whether the 120→300s bump is
+            # masking real perf issues (high rate of >120s calls) vs.
+            # just removing noisy false-positive timeouts (rare >120s).
+            _elapsed = time.monotonic() - _astream_started_at
+            if _elapsed > _slow_threshold_s:
+                logger.warning(
+                    "anthropic_stream_slow",
+                    extra={
+                        "model": self.model,
+                        "elapsed_s": round(_elapsed, 1),
+                        "threshold_s": _slow_threshold_s,
+                        "configured_timeout_s": self.timeout,
+                    },
+                )
         except anthropic.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)
         except anthropic.RateLimitError as e:

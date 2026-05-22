@@ -459,13 +459,17 @@ class AgentToolExecutor:
         native_schemas: List = []
 
         for tool_name in tool_names:
-            tool = self._tool_registry.tools.get(tool_name)
+            tool = self._lookup_any_tool(tool_name)
             if not tool:
                 continue
 
-            # Get universal schema from tool
-            if isinstance(tool, FunctionTool):
-                universal_schema = tool.schema.to_universal_schema()
+            # Get universal schema from tool. FunctionTool exposes `.schema`;
+            # MCPTool/HTTPTool also expose `.schema`. Use it directly for any
+            # tool that has it so MCP/HTTP tools aren't silently dropped from
+            # the LLM's tool surface when surfaced via tool_search.
+            tool_schema_obj = getattr(tool, "schema", None)
+            if tool_schema_obj is not None:
+                universal_schema = tool_schema_obj.to_universal_schema()
             else:
                 universal_schema = self.get_tool_schema(tool_name)
 

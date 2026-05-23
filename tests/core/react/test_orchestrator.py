@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from miiflow_agent import LLMClient, Agent, AgentType, RunContext, Message, tool, ToolRegistry
-from miiflow_agent.core.react.orchestrator import ReActOrchestrator, ExecutionState
+from miiflow_agent.core.react.orchestrator import (
+    ExecutionState,
+    ReActOrchestrator,
+    _extract_failure_metadata,
+)
 from miiflow_agent.core.react.factory import ReActFactory
 from miiflow_agent.core.react.enums import ReActEventType, StopReason
 from miiflow_agent.core.react.models import ReActStep, ReActResult, ToolInvocation
@@ -866,6 +870,98 @@ class TestResultBuilding:
         assert "customer_id" not in fallback
         assert "ad_account_id" not in fallback
         assert "repeated issues" in fallback.lower() or "try" in fallback.lower()
+
+
+class TestExtractFailureMetadata:
+    """``_extract_failure_metadata`` produces the structured payload the
+    dispatch envelope carries up to the parent agent when a safety
+    condition halts the child loop."""
+
+    def test_pulls_last_failing_invocation_from_observation(self):
+        """A tool whose observation carries `Tool execution failed:` is
+        counted as a failure even when the step itself isn't marked
+        ``is_error_step`` (matches RepeatedToolErrorCondition's lookback)."""
+        observation = (
+            "Tool execution failed: Tool 'google_ads_query' failed: Segment "
+            "'segments.date' is referenced in WHERE but missing from SELECT."
+        )
+        steps = [
+            ReActStep(
+                step_number=i,
+                thought="",
+                tool_invocations=[
+                    ToolInvocation(
+                        name="google_ads_query",
+                        inputs={"customer_id": "1", "query": "SELECT campaign.id FROM campaign WHERE segments.date BETWEEN ..."},
+                        observation=observation,
+                    )
+                ],
+            )
+            for i in range(1, 5)
+        ]
+
+        payload = _extract_failure_metadata(
+            steps,
+            stop_reason="repeated_tool_error",
+            description="stopped after 3 consecutive identical failures",
+        )
+
+        assert payload["stop_reason"] == "repeated_tool_error"
+        assert payload["last_tool"] == "google_ads_query"
+        assert "segments.date" in payload["last_tool_error"]
+        assert payload["last_tool_input"]["customer_id"] == "1"
+        assert payload["attempts_seen"] == 4
+
+    def test_truncates_long_inputs_and_errors(self):
+        """A failing query body can be thousands of chars — the failure
+        payload must stay bounded so the parent's tool observation
+        doesn't blow up."""
+        long_query = "SELECT campaign.id, " + ("metrics.cost_micros, " * 200) + "FROM campaign"
+        long_error = "Tool execution failed: " + ("x" * 5000)
+        steps = [
+            ReActStep(
+                step_number=1,
+                thought="",
+                tool_invocations=[
+                    ToolInvocation(
+                        name="google_ads_query",
+                        inputs={"customer_id": "1", "query": long_query},
+                        observation=long_error,
+                    )
+                ],
+            )
+        ]
+
+        payload = _extract_failure_metadata(
+            steps,
+            stop_reason="repeated_tool_error",
+            description="halted",
+            truncation=200,
+            input_truncation=100,
+        )
+
+        # Error obs is hard-capped; input value gets a truncation marker.
+        assert len(payload["last_tool_error"]) == 200
+        assert "truncated" in payload["last_tool_input"]["query"]
+
+    def test_no_failing_invocation_returns_minimal_payload(self):
+        """When the safety condition fires but no failing invocation is
+        visible in the last 8 steps, we still return the stop_reason and
+        description — but no last_tool/last_tool_error fields."""
+        steps = [
+            ReActStep(step_number=1, thought="thinking", observation="ok"),
+        ]
+
+        payload = _extract_failure_metadata(
+            steps,
+            stop_reason="max_steps",
+            description="step cap hit",
+        )
+
+        assert payload == {
+            "stop_reason": "max_steps",
+            "description": "step cap hit",
+        }
 
 
 class TestSanitizeErrorMessage:

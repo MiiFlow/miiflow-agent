@@ -5,7 +5,7 @@ Supports both legacy ReAct events and AG-UI protocol events.
 
 import asyncio
 import logging
-from typing import List, Optional, Callable, Any, Union, Literal, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Literal, Optional, TYPE_CHECKING, Union
 
 from ..enums import ReActEventType
 from ..models import ReActStep
@@ -390,12 +390,28 @@ class EventFactory:
         )
     
     @staticmethod
-    def stop_condition(step_number: int, stop_reason: str, description: str) -> ReActEvent:
-        """Create stop condition event."""
+    def stop_condition(
+        step_number: int,
+        stop_reason: str,
+        description: str,
+        failure: Optional[Dict[str, Any]] = None,
+    ) -> ReActEvent:
+        """Create stop condition event.
+
+        ``failure`` carries structured diagnostic info for non-success stops
+        (e.g. the last failing tool invocation when the loop halted via
+        ``RepeatedToolErrorCondition``). Lets downstream consumers — like the
+        dispatch envelope — propagate a real cause to the parent agent
+        instead of swallowing it as an opaque "I ran into repeated issues"
+        fallback answer.
+        """
+        data: Dict[str, Any] = {"stop_reason": stop_reason, "description": description}
+        if failure is not None:
+            data["failure"] = failure
         return ReActEvent(
             event_type=ReActEventType.STOP_CONDITION,
             step_number=step_number,
-            data={"stop_reason": stop_reason, "description": description}
+            data=data,
         )
 
     @staticmethod

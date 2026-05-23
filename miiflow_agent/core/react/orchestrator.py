@@ -216,6 +216,86 @@ def _format_missing_params_error(
     )
 
 
+def _extract_failure_metadata(
+    steps: List[ReActStep],
+    *,
+    stop_reason: str,
+    description: str,
+    truncation: int = 800,
+    input_truncation: int = 500,
+) -> Dict[str, Any]:
+    """Scan the recent step history for the last failing tool invocation
+    and return a structured diagnostic payload.
+
+    Used when a safety condition halts the loop (e.g. RepeatedToolError)
+    so callers like the dispatch envelope can surface a real cause to
+    the parent agent instead of the canned "repeated issues" string.
+
+    The payload is bounded — both the error observation and the input
+    snapshot are truncated — so a failing query with a long body doesn't
+    bloat the parent's tool observation.
+    """
+    last_failing = None
+    failing_attempts = 0
+    # Walk the recent invocations newest-first. Bounded scan (8 steps)
+    # mirrors RepeatedToolErrorCondition's lookback window so the count
+    # we return matches what the safety condition was actually counting.
+    for step in reversed(steps[-8:]):
+        for inv in reversed(step.all_invocations):
+            is_failure = inv.error is not None or _observation_looks_like_error(
+                inv.observation
+            )
+            if not is_failure:
+                continue
+            failing_attempts += 1
+            if last_failing is None:
+                last_failing = inv
+
+    payload: Dict[str, Any] = {
+        "stop_reason": stop_reason,
+        "description": description,
+    }
+    if last_failing is not None:
+        observation = last_failing.observation or last_failing.error or ""
+        payload["last_tool"] = last_failing.name
+        payload["last_tool_error"] = observation[:truncation]
+        if last_failing.inputs:
+            payload["last_tool_input"] = _truncate_input(
+                last_failing.inputs, input_truncation
+            )
+        payload["attempts_seen"] = failing_attempts
+    return payload
+
+
+def _observation_looks_like_error(observation: Optional[str]) -> bool:
+    """Heuristic: tool observations that carry a soft error.
+
+    Mirrors the marker logic in ``RepeatedToolErrorCondition._error_key``
+    so the metadata we surface lines up with the condition that fired.
+    The full regex lives in ``safety.py``; we accept a small duplication
+    here to avoid an import cycle.
+    """
+    if not isinstance(observation, str) or not observation:
+        return False
+    # Match the framework's `Tool execution failed:` prefix or a dict
+    # carrying a truthy `error` value.
+    if observation.startswith("Tool execution failed:"):
+        return True
+    return "'error':" in observation and "'error': None" not in observation
+
+
+def _truncate_input(inputs: Dict[str, Any], limit: int) -> Dict[str, Any]:
+    """Truncate string values in a tool input dict so the failure payload
+    stays bounded even when a query string is very long."""
+    truncated: Dict[str, Any] = {}
+    for key, value in inputs.items():
+        if isinstance(value, str) and len(value) > limit:
+            truncated[key] = value[:limit] + f"... [truncated {len(value) - limit} chars]"
+        else:
+            truncated[key] = value
+    return truncated
+
+
 class ReActOrchestrator:
     """Action-or-answer agent loop.
 
@@ -540,10 +620,22 @@ class ReActOrchestrator:
                 stop_condition.get_description(),
                 state.current_step,
             )
+            failure = _extract_failure_metadata(
+                state.steps,
+                stop_reason=stop_condition.get_stop_reason().value,
+                description=stop_condition.get_description(),
+            )
+            # Stash on state so _build_result can attach it to the
+            # ReActResult.metadata for callers that consume the result
+            # directly (the dispatch envelope reads it via the event;
+            # both paths are wired so neither side has to know about
+            # the other).
+            state.failure_metadata = failure
             event = EventFactory.stop_condition(
                 state.current_step,
                 stop_condition.get_stop_reason().value,
                 stop_condition.get_description(),
+                failure=failure,
             )
             await self.event_bus.publish(event)
             return True
@@ -2067,6 +2159,12 @@ class ReActOrchestrator:
         # Attach clarification data if present
         if state.clarification_data:
             result.clarification_data = state.clarification_data
+
+        # Carry the structured failure (set by ``_should_stop`` when a
+        # safety condition halts the loop) so the dispatch envelope can
+        # surface a real cause to the parent agent.
+        if state.failure_metadata is not None:
+            result.metadata["failure"] = state.failure_metadata
 
         return result
 

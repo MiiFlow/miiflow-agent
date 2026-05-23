@@ -185,6 +185,77 @@ def test_final_result_before_stream_consumed():
     assert "never consumed" in (result.error or "")
 
 
+@pytest.mark.asyncio
+async def test_stop_condition_with_failure_populates_subagent_result():
+    """A STOP_CONDITION event carrying a structured failure dict must
+    propagate to SubAgentResult.failure so the dispatch envelope can
+    surface the cause to the parent agent.
+
+    Otherwise a child halted by RepeatedToolErrorCondition only leaves
+    the canned "I ran into repeated issues" fallback answer in the
+    parent's tool observation and the parent has no actionable signal.
+    """
+    failure_payload = {
+        "stop_reason": "repeated_tool_error",
+        "description": "stopped after 3 consecutive failures of google_ads_query",
+        "last_tool": "google_ads_query",
+        "last_tool_error": "Segment 'segments.date' is referenced in WHERE but missing from SELECT.",
+        "last_tool_input": {"customer_id": "4447141884", "query": "SELECT ..."},
+        "attempts_seen": 4,
+    }
+    events = [
+        ReActEvent(
+            event_type=ReActEventType.STOP_CONDITION,
+            step_number=5,
+            data={
+                "stop_reason": "repeated_tool_error",
+                "description": failure_payload["description"],
+                "failure": failure_payload,
+            },
+        ),
+        _answer_chunk("I ran into repeated issues..."),
+    ]
+    sub = ConfiguredSubAgent(_config(), _FakeChildAgent(events))
+
+    async for _ in sub.stream(SubAgentHandoff(task="t", intent_summary="")):
+        pass
+
+    result = sub.final_result()
+    assert result.failure == failure_payload
+    # Status stays "completed" because the orchestrator still produced
+    # the canned fallback answer — but error now carries a real summary
+    # so legacy log paths see something meaningful too.
+    assert result.status == "completed"
+    assert result.error is not None
+    assert "google_ads_query" in result.error
+    assert "repeated_tool_error" in result.error
+
+
+@pytest.mark.asyncio
+async def test_stop_condition_without_failure_payload_is_ignored():
+    """Older orchestrators emit STOP_CONDITION events without ``failure``.
+    Those must not regress the existing path — no failure metadata, plain
+    answer, plain error semantics.
+    """
+    events = [
+        ReActEvent(
+            event_type=ReActEventType.STOP_CONDITION,
+            step_number=1,
+            data={"stop_reason": "max_steps", "description": "hit step cap"},
+        ),
+        _answer_chunk("done"),
+    ]
+    sub = ConfiguredSubAgent(_config(), _FakeChildAgent(events))
+
+    async for _ in sub.stream(SubAgentHandoff(task="t", intent_summary="")):
+        pass
+
+    result = sub.final_result()
+    assert result.failure is None
+    assert result.status == "completed"
+    assert result.error is None
+
+
 # ---------------------------------------------------------------------------
 # stream() — max_steps and timeout pass through; deps factory threads
 # ---------------------------------------------------------------------------

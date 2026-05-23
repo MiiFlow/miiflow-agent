@@ -49,6 +49,13 @@ class ExecutionState:
     # ("text", "image_url", "video_url"). See analyze_creative for usage.
     pending_llm_blocks: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Structured failure info populated when a safety condition halts the
+    # loop. Surfaced via ReActResult.metadata["failure"] so the dispatch
+    # envelope can carry a real cause (tool, error, last input) up to the
+    # parent agent — otherwise the parent only sees the canned "I ran into
+    # repeated issues" fallback answer and has nothing to act on.
+    failure_metadata: Optional[Dict[str, Any]] = None
+
     def increment_step(self) -> int:
         """Increment and return the new step number."""
         self.current_step += 1

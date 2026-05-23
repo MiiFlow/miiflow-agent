@@ -128,6 +128,13 @@ class SubAgentResult:
         metadata: Optional free-form bag for child-specific extras
             (token usage, model name, etc.). The framework doesn't
             interpret it.
+        failure: Structured diagnostic info populated when a safety
+            condition halted the child loop. Carries the stop reason,
+            description, last failing tool name, the truncated error
+            observation, and the inputs the model used on its last
+            attempt. ``None`` for successful runs and for failures
+            that don't go through a stop condition (e.g. raised
+            exceptions, which set ``error`` instead).
     """
 
     answer: str
@@ -136,6 +143,7 @@ class SubAgentResult:
     error: Optional[str] = None
     child_run_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    failure: Optional[Dict[str, Any]] = None
 
 
 @runtime_checkable

@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional
 
 from ..subagent import (
     ClarificationPolicy,
@@ -127,6 +127,25 @@ def _compose_query(handoff: SubAgentHandoff) -> str:
             f"{handoff.parent_user_message.strip()}"
         )
     return "\n".join(parts)
+
+
+def _summarize_failure(failure: Dict[str, Any]) -> str:
+    """Build a one-line error summary from a structured failure payload.
+
+    Used as ``SubAgentResult.error`` so callers that only inspect ``error``
+    still see something meaningful — the dispatch envelope carries the
+    full ``failure`` dict alongside.
+    """
+    stop_reason = failure.get("stop_reason") or "stopped"
+    last_tool = failure.get("last_tool")
+    last_tool_error = failure.get("last_tool_error") or ""
+    if last_tool:
+        # Trim the error to keep this single-line.
+        snippet = last_tool_error.splitlines()[0][:200] if last_tool_error else ""
+        if snippet:
+            return f"{stop_reason}: {last_tool} failed with: {snippet}"
+        return f"{stop_reason}: {last_tool} failed"
+    return f"{stop_reason}: {failure.get('description') or 'no answer produced'}"
 
 
 class ConfiguredSubAgent:
@@ -202,6 +221,7 @@ class ConfiguredSubAgent:
 
         start = time.monotonic()
         answer_parts: List[str] = []
+        captured_failure: Optional[Dict[str, Any]] = None
 
         context = RunContext(
             deps=self._deps_factory(handoff),
@@ -232,10 +252,30 @@ class ConfiguredSubAgent:
                     )
                     if delta:
                         answer_parts.append(delta)
+                elif event_type == ReActEventType.STOP_CONDITION:
+                    # Carries structured failure info when the child loop
+                    # halted via a safety condition (e.g. repeated tool
+                    # errors). Without this capture, the parent only sees
+                    # the canned "I ran into repeated issues" fallback
+                    # answer and has nothing actionable to report.
+                    data = getattr(event, "data", {}) or {}
+                    failure = data.get("failure")
+                    if isinstance(failure, dict):
+                        captured_failure = failure
                 yield event
         finally:
             duration_ms = int((time.monotonic() - start) * 1000)
             answer = "".join(answer_parts)
+            error: Optional[str]
+            if captured_failure:
+                # Build a one-line summary from the structured payload —
+                # callers that only look at ``error`` (e.g. legacy logging
+                # paths) still see a real cause rather than ``None``.
+                error = _summarize_failure(captured_failure)
+            elif answer:
+                error = None
+            else:
+                error = "child produced no final answer"
             self._last_result = SubAgentResult(
                 answer=answer,
                 # If the stream completed without ever producing a final-
@@ -243,7 +283,8 @@ class ConfiguredSubAgent:
                 # a non-empty error rather than a silent empty answer.
                 status="completed" if answer else "failed",
                 duration_ms=duration_ms,
-                error=None if answer else "child produced no final answer",
+                error=error,
+                failure=captured_failure,
             )
 
     def final_result(self) -> SubAgentResult:

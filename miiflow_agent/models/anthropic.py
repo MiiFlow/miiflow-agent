@@ -5,10 +5,10 @@ from typing import Dict
 from .base import ModelConfig, ParameterConfig, ParameterType
 
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
-    "claude-opus-4.7": ModelConfig(
-        model_identifier="claude-opus-4-7",
-        name="claude-opus-4.7",
-        description="Anthropic's most capable model (released April 16, 2026) with superior intelligence across coding, reasoning, and complex agentic tasks. Features adaptive thinking and structured outputs. 1M context window.",
+    "claude-opus-4.8": ModelConfig(
+        model_identifier="claude-opus-4-8",
+        name="claude-opus-4.8",
+        description="Anthropic's most capable model (released May 28, 2026). Successor to Opus 4.7 with improved reasoning, coding, and agentic performance. Features adaptive thinking, structured outputs, and fast mode. 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -19,8 +19,24 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         maximum_context_tokens=1000000,
         maximum_output_tokens=128000,
         token_param_name="max_tokens",
-        # Opus 4.7 deprecates `temperature` as a request parameter — sending
-        # it returns "`temperature` is deprecated for this model" (HTTP 400).
+        supports_temperature=False,
+        input_cost_hint=5.0,
+        output_cost_hint=25.0,
+    ),
+    "claude-opus-4.7": ModelConfig(
+        model_identifier="claude-opus-4-7",
+        name="claude-opus-4.7",
+        description="Legacy — succeeded by Claude Opus 4.8 (May 2026). Strong coding, reasoning, and agentic performance with adaptive thinking. 1M context window.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=1000000,
+        maximum_output_tokens=128000,
+        token_param_name="max_tokens",
         supports_temperature=False,
         input_cost_hint=5.0,
         output_cost_hint=25.0,
@@ -28,7 +44,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.6": ModelConfig(
         model_identifier="claude-opus-4-6",
         name="claude-opus-4.6",
-        description="Legacy — succeeded by Claude Opus 4.7 (April 2026). Previously Anthropic's most capable model with 1M context window.",
+        description="Legacy — succeeded by Claude Opus 4.7 (April 2026). Strong coding and reasoning with 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -155,6 +171,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
         default_value=4096,
         min_value=1,
         max_value={
+            "claude-opus-4.8": 128000,
             "claude-opus-4.7": 128000,
             "claude-opus-4.6": 128000,
             "claude-sonnet-4.6": 64000,
@@ -169,7 +186,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
 ]
 
 
-_NO_EXTENDED_THINKING = {"claude-opus-4.7"}
+_NO_EXTENDED_THINKING = {"claude-opus-4.8", "claude-opus-4.7"}
 
 
 def _get_thinking_models() -> list[str]:

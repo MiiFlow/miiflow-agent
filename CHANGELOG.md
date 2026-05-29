@@ -2,6 +2,23 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.9.0] - 2026-05-28
+
+### Added
+- **New model definitions** (`models/anthropic.py`, `models/openai.py`, `models/google.py`): Claude Opus 4.8 (the new Anthropic flagship, succeeding 4.7), the OpenAI o4-mini reasoning model (200K context), and Google Gemini 3.5 Flash. Parameter configs and successor metadata added for each; older entries (Opus 4.7, Gemini 3.1 Pro, Gemini 3-flash-preview, o3-mini) re-pointed accordingly.
+- **`RepeatedToolErrorCondition` safety condition** (`core/react/safety.py`, `core/react/enums.py`): Stops an agent loop when the same tool returns the same error code N times in a row regardless of input — the schema-validation retry loops that `ErrorThresholdCondition` (soft errors never reach step level) and `RepeatedActionsCondition` (input varies each retry) both miss.
+- **Structured child-failure propagation** (`core/react/orchestrator.py`, `core/react/configured_subagent.py`, `core/react/events/bus.py`, `core/react/execution/state.py`, `core/subagent.py`): When a sub-agent halts on a safety condition, `_extract_failure_metadata()` walks the last ReAct steps and stashes `last_tool`, `last_tool_error`, `last_tool_input`, and `attempts_seen` on `ExecutionState.failure_metadata`. These surface in the `STOP_CONDITION` event's `failure` field and thread out through `SubAgentResult.failure`, so a parent can report the real cause of a child's failure instead of a generic "ran into repeated issues" message.
+
+### Changed
+- **Default client timeout raised 120s → 300s** (`core/client.py`): Removes noisy false-positive timeouts on legitimately long streaming calls.
+- **Slow-call observability** (`providers/anthropic_client.py`): A successful Anthropic stream that exceeds 120s now emits a structured `anthropic_stream_slow` warning (model, elapsed seconds, configured timeout), so the timeout bump can be measured against real latency rather than silently masking a regression.
+
+### Fixed
+- **MCP/HTTP tools dropped from the tool surface** (`core/react/tool_executor.py`, `core/tools/registry.py`): Lookups that consulted only the registry's `tools` dict silently missed every MCP and HTTP tool. A new `_lookup_any_tool()` helper consults the function/http/mcp dicts uniformly, so MCP and HTTP tools are now visible to `has_tool`, schema lookup, and context-injection checks. `register_mcp_manager()` also gained an optional `allowed_names` filter to register only a subset of discovered MCP tools.
+- **MCP/HTTP tools missing schemas via `tool_search`** (`core/react/tool_executor.py`): Schema assembly only handled `FunctionTool`, so MCP/HTTP tools surfaced through `tool_search` were silently dropped from the LLM's tool surface. Any tool exposing `.schema` is now used directly.
+- **`RepeatedToolErrorCondition` false-fire on parallel dispatches** (`core/react/safety.py`, `core/react/orchestrator.py`): `_error_key` classified successful tool returns carrying `'error': None` as soft errors, so three or more parallel `dispatch_assistant` calls to the same handle tripped the repeat limit and stopped the root agent before it could process the results. The probe now ignores successful returns, and `_should_stop` logs which safety condition fired.
+- **All-failed parallel steps misclassified as runtime failures** (`core/react/orchestrator.py`, `core/react/models.py`, `core/tools/function/function_tool.py`, `core/tools/registry.py`): When every call in a parallel step failed on deterministic input-shape validation (e.g. GAQL preflight), the step was tagged `all_failed` and burned the recovery ladder. An `is_validation_error` marker now propagates from the raised exception's `is_tool_validation_error` attribute; an all-validation-failed step is classified as `schema` so the recovery manager short-circuits — the per-call observations already carry the corrective hint.
+
 ## [1.8.0] - 2026-05-18
 
 Folds in the previously unreleased `1.7.1` (a bare version bump from PR #1001) plus the work merged since.

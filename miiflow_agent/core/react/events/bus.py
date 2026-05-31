@@ -318,8 +318,13 @@ class EventFactory:
         )
 
     @staticmethod
-    def action_planned(step_number: int, action: str, action_input: dict, tool_description: str = None) -> ReActEvent:
-        """Create action planned event."""
+    def action_planned(step_number: int, action: str, action_input: dict, tool_description: str = None, tool_call_id: str = None) -> ReActEvent:
+        """Create action planned event.
+
+        ``tool_call_id`` lets downstream consumers correlate this plan with its
+        observation by id rather than by arrival order — required for parallel
+        tool batches, where every action_planned fires before any observation.
+        """
         return ReActEvent(
             event_type=ReActEventType.ACTION_PLANNED,
             step_number=step_number,
@@ -327,11 +332,12 @@ class EventFactory:
                 "action": action,
                 "action_input": action_input,
                 "tool_description": tool_description,
+                "tool_call_id": tool_call_id,
             }
         )
 
     @staticmethod
-    def action_executing(step_number: int, action: str, action_input: dict, tool_description: str = None) -> ReActEvent:
+    def action_executing(step_number: int, action: str, action_input: dict, tool_description: str = None, tool_call_id: str = None) -> ReActEvent:
         """Create action executing event."""
         return ReActEvent(
             event_type=ReActEventType.ACTION_EXECUTING,
@@ -341,16 +347,23 @@ class EventFactory:
                 "action_input": action_input,
                 "status": "executing",
                 "tool_description": tool_description,
+                "tool_call_id": tool_call_id,
             }
         )
-    
+
     @staticmethod
-    def observation(step_number: int, observation: str, action: str, success: bool = True) -> ReActEvent:
-        """Create observation event."""
+    def observation(step_number: int, observation: str, action: str, success: bool = True, tool_call_id: str = None) -> ReActEvent:
+        """Create observation event.
+
+        ``tool_call_id`` pairs the observation with the action_planned/executing
+        event that has the same id. Without it, a consumer that tracks a single
+        "current tool" pointer misattributes observations when tools run in a
+        parallel batch (all plans emitted first, then all observations).
+        """
         return ReActEvent(
             event_type=ReActEventType.OBSERVATION,
             step_number=step_number,
-            data={"observation": observation, "action": action, "success": success}
+            data={"observation": observation, "action": action, "success": success, "tool_call_id": tool_call_id}
         )
     
     @staticmethod

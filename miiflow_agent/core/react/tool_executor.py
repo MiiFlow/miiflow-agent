@@ -64,7 +64,9 @@ class AgentToolExecutor:
             return blocked_result
 
         # Emit PRE_TOOL_USE callback - allows blocking tool execution (e.g. for approval)
-        await self._emit_pre_tool_use_callback(tool_name, inputs)
+        # A callback may also REPLACE the inputs (e.g. user approved-with-edits);
+        # use whatever it returns for the actual execution.
+        inputs = await self._emit_pre_tool_use_callback(tool_name, inputs)
 
         start_time = time.time()
 
@@ -314,11 +316,13 @@ class AgentToolExecutor:
         self,
         tool_name: str,
         inputs: dict,
-    ) -> None:
+    ) -> dict:
         """Emit a PRE_TOOL_USE callback event before tool execution.
 
         If a callback sets event.blocked = True, raises ToolApprovalRequired
-        to signal that the tool requires user approval.
+        to signal that the tool requires user approval. If a callback sets
+        event.inputs_override (e.g. an approved-with-edits gate), returns the
+        overridden inputs so the caller executes with those instead.
         """
         callback_context = get_callback_context()
 
@@ -334,7 +338,7 @@ class AgentToolExecutor:
             await registry.emit(event)
         except Exception as e:
             logger.warning(f"Failed to emit PRE_TOOL_USE callback: {e}")
-            return
+            return inputs
 
         if event.blocked:
             from .exceptions import ToolApprovalRequired
@@ -344,6 +348,14 @@ class AgentToolExecutor:
                 tool_inputs=inputs,
                 reason=event.block_reason,
             )
+
+        if event.inputs_overridden and isinstance(event.inputs_override, dict):
+            logger.info(
+                f"PRE_TOOL_USE override: replacing inputs for '{tool_name}'"
+            )
+            return event.inputs_override
+
+        return inputs
 
     async def _emit_tool_executed_callback(
         self,

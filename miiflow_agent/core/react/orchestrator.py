@@ -1455,7 +1455,11 @@ class ReActOrchestrator:
                 try:
                     await self.event_bus.publish(
                         EventFactory.action_planned(
-                            state.current_step, inv.name, inv.inputs, inv.description
+                            state.current_step,
+                            inv.name,
+                            inv.inputs,
+                            inv.description,
+                            tool_call_id=inv.tool_call_id,
                         )
                     )
                 except Exception as evt_err:
@@ -1552,6 +1556,7 @@ class ReActOrchestrator:
                         inv.observation,
                         inv.name,
                         inv.error is None,
+                        tool_call_id=inv.tool_call_id,
                     )
                 )
             except Exception as evt_err:
@@ -1621,11 +1626,11 @@ class ReActOrchestrator:
 
         # Publish action events with tool_description for human-readable display
         await self.event_bus.publish(
-            EventFactory.action_planned(state.current_step, step.action, step.action_input, tool_description)
+            EventFactory.action_planned(state.current_step, step.action, step.action_input, tool_description, tool_call_id=tool_call_id)
         )
 
         await self.event_bus.publish(
-            EventFactory.action_executing(state.current_step, step.action, step.action_input, tool_description)
+            EventFactory.action_executing(state.current_step, step.action, step.action_input, tool_description, tool_call_id=tool_call_id)
         )
 
         # Execute tool
@@ -1781,7 +1786,7 @@ class ReActOrchestrator:
                         state.clarification_data = clarification.to_dict()
                         state.clarification_data["tool_call_id"] = tool_call_id
                         logger.info(
-                            f"Clarification requested: {clarification.question}"
+                            f"Clarification requested: {len(clarification.questions)} question(s)"
                         )
 
                         # Emit clarification event
@@ -1791,10 +1796,8 @@ class ReActOrchestrator:
                                 step_number=state.current_step,
                                 data={
                                     "step": state.current_step,
-                                    "question": clarification.question,
-                                    "options": clarification.options,
+                                    "questions": [q.to_dict() for q in clarification.questions],
                                     "context": clarification.context,
-                                    "allow_free_text": clarification.allow_free_text,
                                     "tool_call_id": tool_call_id,
                                 },
                             )
@@ -1812,7 +1815,7 @@ class ReActOrchestrator:
             # Publish observation event
             await self.event_bus.publish(
                 EventFactory.observation(
-                    state.current_step, step.observation, step.action, result.success
+                    state.current_step, step.observation, step.action, result.success, tool_call_id=tool_call_id
                 )
             )
 
@@ -1944,7 +1947,7 @@ class ReActOrchestrator:
             logger.error(f"Tool execution failed: {e}", exc_info=True)
 
             await self.event_bus.publish(
-                EventFactory.observation(state.current_step, step.observation, step.action, False)
+                EventFactory.observation(state.current_step, step.observation, step.action, False, tool_call_id=tool_call_id)
             )
 
             # Add tool result to context even on exception (required for native tool calling)

@@ -551,10 +551,14 @@ class ToolRegistry:
         except Exception:
             return False
 
-    async def execute_safe(self, tool_name: str, **kwargs) -> ToolResult:
+    async def execute_safe(self, tool_name: str, /, **kwargs) -> ToolResult:
         """Execute a tool with comprehensive error handling and stats tracking.
 
         Supports function tools, HTTP tools, and MCP tools.
+
+        ``tool_name`` is positional-only so a model that passes a tool argument
+        literally named ``tool_name`` lands it in ``**kwargs`` (a normal tool
+        param) instead of colliding with this dispatch parameter.
         """
         # Resolve sanitized name back to original (for OpenAI compatibility)
         resolved_name = self._resolve_name(tool_name)
@@ -676,8 +680,17 @@ class ToolRegistry:
                 },
             )
 
-    async def execute_safe_with_context(self, tool_name: str, context: Any, **kwargs) -> ToolResult:
-        """Execute tool with context as first parameter (Pydantic AI pattern)."""
+    async def execute_safe_with_context(self, tool_name: str, context: Any, /, **kwargs) -> ToolResult:
+        """Execute tool with context as first parameter (Pydantic AI pattern).
+
+        ``tool_name`` and ``context`` are positional-only: a model sometimes
+        emits a tool argument literally named ``context`` (or ``tool_name``),
+        and without this it would collide with these dispatch parameters
+        (``got multiple values for argument 'context'``) and crash the call
+        before the unknown-parameter filter below could drop it. Positional-only
+        routes such args into ``**kwargs``, where they're either dropped as
+        unknown or — if the tool genuinely declares them — passed through.
+        """
         # Resolve sanitized name back to original (for OpenAI compatibility)
         resolved_name = self._resolve_name(tool_name)
 

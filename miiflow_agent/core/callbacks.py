@@ -113,6 +113,13 @@ class CallbackEvent:
     blocked: bool = False
     block_reason: Optional[str] = None
 
+    # PRE_TOOL_USE: set this in callback to REPLACE the tool inputs before
+    # execution (e.g. a user approved a tool but edited its arguments). The
+    # executor reads ``inputs_override`` back after emitting the PRE event and
+    # runs the tool with those values instead of the model's original inputs.
+    inputs_override: Optional[Dict[str, Any]] = None
+    inputs_overridden: bool = False
+
     # POST_TOOL_USE: set this in callback to replace the tool output
     transformed_output: Optional[Any] = None
     output_transformed: bool = False

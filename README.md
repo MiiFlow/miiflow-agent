@@ -26,7 +26,7 @@ response = client.chat([Message.user("Hello!")])
 client = LLMClient.create("anthropic", model="claude-sonnet-4-20250514")
 ```
 
-**Demo of Plan & Execute Agent**
+**Demo of an Agentic Run**
 
 
 https://github.com/user-attachments/assets/0b5c870a-f9b2-4d55-a829-9d7c000be907
@@ -38,7 +38,7 @@ https://github.com/user-attachments/assets/0b5c870a-f9b2-4d55-a829-9d7c000be907
 |---|:---:|:---:|:---:|
 | **Codebase size** | ~15K lines | ~500K lines | ~50K lines |
 | **Dependencies** | 8 core | 50+ | 20+ |
-| **Built-in agents** | ReAct, Plan&Execute | Requires setup | None |
+| **Built-in agents** | ReAct + sub-agent hand-off | Requires setup | None |
 | **Tool system** | @tool decorator | Chains | None |
 | **Learning curve** | Hours | Weeks | Hours |
 | **Type safety** | Full generics | Partial | Basic |
@@ -48,7 +48,7 @@ https://github.com/user-attachments/assets/0b5c870a-f9b2-4d55-a829-9d7c000be907
 LangChain is powerful but complex. For production apps, you often fight its abstractions more than use them. miiflow-agent gives you **what you actually need**:
 
 - **Unified provider interface** — swap OpenAI → Claude → Gemini with one line
-- **Agentic patterns built-in** — ReAct and Plan & Execute, not bolted on
+- **Agentic patterns built-in** — a single ReAct loop with emergent planning and multi-agent hand-off, not bolted on
 - **Simple tool system** — decorate any function with `@tool`
 - **Real streaming** — event-based, not just token callbacks
 - **Type-safe** — full generics, proper error types
@@ -58,7 +58,7 @@ LangChain is powerful but complex. For production apps, you often fight its abst
 LiteLLM unifies provider APIs but stops there. miiflow-agent adds:
 
 - **ReAct agents** with multi-hop reasoning
-- **Plan & Execute** for complex multi-step tasks
+- **Sub-agent hand-off** for complex multi-step tasks
 - **Tool calling** with automatic schema generation
 - **Context injection** (Pydantic AI compatible)
 
@@ -172,12 +172,12 @@ result = await agent.run(
 │               │   │   Clients     │   │               │
 │ • SINGLE_HOP  │   │               │   │ • @tool       │
 │ • REACT       │   │ • OpenAI      │   │ • FunctionTool│
-│ • PLAN_EXEC   │   │ • Anthropic   │   │ • HTTPTool    │
+│ • SubAgents   │   │ • Anthropic   │   │ • HTTPTool    │
 │               │   │ • Gemini      │   │ • Registry    │
 │ ┌───────────┐ │   │ • More...     │   │               │
 │ │Orchestrator│ │   │               │   │ ┌───────────┐ │
-│ │ • ReAct   │ │   │               │   │ │ Schemas   │ │
-│ │ • Plan&Ex │ │   │               │   │ │ • Auto-gen│ │
+│ │ • plan    │ │   │               │   │ │ Schemas   │ │
+│ │ • handoff │ │   │               │   │ │ • Auto-gen│ │
 │ └───────────┘ │   │               │   │ │ • Validate│ │
 └───────────────┘   │               │   │ └───────────┘ │
                     └───────────────┘   └───────────────┘
@@ -212,29 +212,23 @@ result = await agent.run(
 
 ## Agentic Patterns
 
-### ReAct vs Plan & Execute
+miiflow-agent runs a **single, unified ReAct loop**. Each turn the model emits
+exactly one of: tool calls (the loop continues) or a text answer (the loop exits).
+Planning and parallel multi-agent execution are *emergent behaviors* inside this
+one loop — there are no separate "plan & execute" or "multi-agent" orchestrators to
+choose between. Complex tasks are handled by letting the model plan over multiple
+turns and dispatch work to sub-agents as normal tool calls.
 
-| | ReAct | Plan & Execute |
-|---|---|---|
-| **Best for** | Simple queries, quick lookups | Complex multi-step tasks |
-| **Planning** | Implicit (step-by-step) | Explicit (plan first, then execute) |
-| **Adaptability** | High (adjusts each step) | Medium (can replan if needed) |
-| **Token usage** | Lower | Higher (planning overhead) |
-| **Latency** | Faster for simple tasks | Better for complex tasks |
-
-**Use ReAct when:**
-- The task can be solved in 1-3 tool calls
-- You need quick, reactive responses
-- The path to solution isn't known upfront
-
-**Use Plan & Execute when:**
-- The task has multiple dependent steps
-- You need to coordinate several tools
-- The task benefits from upfront planning (research, analysis, multi-part creation)
+> **Migrating from a pre-1.8 release?** The standalone `PlanAndExecuteOrchestrator`,
+> `MultiAgentOrchestrator`, and the `AgentType.PLAN_AND_EXECUTE` / `PARALLEL_PLAN` /
+> `MULTI_AGENT` enum values have been removed. Express the same outcomes with a single
+> `Agent` plus `sub_agents=[SubAgent(...)]` — see [Sub-agent hand-off](#sub-agent-hand-off)
+> below. `AgentType.REACT` (the default) and `AgentType.SINGLE_HOP` are the only modes.
 
 ### ReAct (Reasoning + Acting)
 
-The agent thinks step-by-step, deciding when to use tools:
+The agent thinks step-by-step, deciding when to use tools, and plans across turns
+for multi-step tasks:
 
 ```python
 agent = Agent(client, agent_type=AgentType.REACT)
@@ -247,34 +241,37 @@ agent = Agent(client, agent_type=AgentType.REACT)
 # Final Answer: ...
 ```
 
-### Plan & Execute
+### Sub-agent hand-off
 
-For complex tasks, the agent creates a plan first, then executes each step:
+For complex work that benefits from specialization, give the agent one or more
+sub-agents. The parent's ReAct loop decides *when* to hand off, and the dispatch
+happens as an ordinary tool call — no separate orchestrator. Sub-agents are wired
+in through `AgentConfig`; the framework synthesizes a `dispatch_assistant`-shaped
+tool that routes calls through the dispatch lifecycle (depth, cycle, budget, and
+event bubbling):
 
 ```python
-from miiflow_agent.core.react import ReActFactory
+from miiflow_agent import Agent
+from miiflow_agent.core.config import AgentConfig
 
-orchestrator = ReActFactory.create_plan_execute_orchestrator(
-    agent=agent,
-    max_replans=2  # Allow 2 re-planning attempts if steps fail
-)
+# `sub_agents` holds objects implementing the SubAgent protocol — each one a
+# parent-side "edge" to a specialist child, carrying per-edge policy such as
+# `when_to_use`, `handoff_schema`, and `clarification_policy`.
+lead = Agent(config=AgentConfig(
+    client=client,
+    system_prompt="Coordinate research and writing.",
+    sub_agents=[researcher_subagent, writer_subagent],
+))
 
-result = await orchestrator.execute(
+result = await lead.run(
     "Research Python web frameworks, compare them, and write a summary"
 )
-
-# Agent internally:
-# Plan:
-#   1. Search for popular Python web frameworks
-#   2. Gather key features of each framework
-#   3. Compare performance and use cases
-#   4. Write summary with recommendations
-#
-# Execute Step 1: search("Python web frameworks 2024")
-# Execute Step 2: search("Django vs FastAPI vs Flask features")
-# ...
-# Final Answer: [comprehensive summary]
+# The ReAct loop plans, dispatches to each specialist, and synthesizes the result.
 ```
+
+> See [`examples/subagents.py`](examples/subagents.py) for a complete, runnable
+> hand-off example, and `miiflow_agent/core/subagent.py` for the `SubAgent`
+> protocol and its per-edge policy fields.
 
 ## Event Streaming
 

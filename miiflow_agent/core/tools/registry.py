@@ -239,29 +239,44 @@ class ToolRegistry:
         Args:
             manager: Connected MCPToolManager with discovered tools
             allowed_names: Optional set of namespaced tool names
-                (``"<server>__<tool>"``) to register. When provided, only
-                matching tools are registered — the manager still holds the
-                full discovery for reconnect/health, but the registry (and
-                therefore the LLM's tool surface) sees only the user's
-                selection. ``None`` registers every discovered tool.
+                (``"<server>__<tool>"``) to register. When a non-empty set is
+                given, only matching tools are registered — the manager still
+                holds the full discovery for reconnect/health, but the registry
+                (and therefore the LLM's tool surface) sees only the user's
+                selection. ``None`` **or an empty set** registers every
+                discovered tool: an empty allowlist is treated as "no
+                restriction" rather than "hide everything", so a caller that
+                accidentally computes an empty selection can never silently
+                black out MCP. Pass a non-empty set to actually restrict.
         """
         self.mcp_manager = manager
         registered = 0
-        for tool in manager.get_all_tools():
-            if allowed_names is not None and tool.name not in allowed_names:
+        all_tools = manager.get_all_tools()
+        for tool in all_tools:
+            # `allowed_names` falsy (None or empty set) => register all.
+            if allowed_names and tool.name not in allowed_names:
                 continue
             self.register_mcp_tool(tool)
             registered += 1
 
-        if self.enable_logging:
-            total = len(manager.get_all_tools())
-            if allowed_names is None:
-                logger.info(f"Registered {registered} MCP tools from manager")
-            else:
+        total = len(all_tools)
+        if total and registered == 0:
+            # The manager connected and discovered tools but none were
+            # registered — they are connected-but-invisible to the LLM. This is
+            # the classic "MCP stopped working" symptom; make it loud.
+            logger.warning(
+                f"register_mcp_manager: manager advertised {total} tool(s) but "
+                f"registered 0 — MCP tools will be INVISIBLE to the LLM "
+                f"(allowed_names={allowed_names!r})"
+            )
+        elif self.enable_logging:
+            if allowed_names:
                 logger.info(
                     f"Registered {registered}/{total} MCP tools from manager "
                     f"(filtered by selection)"
                 )
+            else:
+                logger.info(f"Registered {registered} MCP tools from manager")
 
     def get_mcp_tool(self, name: str) -> Optional[MCPTool]:
         """Get an MCP tool by name (supports sanitized names from OpenAI).

@@ -612,7 +612,7 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
     def _get_finish_reason_name(self, finish_reason: Any) -> Optional[str]:
         """Safely extract finish_reason name.
 
-        Gemini 2.5 models may return new undocumented finish_reason enum values
+        Gemini models may return new undocumented finish_reason enum values
         (like 12) that come as raw integers instead of enum objects.
         """
         if finish_reason is None:

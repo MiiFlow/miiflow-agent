@@ -46,7 +46,7 @@ PROVIDERS = {
     },
     "gemini": {
         "provider": "gemini",
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.5-flash",
         "env_var": "GOOGLE_API_KEY",
     },
     "anthropic": {

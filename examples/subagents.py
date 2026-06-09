@@ -25,7 +25,7 @@ End-to-end wiring example::
     )
     from examples.subagents import EXPLORER_CONFIG, IMPLEMENTER_CONFIG
 
-    client = LLMClient.create("anthropic", model="claude-sonnet-4-5-20251029")
+    client = LLMClient.create("anthropic", model="claude-sonnet-4-6")
     registry = SubAgentRegistry()
     registry.register(EXPLORER_CONFIG)
     registry.register(IMPLEMENTER_CONFIG)

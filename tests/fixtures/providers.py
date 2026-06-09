@@ -39,7 +39,7 @@ class ProviderConfig:
 ALL_PROVIDERS = [
     ProviderConfig(
         name="openai",
-        model="gpt-4o-mini",
+        model="gpt-4.1-nano",
         api_key_env="OPENAI_API_KEY",
         supports_vision=True,
         supports_json=True,

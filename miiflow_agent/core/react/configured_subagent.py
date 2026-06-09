@@ -35,7 +35,7 @@ Typical wiring:
         max_steps=5,
     ))
 
-    client = LLMClient.create("anthropic", model="claude-sonnet-4-5-20251029")
+    client = LLMClient.create("anthropic", model="claude-sonnet-4-6")
 
     def child_factory(config):
         return Agent(

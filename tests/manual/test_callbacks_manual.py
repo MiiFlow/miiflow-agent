@@ -134,7 +134,7 @@ async def test_llm_client_achat():
         print("ERROR: OPENAI_API_KEY not set")
         return False
 
-    client = LLMClient.create("openai", model="gpt-4o-mini", api_key=api_key)
+    client = LLMClient.create("openai", model="gpt-4.1-nano", api_key=api_key)
 
     # Create context for billing tracking
     ctx = CallbackContext(
@@ -158,7 +158,7 @@ async def test_llm_client_achat():
 
     event = post_call_events[0]
     assert event.provider == "openai", f"Expected provider 'openai', got '{event.provider}'"
-    assert event.model == "gpt-4o-mini", f"Expected model 'gpt-4o-mini', got '{event.model}'"
+    assert event.model == "gpt-4.1-nano", f"Expected model 'gpt-4.1-nano', got '{event.model}'"
     assert event.tokens is not None, "Expected tokens to be set"
     assert event.tokens.prompt_tokens > 0, "Expected prompt_tokens > 0"
     assert event.tokens.completion_tokens > 0, "Expected completion_tokens > 0"
@@ -180,7 +180,7 @@ async def test_llm_client_streaming():
     tracker.reset()
 
     api_key = os.environ.get("OPENAI_API_KEY")
-    client = LLMClient.create("openai", model="gpt-4o-mini", api_key=api_key)
+    client = LLMClient.create("openai", model="gpt-4.1-nano", api_key=api_key)
 
     ctx = CallbackContext(
         organization_id="org_stream_123",
@@ -226,7 +226,7 @@ async def test_agent_run():
     tracker.reset()
 
     api_key = os.environ.get("OPENAI_API_KEY")
-    client = LLMClient.create("openai", model="gpt-4o-mini", api_key=api_key)
+    client = LLMClient.create("openai", model="gpt-4.1-nano", api_key=api_key)
 
     agent = Agent(
         client,
@@ -281,7 +281,7 @@ async def test_agent_stream_react():
     tracker.reset()
 
     api_key = os.environ.get("OPENAI_API_KEY")
-    client = LLMClient.create("openai", model="gpt-4o-mini", api_key=api_key)
+    client = LLMClient.create("openai", model="gpt-4.1-nano", api_key=api_key)
 
     agent = Agent(
         client,
@@ -354,7 +354,7 @@ async def test_context_without_callback():
     tracker.reset()
 
     api_key = os.environ.get("OPENAI_API_KEY")
-    client = LLMClient.create("openai", model="gpt-4o-mini", api_key=api_key)
+    client = LLMClient.create("openai", model="gpt-4.1-nano", api_key=api_key)
 
     # Make call WITHOUT callback_context()
     response = await client.achat([

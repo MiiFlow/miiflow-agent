@@ -66,7 +66,7 @@ def get_weather(location: str) -> str:
 async def basic_react_example():
     """Basic ReAct agent with tools."""
     # Create client
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     # Create agent with tools
     agent = Agent(
@@ -88,7 +88,7 @@ async def basic_react_example():
 
 async def streaming_example():
     """Agent with real-time event streaming."""
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     agent = Agent(
         client,

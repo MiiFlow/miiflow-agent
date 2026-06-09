@@ -12,7 +12,7 @@ from miiflow_agent import LLMClient, Message
 
 async def basic_streaming():
     """Basic streaming - print tokens as they arrive."""
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     print("Streaming response: ", end="", flush=True)
 
@@ -27,7 +27,7 @@ async def basic_streaming():
 
 async def streaming_with_metadata():
     """Streaming with usage tracking."""
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     full_content = ""
     final_usage = None
@@ -50,7 +50,7 @@ async def streaming_with_metadata():
 
 async def streaming_multiple_messages():
     """Stream responses for multiple messages."""
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     questions = [
         "What is 2+2?",
@@ -71,7 +71,7 @@ async def streaming_multiple_messages():
 
 async def streaming_with_system_prompt():
     """Streaming with custom system prompt."""
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     messages = [
         Message.system("You are a pirate. Respond in pirate speak."),

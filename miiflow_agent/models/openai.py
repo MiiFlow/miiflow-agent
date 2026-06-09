@@ -7,8 +7,6 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # Models that use max_completion_tokens instead of max_tokens
 _REASONING_MODELS = {
     "o3",
-    "o3-pro",
-    "o3-mini",
     "o4-mini",
 }
 
@@ -130,24 +128,6 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=0.20,
         output_cost_hint=1.25,
     ),
-    # GPT-4o series (standard models, use max_tokens)
-    "gpt-4o-mini": ModelConfig(
-        model_identifier="gpt-4o-mini",
-        name="gpt-4o-mini",
-        description="Legacy — succeeded by GPT-5.4 Mini. Cost-efficient multimodal model, still available via API.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        reasoning=False,
-        maximum_context_tokens=128000,
-        maximum_output_tokens=16384,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.15,
-        output_cost_hint=0.60,
-    ),
     # GPT-4.1 series (standard models, use max_tokens)
     "gpt-4.1": ModelConfig(
         model_identifier="gpt-4.1",
@@ -218,23 +198,6 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=2.00,
         output_cost_hint=8.00,
     ),
-    "o3-mini": ModelConfig(
-        model_identifier="o3-mini",
-        name="o3-mini",
-        description="Legacy — succeeded by o4-mini. Fast, cost-efficient reasoning model optimized for math, coding, and science.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=False,
-        supports_tool_call=True,
-        reasoning=True,
-        maximum_context_tokens=200000,
-        maximum_output_tokens=100000,
-        token_param_name="max_completion_tokens",
-        supports_temperature=False,
-        input_cost_hint=1.10,
-        output_cost_hint=4.40,
-    ),
     "o4-mini": ModelConfig(
         model_identifier="o4-mini",
         name="o4-mini",
@@ -251,23 +214,6 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=1.10,
         output_cost_hint=4.40,
-    ),
-    "o3-pro": ModelConfig(
-        model_identifier="o3-pro",
-        name="o3-pro",
-        description="Legacy — succeeded by GPT-5.5 Pro. Premium reasoning model for maximum accuracy on the hardest problems in math, science, and coding.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        reasoning=True,
-        maximum_context_tokens=200000,
-        maximum_output_tokens=100000,
-        token_param_name="max_completion_tokens",
-        supports_temperature=False,
-        input_cost_hint=20.00,
-        output_cost_hint=80.00,
     ),
 }
 
@@ -291,11 +237,10 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         parameter_type=ParameterType.NUMBER,
         min_value=1,
         max_value={
-            "gpt-4o-mini": 16384,
             "gpt-4.1": 32768,
             "gpt-4.1-mini": 32768,
             "gpt-4.1-nano": 32768,
-            "default": 16384,
+            "default": 32768,
         },
         unsupported_models=list(_NO_TEMPERATURE_MODELS),
     ),
@@ -313,8 +258,6 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
             "gpt-5.4-mini": 128000,
             "gpt-5.4-nano": 128000,
             "o3": 100000,
-            "o3-pro": 100000,
-            "o3-mini": 100000,
             "o4-mini": 100000,
             "default": 100000,
         },
@@ -369,7 +312,7 @@ def get_token_param_name(model: str) -> str:
     - Reasoning models (o1, o3, GPT-5): max_completion_tokens
 
     Args:
-        model: The model identifier (e.g., "gpt-5.5", "o3-mini")
+        model: The model identifier (e.g., "gpt-5.5", "o4-mini")
 
     Returns:
         The API parameter name to use for max tokens

@@ -99,7 +99,7 @@ def query_database(ctx: RunContext[AppContext], table: str, query: str) -> str:
 
 async def user_context_example():
     """Example with user context injection."""
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     # Create agent with typed context
     agent = Agent(client, deps_type=UserContext)
@@ -128,7 +128,7 @@ async def user_context_example():
 
 async def app_context_example():
     """Example with combined application context."""
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     # Create agent with complex context type
     agent = Agent(client, deps_type=AppContext)
@@ -156,7 +156,7 @@ async def app_context_example():
 
 async def context_without_injection():
     """Example showing tools without context injection still work."""
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     # Tool without context
     @tool("add_numbers", "Add two numbers together")
@@ -174,7 +174,7 @@ async def context_without_injection():
 
 async def mixed_tools_example():
     """Example mixing context-injected and regular tools."""
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     @tool("calculate", "Calculate a math expression")
     def calculate(expression: str) -> str:

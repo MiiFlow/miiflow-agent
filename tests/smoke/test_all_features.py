@@ -73,7 +73,7 @@ def extract_tool_call_info(tool_call):
 # Provider configurations for different features
 # Note: Only providers with native JSON schema support
 PROVIDERS_JSON_MODE = [
-    {"provider": "openai", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY"},
+    {"provider": "openai", "model": "gpt-4.1-nano", "api_key_env": "OPENAI_API_KEY"},
     {"provider": "anthropic", "model": "claude-3-5-haiku-20241022", "api_key_env": "ANTHROPIC_API_KEY"},
     # Gemini supports JSON mode but has strict schema requirements
     {"provider": "gemini", "model": "gemini-3.5-flash", "api_key_env": "GOOGLE_API_KEY"},
@@ -82,26 +82,26 @@ PROVIDERS_JSON_MODE = [
 # Provider configurations with native structured output support
 # Note: Only Claude Sonnet 4.5 and Opus 4.1 currently support structured outputs
 PROVIDERS_STRUCTURED_OUTPUT = [
-    {"provider": "openai", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY"},
-    {"provider": "anthropic", "model": "claude-sonnet-4-5-20250929", "api_key_env": "ANTHROPIC_API_KEY"},
+    {"provider": "openai", "model": "gpt-4.1-nano", "api_key_env": "OPENAI_API_KEY"},
+    {"provider": "anthropic", "model": "claude-sonnet-4-6", "api_key_env": "ANTHROPIC_API_KEY"},
 ]
 
 PROVIDERS_STREAMING = [
-    {"provider": "openai", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY"},
+    {"provider": "openai", "model": "gpt-4.1-nano", "api_key_env": "OPENAI_API_KEY"},
     {"provider": "anthropic", "model": "claude-3-5-haiku-20241022", "api_key_env": "ANTHROPIC_API_KEY"},
     {"provider": "gemini", "model": "gemini-3.5-flash", "api_key_env": "GOOGLE_API_KEY"},
     {"provider": "groq", "model": "llama-3.1-8b-instant", "api_key_env": "GROQ_API_KEY"},
 ]
 
 PROVIDERS_TOOL_CALLING = [
-    {"provider": "openai", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY"},
+    {"provider": "openai", "model": "gpt-4.1-nano", "api_key_env": "OPENAI_API_KEY"},
     {"provider": "anthropic", "model": "claude-3-5-haiku-20241022", "api_key_env": "ANTHROPIC_API_KEY"},
     {"provider": "gemini", "model": "gemini-3.5-flash", "api_key_env": "GOOGLE_API_KEY"},
     {"provider": "groq", "model": "llama-3.1-8b-instant", "api_key_env": "GROQ_API_KEY"},
 ]
 
 PROVIDERS_MULTIMODAL = [
-    {"provider": "openai", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY"},
+    {"provider": "openai", "model": "gpt-4.1-nano", "api_key_env": "OPENAI_API_KEY"},
     {"provider": "anthropic", "model": "claude-3-5-haiku-20241022", "api_key_env": "ANTHROPIC_API_KEY"},
     {"provider": "gemini", "model": "gemini-3.5-flash", "api_key_env": "GOOGLE_API_KEY"},
 ]

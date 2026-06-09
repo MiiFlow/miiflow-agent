@@ -19,7 +19,7 @@ async def basic_llm_tracing_example():
     print("\n=== Basic LLM Tracing Example ===")
 
     # Create client (automatically instrumented)
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     # Simple chat request (will be traced)
     messages = [Message.user("What is the capital of France?")]
@@ -36,7 +36,7 @@ async def streaming_tracing_example():
     """Demonstrate streaming request tracing."""
     print("\n=== Streaming Tracing Example ===")
 
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
     messages = [Message.user("Tell me a short story about a robot.")]
 
     try:
@@ -58,7 +58,7 @@ async def agent_tracing_example():
         return f"The weather in {location} is sunny and 75°F"
 
     # Create agent with tool
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     agent = Agent[dict](
         client=client,
@@ -87,7 +87,7 @@ async def error_tracing_example():
     print("\n=== Error Tracing Example ===")
 
     # Create client with invalid API key to trigger error
-    client = LLMClient.create("openai", model="gpt-4o-mini", api_key="invalid-key")
+    client = LLMClient.create("openai", model="gpt-4.1-nano", api_key="invalid-key")
     messages = [Message.user("This will fail")]
 
     try:
@@ -112,7 +112,7 @@ def demonstrate_metrics_integration():
     usage_data = [
         UsageData(
             provider="openai",
-            model="gpt-4o-mini",
+            model="gpt-4.1-nano",
             operation="chat",
             tokens=TokenCount(prompt_tokens=50, completion_tokens=100, total_tokens=150),
             latency_ms=1200.0,

@@ -74,7 +74,7 @@ class TestToolSchemaConversion:
         universal = schema.to_universal_schema()
         
         # Test OpenAI conversion
-        openai_client = OpenAIClient(model="gpt-4o-mini", api_key="test")
+        openai_client = OpenAIClient(model="gpt-4.1-nano", api_key="test")
         openai_format = openai_client.convert_schema_to_provider_format(universal)
         
         assert openai_format["type"] == "function"

@@ -15,7 +15,7 @@ class TestOpenAIClient:
     def client(self):
         """Create test client."""
         return OpenAIClient(
-            model="gpt-4o-mini",
+            model="gpt-4.1-nano",
             api_key="test-key",
             timeout=30.0
         )
@@ -23,7 +23,7 @@ class TestOpenAIClient:
     @pytest.mark.asyncio
     async def test_client_initialization(self, client):
         """Test client initialization."""
-        assert client.model == "gpt-4o-mini"
+        assert client.model == "gpt-4.1-nano"
         assert client.api_key == "test-key"
         assert client.timeout == 30.0
         assert client.provider_name == "openai"
@@ -43,14 +43,14 @@ class TestOpenAIClient:
             assert response.usage.prompt_tokens == 10
             assert response.usage.completion_tokens == 20
             assert response.usage.total_tokens == 30
-            assert response.model == "gpt-4o-mini"
+            assert response.model == "gpt-4.1-nano"
             assert response.provider == "openai"
             assert response.finish_reason == "stop"
             
             # Verify API call
             mock_create.assert_called_once()
             call_args = mock_create.call_args
-            assert call_args.kwargs['model'] == "gpt-4o-mini"
+            assert call_args.kwargs['model'] == "gpt-4.1-nano"
             assert len(call_args.kwargs['messages']) == 2
     
     @pytest.mark.asyncio

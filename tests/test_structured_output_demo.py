@@ -75,11 +75,11 @@ async def test_native_structured_output():
         # Create client with new model
         client = LLMClient.create(
             provider="anthropic",
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             api_key=api_key
         )
 
-        print_info("Using model: claude-sonnet-4-5-20250929 (supports native structured outputs)")
+        print_info("Using model: claude-sonnet-4-6 (supports native structured outputs)")
 
         # Define a strict schema
         schema = {
@@ -224,11 +224,11 @@ async def test_streaming_structured_output():
     try:
         client = LLMClient.create(
             provider="anthropic",
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             api_key=api_key
         )
 
-        print_info("Using model: claude-sonnet-4-5-20250929 with streaming")
+        print_info("Using model: claude-sonnet-4-6 with streaming")
 
         schema = {
             "type": "object",
@@ -332,11 +332,11 @@ async def test_strict_tool_use():
 
         client = LLMClient.create(
             provider="anthropic",
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             api_key=api_key
         )
 
-        print_info("Using model: claude-sonnet-4-5-20250929 with strict tool")
+        print_info("Using model: claude-sonnet-4-6 with strict tool")
         print_info("Testing type-safe function calling...")
 
         response = await client.achat(
@@ -401,11 +401,11 @@ async def test_complex_nested_schema():
     try:
         client = LLMClient.create(
             provider="anthropic",
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             api_key=api_key
         )
 
-        print_info("Using model: claude-sonnet-4-5-20250929")
+        print_info("Using model: claude-sonnet-4-6")
 
         # Complex nested schema
         schema = {

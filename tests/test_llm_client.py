@@ -16,9 +16,9 @@ class TestLLMClient:
         with patch('miiflow_agent.utils.env.get_api_key') as mock_get_key:
             mock_get_key.return_value = "test-key"
             
-            client = LLMClient.create("openai", "gpt-4o-mini")
+            client = LLMClient.create("openai", "gpt-4.1-nano")
             
-            assert client.client.model == "gpt-4o-mini"
+            assert client.client.model == "gpt-4.1-nano"
             assert client.client.provider_name == "openai"
     
     @pytest.mark.asyncio
@@ -35,7 +35,7 @@ class TestLLMClient:
     @pytest.mark.asyncio
     async def test_create_with_explicit_api_key(self):
         """Test creating client with explicit API key."""
-        client = LLMClient.create("openai", "gpt-4o-mini", api_key="explicit-key")
+        client = LLMClient.create("openai", "gpt-4.1-nano", api_key="explicit-key")
         
         assert client.client.api_key == "explicit-key"
     
@@ -46,7 +46,7 @@ class TestLLMClient:
             mock_get_key.return_value = None
             
             with pytest.raises(ValueError, match="No API key found"):
-                LLMClient.create("openai", "gpt-4o-mini")
+                LLMClient.create("openai", "gpt-4.1-nano")
     
     @pytest.mark.asyncio
     async def test_create_ollama_no_key_required(self):
@@ -165,7 +165,7 @@ class TestLLMClient:
         """Test core supported providers can be created."""
         # Only test providers that don't require optional dependencies
         providers = [
-            ("openai", "gpt-4o-mini"),
+            ("openai", "gpt-4.1-nano"),
             ("anthropic", "claude-3-haiku-20240307"),
             ("gemini", "gemini-1.5-flash"),
             ("xai", "grok-beta"),

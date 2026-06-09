@@ -25,7 +25,7 @@ async def basic_evaluation_example():
     print("\n=== Basic Agent Evaluation Example ===")
 
     # Create an agent
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
     agent = Agent[dict](
         client=client,
         system_prompt="You are a helpful assistant that provides accurate information."
@@ -90,7 +90,7 @@ async def custom_evaluation_example():
     print("\n=== Custom Evaluation Metrics Example ===")
 
     # Create an agent
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
     agent = Agent[dict](
         client=client,
         system_prompt="You are a concise assistant. Keep responses under 100 words."
@@ -203,7 +203,7 @@ async def evaluation_with_tools_example():
         return f"The weather in {location} is sunny and 75°F"
 
     # Create agent with tools
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
     agent = Agent[dict](
         client=client,
         system_prompt="You have access to calculator and weather tools. Use them when appropriate."

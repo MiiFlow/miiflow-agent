@@ -32,7 +32,7 @@ class BedrockClient(AnthropicClient):
         Initialize Bedrock client with AWS credentials.
 
         Args:
-            model: Bedrock inference profile ID (e.g., "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+            model: Bedrock inference profile ID (e.g., "us.anthropic.claude-sonnet-4-6-v1:0")
                    IMPORTANT: Must use inference profile IDs (with region prefix like "us.")
                    for on-demand throughput, not base model IDs.
             aws_access_key_id: AWS Access Key ID
@@ -62,7 +62,7 @@ class BedrockClient(AnthropicClient):
         """
         Check if the current Bedrock model supports native structured outputs.
 
-        Bedrock model IDs follow pattern: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        Bedrock model IDs follow pattern: "us.anthropic.claude-sonnet-4-6-v1:0"
         We check the base model name against supported models.
         """
         return supports_structured_outputs(self.model)

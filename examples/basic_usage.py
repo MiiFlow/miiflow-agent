@@ -6,14 +6,14 @@ from miiflow_agent.core import Message
 
 
 def sync_chat():
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
     response = client.chat([Message.user("What is Python?")])
     print(f"Response: {response.message.content[:80]}...")
     print(f"Tokens: {response.usage.total_tokens}\n")
 
 
 def sync_streaming():
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
     print("Streaming: ", end="")
     for chunk in client.stream_chat([Message.user("Count 1 to 5")]):
         print(chunk.delta, end="", flush=True)
@@ -21,13 +21,13 @@ def sync_streaming():
 
 
 async def async_chat():
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
     response = await client.achat([Message.user("What is async/await?")])
     print(f"Async response: {response.message.content[:80]}...\n")
 
 
 async def async_streaming():
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
     print("Async streaming: ", end="")
     async for chunk in client.astream_chat([Message.user("Say hello")]):
         print(chunk.delta, end="", flush=True)
@@ -35,7 +35,7 @@ async def async_streaming():
 
 
 def conversation_history():
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
     messages = [
         Message.user("My name is Alice"),
         Message.assistant("Hello Alice!"),

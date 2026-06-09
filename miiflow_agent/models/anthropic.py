@@ -5,10 +5,28 @@ from typing import Dict
 from .base import ModelConfig, ParameterConfig, ParameterType
 
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
+    "claude-fable-5": ModelConfig(
+        model_identifier="claude-fable-5",
+        name="claude-fable-5",
+        description="Anthropic's most capable model (released June 9, 2026). Built for demanding reasoning and long-horizon agentic work. Features adaptive thinking, structured outputs, and 1M context window.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=1000000,
+        maximum_output_tokens=128000,
+        token_param_name="max_tokens",
+        supports_temperature=False,
+        input_cost_hint=10.0,
+        output_cost_hint=50.0,
+    ),
     "claude-opus-4.8": ModelConfig(
         model_identifier="claude-opus-4-8",
         name="claude-opus-4.8",
-        description="Anthropic's most capable model (released May 28, 2026). Successor to Opus 4.7 with improved reasoning, coding, and agentic performance. Features adaptive thinking, structured outputs, and fast mode. 1M context window.",
+        description="Powerful reasoning and coding model (released May 28, 2026). Improved reasoning, coding, and agentic performance over Opus 4.7. Features adaptive thinking, structured outputs, and fast mode. 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -44,7 +62,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.6": ModelConfig(
         model_identifier="claude-opus-4-6",
         name="claude-opus-4.6",
-        description="Legacy — succeeded by Claude Opus 4.7 (April 2026). Strong coding and reasoning with 1M context window.",
+        description="Legacy — succeeded by Claude Opus 4.7 (April 2026). Supports adaptive thinking and 128K max output tokens. 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -76,60 +94,6 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=True,
         input_cost_hint=3.0,
         output_cost_hint=15.0,
-    ),
-    "claude-opus-4.5": ModelConfig(
-        model_identifier="claude-opus-4-5-20251101",
-        name="claude-opus-4.5",
-        description="Legacy model for specialized complex tasks. Succeeded by Claude Opus 4.6.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=True,
-        reasoning=True,
-        maximum_context_tokens=200000,
-        maximum_output_tokens=64000,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=5.0,
-        output_cost_hint=25.0,
-    ),
-    "claude-sonnet-4.5": ModelConfig(
-        model_identifier="claude-sonnet-4-5-20250929",
-        name="claude-sonnet-4.5",
-        description="Legacy model for complex agents and coding. Succeeded by Claude Sonnet 4.6.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=True,
-        reasoning=True,
-        maximum_context_tokens=200000,
-        maximum_output_tokens=64000,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=3.0,
-        output_cost_hint=15.0,
-    ),
-    "claude-opus-4.1": ModelConfig(
-        model_identifier="claude-opus-4-1-20250805",
-        name="claude-opus-4.1",
-        description="Legacy Opus model with strong coding and agentic performance. Succeeded by Opus 4.5+. 200K context window. Higher cost than newer Opus models.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=True,
-        reasoning=True,
-        maximum_context_tokens=200000,
-        maximum_output_tokens=32000,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=15.0,
-        output_cost_hint=75.0,
     ),
     "claude-haiku-4.5": ModelConfig(
         model_identifier="claude-haiku-4-5-20251001",
@@ -171,13 +135,11 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
         default_value=4096,
         min_value=1,
         max_value={
+            "claude-fable-5": 128000,
             "claude-opus-4.8": 128000,
             "claude-opus-4.7": 128000,
             "claude-opus-4.6": 128000,
             "claude-sonnet-4.6": 64000,
-            "claude-opus-4.5": 64000,
-            "claude-sonnet-4.5": 64000,
-            "claude-opus-4.1": 32000,
             "claude-haiku-4.5": 64000,
             "default": 8192,
         },
@@ -186,7 +148,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
 ]
 
 
-_NO_EXTENDED_THINKING = {"claude-opus-4.8", "claude-opus-4.7"}
+_NO_EXTENDED_THINKING = {"claude-fable-5", "claude-opus-4.8", "claude-opus-4.7"}
 
 
 def _get_thinking_models() -> list[str]:
@@ -235,7 +197,7 @@ def supports_structured_outputs(model: str) -> bool:
         if config.model_identifier == model:
             return config.supports_structured_outputs
 
-    # Check partial match (for versioned models like claude-sonnet-4-5-20250929)
+    # Check partial match (for versioned models like claude-sonnet-4-6)
     for name, config in ANTHROPIC_MODELS.items():
         if name in model or config.model_identifier in model:
             return config.supports_structured_outputs

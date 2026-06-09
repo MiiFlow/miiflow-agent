@@ -21,7 +21,7 @@ from miiflow_agent.providers.openai_client import OpenAIClient
 
 @pytest.fixture
 def anthropic_client():
-    return AnthropicClient(model="claude-opus-4-6", api_key="test-key", timeout=30.0)
+    return AnthropicClient(model="claude-opus-4-7", api_key="test-key", timeout=30.0)
 
 
 class TestAnthropicToolResultMultimodal:

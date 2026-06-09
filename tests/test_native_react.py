@@ -53,7 +53,7 @@ async def test_native_react():
     logger.info("=" * 80)
 
     # Create LLM client (OpenAI)
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-4.1-nano")
 
     # Create agent
     agent = Agent(

@@ -41,7 +41,7 @@ from miiflow_agent.core.tools import tool
 PROVIDERS = {
     "openai": {
         "provider": "openai",
-        "model": "gpt-4o-mini",
+        "model": "gpt-4.1-nano",
         "env_var": "OPENAI_API_KEY",
     },
     "gemini": {
@@ -51,7 +51,7 @@ PROVIDERS = {
     },
     "anthropic": {
         "provider": "anthropic",
-        "model": "claude-sonnet-4-5-20250929",
+        "model": "claude-sonnet-4-6",
         "env_var": "ANTHROPIC_API_KEY",
     },
 }

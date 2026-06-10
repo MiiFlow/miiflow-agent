@@ -34,6 +34,18 @@ from .core.message import ContentBlock, ImageBlock, Message, MessageRole, TextBl
 # Agent system
 from .core.agent import Agent, AgentType, RunContext, RunResult
 
+# Durable run checkpoint (pause/resume + multi-agent context spine)
+from .core.checkpoint import (
+    Checkpoint,
+    EstablishedFact,
+    PendingApprovedAction,
+    PendingInterrupt,
+    ResumeCommand,
+    DispatchLedgerEntry,
+    AgentFrame,
+    stable_json_hash,
+)
+
 # Tool system
 from .core.tools import tool, FunctionTool, ToolRegistry
 
@@ -108,6 +120,15 @@ __all__ = [
     "AgentType",
     "RunContext",
     "RunResult",
+    # Durable run checkpoint
+    "Checkpoint",
+    "EstablishedFact",
+    "PendingInterrupt",
+    "PendingApprovedAction",
+    "ResumeCommand",
+    "DispatchLedgerEntry",
+    "AgentFrame",
+    "stable_json_hash",
     # Tool system
     "tool",
     "FunctionTool",

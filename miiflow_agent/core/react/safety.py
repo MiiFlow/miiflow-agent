@@ -176,6 +176,44 @@ class RepeatedActionsCondition(StopCondition):
         return f"Repeated same action {self.max_repeats} times"
 
 
+# Tools that are legitimately called many times in one turn and must NOT trip the
+# excessive-same-tool guard. ``dispatch_assistant`` has its own per-turn DispatchCounter.
+_EXCESSIVE_TOOL_EXEMPT = frozenset({"dispatch_assistant"})
+
+
+@dataclass
+class ExcessiveSameToolCondition(StopCondition):
+    """Stop when ONE tool name is called too many times in a single turn, regardless of
+    its arguments.
+
+    ``RepeatedActionsCondition`` only catches IDENTICAL ``(tool, args)`` repeats. A model
+    that *flails* — e.g. calling ``search_memory`` ~20× with slightly different queries,
+    all fruitless — slips past it, burns the turn, and then tends to echo the last (empty)
+    tool result as its final answer. This caps any single non-exempt tool's per-turn call
+    count so the flail is halted early instead of running away.
+    """
+
+    max_same_tool: int = 8
+
+    def should_stop(self, steps: List[ReActStep], current_step: int) -> bool:
+        counts: Dict[str, int] = {}
+        for s in steps:
+            if not s.is_action_step or not s.action:
+                continue
+            if s.action in _EXCESSIVE_TOOL_EXEMPT:
+                continue
+            counts[s.action] = counts.get(s.action, 0) + 1
+            if counts[s.action] >= self.max_same_tool:
+                return True
+        return False
+
+    def get_stop_reason(self) -> StopReason:
+        return StopReason.REPEATED_ACTIONS
+
+    def get_description(self) -> str:
+        return f"Called one tool {self.max_same_tool}+ times in a single turn"
+
+
 @dataclass
 class ErrorThresholdCondition(StopCondition):
     """Stop when too many consecutive errors occur."""
@@ -449,6 +487,7 @@ class SafetyManager:
         max_budget: Optional[float] = None,
         max_time_seconds: Optional[float] = None,
         max_repeated_actions: int = 3,
+        max_same_tool_calls: int = 8,
         max_consecutive_errors: int = 3,
         max_repeated_tool_errors: int = 3,
         max_thinking_only_steps: int = 3,
@@ -469,6 +508,9 @@ class SafetyManager:
 
         if max_repeated_actions > 0:
             self.conditions.append(RepeatedActionsCondition(max_repeated_actions))
+
+        if max_same_tool_calls > 0:
+            self.conditions.append(ExcessiveSameToolCondition(max_same_tool_calls))
 
         if max_consecutive_errors > 0:
             self.conditions.append(ErrorThresholdCondition(max_consecutive_errors))

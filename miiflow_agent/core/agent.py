@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 from .client import LLMClient
+from .checkpoint import Checkpoint, ResumeCommand
 from .exceptions import ErrorType, MiiflowLLMError
 from .message import Message, MessageRole
 from .tools import FunctionTool, ToolRegistry
@@ -54,6 +55,41 @@ def _content_text(content: Any) -> str:
                 parts.append(text)
         return " ".join(parts)
     return ""
+
+
+def _recent_tool_call_names(messages: Any, max_assistant_turns: int = 1) -> set:
+    """Tool names the model called in its most recent assistant turn(s).
+
+    Used to SEED a fresh ToolSearch session so tools the conversation was
+    already using stay visible across a turn boundary. Without this, a resumed
+    run (e.g. after the user approves a paused tool, where the reconstructed
+    history tells the model "call X again to execute it") opens an empty
+    discovery session that hides X — so the model can't call the very tool it
+    was told to, and falls back to whatever IS visible (often re-asking a
+    clarification). Seeding preserves continuity; the schema cap still bounds
+    the total, keeping the most-recent tools.
+    """
+    names: set = set()
+    if not messages:
+        return names
+    seen = 0
+    for msg in reversed(list(messages)):
+        if getattr(msg, "role", None) != MessageRole.ASSISTANT:
+            continue
+        for tc in getattr(msg, "tool_calls", None) or []:
+            name = None
+            if isinstance(tc, dict):
+                fn = tc.get("function")
+                name = (fn or {}).get("name") if isinstance(fn, dict) else tc.get("name")
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", None) or getattr(tc, "name", None)
+            if name:
+                names.add(name)
+        seen += 1
+        if seen >= max_assistant_turns:
+            break
+    return names
 
 Deps = TypeVar("Deps")
 Result = TypeVar("Result")
@@ -167,6 +203,8 @@ class RunContext(Generic[Deps]):
     metadata: Dict[str, Any] = field(default_factory=dict)
     cancel_event: Optional[asyncio.Event] = None
     run_state: RunState = field(default_factory=RunState)
+    checkpoint: Checkpoint = field(default_factory=Checkpoint)
+    resume: Optional[ResumeCommand] = None
 
     @property
     def is_cancelled(self) -> bool:
@@ -447,7 +485,9 @@ class Agent(Generic[Deps, Result]):
         # Open a per-run ToolSearch session so the registry can hide most tool
         # schemas behind the tool_search meta-tool when the catalog is large.
         # This is a no-op for small registries (see should_use_tool_search()).
-        with tool_search_session():
+        # Seed with the tools the model used in its last turn so a resumed run
+        # (e.g. post-approval "call X again") can still see X.
+        with tool_search_session(initial=_recent_tool_call_names(message_history)):
             return await self._run_inner(user_prompt, deps=deps, message_history=message_history)
 
     async def _run_inner(
@@ -773,7 +813,15 @@ class Agent(Generic[Deps, Result]):
         # generator's body. The contextvar token is set and reset within the
         # same task frame that drives the generator, which keeps it safe under
         # ASGI middlewares that may rebind generator iteration to a child task.
-        _session_cm = tool_search_session() if _own_session else _NullCM()
+        # Seed the discovery session with the tools used in the last assistant
+        # turn so a resumed run (post-approval "call X again", or any continued
+        # turn) keeps those tools visible instead of hiding them behind
+        # tool_search. The schema cap still bounds the total.
+        _session_cm = (
+            tool_search_session(initial=_recent_tool_call_names(context.messages))
+            if _own_session
+            else _NullCM()
+        )
         with _session_cm:
             try:
                 # SINGLE_HOP keeps its own one-shot LLM call (preserves

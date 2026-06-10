@@ -65,8 +65,21 @@ class AgentToolExecutor:
 
         # Emit PRE_TOOL_USE callback - allows blocking tool execution (e.g. for approval)
         # A callback may also REPLACE the inputs (e.g. user approved-with-edits);
-        # use whatever it returns for the actual execution.
-        inputs = await self._emit_pre_tool_use_callback(tool_name, inputs)
+        # use whatever it returns for the actual execution. A validation
+        # rejection comes back as a FAILED result (model fixes and retries) —
+        # never as an approval pause.
+        from .exceptions import ToolInputValidationRejected
+
+        try:
+            inputs = await self._emit_pre_tool_use_callback(tool_name, inputs)
+        except ToolInputValidationRejected as ver:
+            return ToolResult(
+                name=tool_name,
+                input=inputs,
+                output=None,
+                error=str(ver.reason),
+                success=False,
+            )
 
         start_time = time.time()
 
@@ -339,6 +352,18 @@ class AgentToolExecutor:
         except Exception as e:
             logger.warning(f"Failed to emit PRE_TOOL_USE callback: {e}")
             return inputs
+
+        # Input validation outranks the approval gate: a call that would
+        # bounce off the API must come back as a fixable tool failure, not
+        # spend a user approval modal on inputs that can't succeed.
+        if event.validation_error:
+            from .exceptions import ToolInputValidationRejected
+
+            raise ToolInputValidationRejected(
+                tool_name=tool_name,
+                tool_inputs=inputs,
+                reason=event.validation_error,
+            )
 
         if event.blocked:
             from .exceptions import ToolApprovalRequired

@@ -56,6 +56,13 @@ class ExecutionState:
     # repeated issues" fallback answer and has nothing to act on.
     failure_metadata: Optional[Dict[str, Any]] = None
 
+    # Interrupt ids recorded by THIS run (_record_interrupt). When a second
+    # interrupt arrives in the same run (parallel dispatch_assistant batch),
+    # the previously-active one is demoted into the checkpoint's
+    # interrupt_queue instead of being silently dropped — but only if it was
+    # raised by this run, so stale actives from old turns aren't resurrected.
+    raised_interrupt_ids: List[str] = field(default_factory=list)
+
     def increment_step(self) -> int:
         """Increment and return the new step number."""
         self.current_step += 1

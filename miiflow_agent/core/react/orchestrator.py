@@ -6,6 +6,8 @@ import time
 from typing import Any, Dict, List, Optional
 
 from ..agent import RunContext
+from ..checkpoint import DispatchLedgerEntry, PendingInterrupt, stable_json_hash
+from ..interrupt import mint_interrupt_id
 from ..message import Message, MessageRole
 from .enums import ReActEventType, StopReason
 from .exceptions import PlanApprovalRequired, ToolApprovalRequired
@@ -43,8 +45,12 @@ def _summarize_tool_call(tc: Any) -> str:
         args = fn.get("arguments")
     else:
         tc_id = getattr(tc, "id", None)
-        name = getattr(getattr(tc, "function", None), "name", None) or getattr(tc, "name", None)
-        args = getattr(getattr(tc, "function", None), "arguments", None) or getattr(tc, "arguments", None)
+        name = getattr(getattr(tc, "function", None), "name", None) or getattr(
+            tc, "name", None
+        )
+        args = getattr(getattr(tc, "function", None), "arguments", None) or getattr(
+            tc, "arguments", None
+        )
     return f"{name}(id={tc_id}, args={_preview(args, 160)})"
 
 
@@ -72,7 +78,11 @@ def _summarize_messages_for_trace(messages: List[Message]) -> str:
         tool_calls = getattr(msg, "tool_calls", None) or []
         tc_preview = ""
         if tool_calls:
-            tc_preview = " tool_calls=[" + ", ".join(_summarize_tool_call(tc) for tc in tool_calls) + "]"
+            tc_preview = (
+                " tool_calls=["
+                + ", ".join(_summarize_tool_call(tc) for tc in tool_calls)
+                + "]"
+            )
         lines.append(f"  [{i}] {tag:<18}: {content_preview}{tc_preview}")
     return "\n".join(lines)
 
@@ -134,6 +144,227 @@ def _sanitize_error_message(error_msg: str) -> str:
         result = result[:500] + "..."
 
     return result
+
+
+def _coerce_dict_payload(value: Any) -> Optional[Dict[str, Any]]:
+    """Best-effort parse of structured tool output."""
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return None
+
+    stripped = value.strip()
+    if not stripped or not stripped.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _approved_action_failure_payload(
+    *,
+    success: bool,
+    observation: Any,
+    output: Any = None,
+    error: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Return structured failure data when an approved action did not complete."""
+    payload = _coerce_dict_payload(output) or _coerce_dict_payload(observation)
+    if payload is not None:
+        status = str(payload.get("status") or "").lower()
+        if status in {"failed", "failure", "error"} or payload.get("success") is False:
+            return dict(payload)
+
+    if not success:
+        failure: Dict[str, Any] = {}
+        if payload is not None:
+            failure.update(payload)
+        failure["error"] = str(error or observation or "Unknown error")
+        return failure
+
+    if isinstance(observation, str) and observation.startswith(
+        ("Tool execution failed:", "Tool execution error:")
+    ):
+        return {"error": observation}
+    return None
+
+
+def _approved_action_failure_guidance(
+    *,
+    tool_name: str,
+    failure_payload: Dict[str, Any],
+) -> str:
+    """Steering note for the model's reporting turn after an approved action failed.
+
+    Raw failure payloads (proto field paths, resource-name JSON) must never reach
+    the user verbatim — the model translates them. Auto-retry safety does NOT
+    depend on halting the run: the approval gate's one-shot pass is spent, so any
+    mutation the model proposes next pauses for a fresh user approval.
+    """
+    lines = [
+        f"SYSTEM NOTE: the user-approved `{tool_name}` action FAILED. The tool "
+        "result above contains the structured details (failed step, error, any "
+        "partially created resources).",
+        "",
+        "Do not re-run it as-is. Report the outcome to the user in plain language:",
+        "- Say what succeeded and what failed. If resources were partially "
+        "created, mention them in plain terms and note they can be reused on a "
+        "retry — do not paste raw resource names or JSON.",
+        "- Translate the error into its plain-language cause. Never show raw "
+        "API field paths or error codes.",
+        "- Recommend the concrete fix.",
+        "If you can correct the inputs yourself, you may propose the corrected "
+        "action now — it will pause for a fresh user approval. Otherwise, ask "
+        "the user how to proceed.",
+    ]
+    failed_step = failure_payload.get("failed_step")
+    if failed_step:
+        lines.insert(
+            1, f"(Failed step: `{failed_step}`.)"
+        )
+    return "\n".join(lines)
+
+
+def _approved_action_success_guidance(tool_name: str) -> str:
+    """Steering note after a deterministic approved-action execution SUCCEEDED.
+
+    Without this, the model sees only a bare success tool_result next to the
+    pause turn's frozen "waiting for user approval" dispatch observation — and
+    has been observed concluding the work is still unconfirmed, re-dispatching
+    an identical mutation (and popping ANOTHER approval modal). Success must be
+    as explicit as failure.
+    """
+    return (
+        f"SYSTEM NOTE: the user APPROVED the pending `{tool_name}` action and "
+        "it has ALREADY been executed — its result is in the tool result "
+        "above. The task step it implements is DONE. Do not run it again, do "
+        "not re-dispatch it, and do not re-verify it with more tool calls. "
+        "Report the outcome to the user in plain language now (include the "
+        "key created/changed entities), and only continue with further work "
+        "if the original request clearly requires more."
+    )
+
+
+def _resolve_stale_dispatch_placeholder(
+    messages: List[Message],
+    *,
+    parent_tool_call_id: Optional[str],
+    tool_name: str,
+    success: bool,
+) -> None:
+    """Rewrite the pause turn's frozen dispatch observation after resume.
+
+    When a child's approval pauses the run, the parent's ``dispatch_assistant``
+    tool_result is persisted as "Tool execution paused - waiting for user
+    approval." and reconstructed verbatim on every later turn — permanently
+    claiming the dispatch is still waiting even after the approved action ran.
+    That stale claim directly contradicts the real result and has misled the
+    model into re-dispatching. Resolve it in place once the outcome is known.
+    """
+    if not parent_tool_call_id:
+        return
+    for msg in reversed(messages):
+        if (
+            getattr(msg, "role", None) == MessageRole.TOOL
+            and getattr(msg, "tool_call_id", None) == parent_tool_call_id
+        ):
+            outcome = "executed" if success else "executed but FAILED"
+            msg.content = (
+                f"This dispatch paused for user approval of `{tool_name}`; the "
+                f"user approved and the action has since been {outcome} — see "
+                f"the `{tool_name}` tool result that follows. This dispatch is "
+                "complete; do not repeat it."
+            )
+            return
+
+
+def _recover_approval_action_route(
+    action: Dict[str, Any],
+    checkpoint: Any,
+) -> Dict[str, Any]:
+    """Enrich legacy approval descriptors with checkpoint interrupt routing."""
+    if not checkpoint or action.get("raised_by_path"):
+        return action
+
+    tool_call_id = action.get("tool_call_id")
+    interrupt_id = action.get("interrupt_id")
+    candidates = []
+    try:
+        active = checkpoint.active_interrupt()
+        if active is not None:
+            candidates.append(active)
+    except Exception:
+        pass
+
+    interrupts = getattr(checkpoint, "interrupts", {}) or {}
+    if interrupt_id and interrupt_id in interrupts:
+        candidates.append(interrupts[interrupt_id])
+    candidates.extend(interrupts.values())
+
+    seen = set()
+    for interrupt in candidates:
+        iid = getattr(interrupt, "interrupt_id", None)
+        if not iid or iid in seen:
+            continue
+        seen.add(iid)
+        if getattr(interrupt, "kind", None) != "tool_approval":
+            continue
+        if interrupt_id and iid != interrupt_id:
+            continue
+        if tool_call_id and getattr(interrupt, "tool_call_id", None) != tool_call_id:
+            continue
+
+        payload = dict(getattr(interrupt, "payload", None) or {})
+        recovered = dict(action)
+        recovered.setdefault("tool_name", payload.get("tool_name"))
+        recovered.setdefault("tool_call_id", getattr(interrupt, "tool_call_id", None))
+        recovered.setdefault("interrupt_id", iid)
+        recovered.setdefault("inputs", payload.get("tool_inputs") or {})
+        recovered["raised_by_path"] = list(
+            getattr(interrupt, "raised_by_path", None) or []
+        )
+        if payload.get("parent_tool_call_id") is not None:
+            recovered.setdefault(
+                "parent_tool_call_id", payload.get("parent_tool_call_id")
+            )
+        return recovered
+
+    return action
+
+
+def _consume_approval_checkpoint_state(
+    checkpoint: Any,
+    *,
+    interrupt_id: Optional[str],
+    raised_by_path: Optional[List[str]],
+) -> None:
+    """Clear one-shot approval resume state after the approved action is attempted."""
+    if checkpoint is None:
+        return
+    try:
+        checkpoint.pending_approved_action = None
+        checkpoint.resume = None
+        if raised_by_path:
+            (getattr(checkpoint, "agent_frames", {}) or {}).pop(
+                "/".join(raised_by_path), None
+            )
+        if interrupt_id:
+            if getattr(
+                checkpoint, "active_interrupt_id", None
+            ) == interrupt_id and hasattr(checkpoint, "clear_active_interrupt"):
+                checkpoint.clear_active_interrupt()
+            else:
+                (getattr(checkpoint, "interrupts", {}) or {}).pop(interrupt_id, None)
+                queue = getattr(checkpoint, "interrupt_queue", None)
+                if isinstance(queue, list):
+                    checkpoint.interrupt_queue = [i for i in queue if i != interrupt_id]
+                pending = getattr(checkpoint, "pending_interrupt", None)
+                if getattr(pending, "interrupt_id", None) == interrupt_id:
+                    checkpoint.pending_interrupt = None
+    except Exception:
+        logger.debug("Failed to clear approval checkpoint state", exc_info=True)
 
 
 def _preparse_tool_args_string(
@@ -290,7 +521,9 @@ def _truncate_input(inputs: Dict[str, Any], limit: int) -> Dict[str, Any]:
     truncated: Dict[str, Any] = {}
     for key, value in inputs.items():
         if isinstance(value, str) and len(value) > limit:
-            truncated[key] = value[:limit] + f"... [truncated {len(value) - limit} chars]"
+            truncated[key] = (
+                value[:limit] + f"... [truncated {len(value) - limit} chars]"
+            )
         else:
             truncated[key] = value
     return truncated
@@ -327,7 +560,7 @@ class ReActOrchestrator:
         # Extract max_steps from safety manager (first MaxStepsCondition)
         max_steps = 25
         for cond in self.safety_manager.conditions:
-            if hasattr(cond, 'max_steps'):
+            if hasattr(cond, "max_steps"):
                 max_steps = cond.max_steps
                 break
         progress_tracker = ProgressTracker(max_steps=max_steps)
@@ -375,15 +608,33 @@ class ReActOrchestrator:
                 # (the dispatch closures, batch_executor, memory_fs_tools)
                 # has been switched. New code should NOT read these keys.
                 if deps_is_dict:
-                    context.deps["dispatch_counter"] = context.run_state.dispatch_counter
+                    context.deps["dispatch_counter"] = (
+                        context.run_state.dispatch_counter
+                    )
                     context.deps["event_bus"] = self.event_bus
+
+            # Deterministic approval resume: if the user just approved a tool
+            # call, EXECUTE it here (control flow owns continuation) rather than
+            # asking the model to re-emit it. Runs before the first LLM call so
+            # the model sees the real result and only reports it. A REJECTED
+            # approval is acknowledged deterministically too — the loop below
+            # never runs, so the model cannot re-request the declined action.
+            validated_resume = self._apply_resume_command(context)
+            await self._acknowledge_rejected_approval(
+                validated_resume, context, execution_state
+            )
+            await self._execute_pending_approved_action(context, execution_state)
 
             # Apply context compression before starting if available
             if self.context_compressor:
-                result = await self.context_compressor.compress_if_needed(context.messages)
+                result = await self.context_compressor.compress_if_needed(
+                    context.messages
+                )
                 if result.was_compressed:
                     context.messages = result.messages
-                    logger.info(f"Pre-execution context compression: {result.original_count} -> {result.compressed_count} messages")
+                    logger.info(
+                        f"Pre-execution context compression: {result.original_count} -> {result.compressed_count} messages"
+                    )
 
             while execution_state.is_running:
                 execution_state.current_step += 1
@@ -391,7 +642,9 @@ class ReActOrchestrator:
                 # Check for user cancellation
                 if context.is_cancelled:
                     logger.info("Execution cancelled by user")
-                    execution_state.final_answer = self.full_response if hasattr(self, 'full_response') else ""
+                    execution_state.final_answer = (
+                        self.full_response if hasattr(self, "full_response") else ""
+                    )
                     break
 
                 # If recovery just excluded a tool, give the LLM one turn to
@@ -423,11 +676,16 @@ class ReActOrchestrator:
                 # recovery manager (which knows how to compact) gets a chance
                 # before we abort the whole run.
                 try:
-                    step = await self._execute_reasoning_step_native(context, execution_state)
+                    step = await self._execute_reasoning_step_native(
+                        context, execution_state
+                    )
                 except Exception as _llm_err:
                     from .recovery import is_context_overflow_error
 
-                    if not is_context_overflow_error(_llm_err) or not self.recovery_manager:
+                    if (
+                        not is_context_overflow_error(_llm_err)
+                        or not self.recovery_manager
+                    ):
                         raise
                     logger.warning(
                         "LLM call hit context-overflow error; attempting compaction recovery: %s",
@@ -461,7 +719,9 @@ class ReActOrchestrator:
                 # Update progress tracker and emit progress event
                 progress_tracker.record_step(step)
                 await self.event_bus.publish(
-                    EventFactory.progress(execution_state.current_step, progress_tracker.snapshot())
+                    EventFactory.progress(
+                        execution_state.current_step, progress_tracker.snapshot()
+                    )
                 )
 
                 # Check if clarification was requested during this step
@@ -506,18 +766,33 @@ class ReActOrchestrator:
                         "[ORCH] step=%d recovery strategy=%s attempt=%s continue=%s "
                         "excluded_tools=%s guidance=%s",
                         execution_state.current_step,
-                        getattr(recovery_action.strategy_used, "value", recovery_action.strategy_used),
+                        getattr(
+                            recovery_action.strategy_used,
+                            "value",
+                            recovery_action.strategy_used,
+                        ),
                         recovery_action.attempt_number,
                         recovery_action.should_continue,
-                        sorted(recovery_action.excluded_tools) if recovery_action.excluded_tools else None,
-                        _preview(recovery_action.guidance_message, 240) if recovery_action.guidance_message else None,
+                        (
+                            sorted(recovery_action.excluded_tools)
+                            if recovery_action.excluded_tools
+                            else None
+                        ),
+                        (
+                            _preview(recovery_action.guidance_message, 240)
+                            if recovery_action.guidance_message
+                            else None
+                        ),
                     )
                     if not recovery_action.should_continue:
                         logger.warning("Recovery exhausted, stopping execution")
                         break
                     if recovery_action.guidance_message:
                         context.messages.append(
-                            Message(role=MessageRole.USER, content=recovery_action.guidance_message)
+                            Message(
+                                role=MessageRole.USER,
+                                content=recovery_action.guidance_message,
+                            )
                         )
                     if recovery_action.excluded_tools:
                         if self.tool_filter:
@@ -555,9 +830,13 @@ class ReActOrchestrator:
         # Check if there's at least a user message in context
         if not query or not query.strip():
             # Allow empty query if there's already a user message in context
-            has_user_message = any(msg.role == MessageRole.USER for msg in (context.messages or []))
+            has_user_message = any(
+                msg.role == MessageRole.USER for msg in (context.messages or [])
+            )
             if not has_user_message:
-                raise ValueError("Query cannot be empty when no user message exists in context")
+                raise ValueError(
+                    "Query cannot be empty when no user message exists in context"
+                )
 
         if not hasattr(context, "messages"):
             raise ValueError("Context must have a messages attribute")
@@ -606,7 +885,9 @@ class ReActOrchestrator:
 
     async def _should_stop(self, state: "ExecutionState") -> bool:
         """Check safety conditions."""
-        stop_condition = self.safety_manager.should_stop(state.steps, state.current_step)
+        stop_condition = self.safety_manager.should_stop(
+            state.steps, state.current_step
+        )
         if stop_condition:
             # Log which condition fired — invaluable when an
             # unexpected stop happens in production. The stop_reason
@@ -641,6 +922,715 @@ class ReActOrchestrator:
             return True
         return False
 
+    async def _steer_report_after_approved_action_failure(
+        self,
+        *,
+        context: RunContext,
+        state: "ExecutionState",
+        tool_name: str,
+        tool_call_id: str,
+        observation: str,
+        failure_payload: Dict[str, Any],
+        raised_by_path: Optional[List[str]] = None,
+    ) -> None:
+        """Steer the model to report an approved side-effect failure — never halt.
+
+        The failure observation is already paired into the transcript as the
+        tool_result; the run continues so the model's next turn translates it
+        into plain language and actionable next steps. Halting here (the old
+        behavior) shipped the raw API error to the user verbatim. The model
+        cannot silently retry: the approval gate's one-shot pass is spent, so
+        any corrected mutation it proposes pauses for a fresh user approval.
+        """
+        logger.info(
+            "[ORCH] approved action '%s' failed (id=%s, path=%s, step=%s) — "
+            "steering a reporting turn",
+            tool_name,
+            tool_call_id,
+            raised_by_path,
+            failure_payload.get("failed_step"),
+        )
+        context.messages.append(
+            Message(
+                role=MessageRole.USER,
+                content=_approved_action_failure_guidance(
+                    tool_name=tool_name,
+                    failure_payload=failure_payload,
+                ),
+            )
+        )
+
+    async def _execute_pending_approved_action(
+        self, context: RunContext, state: "ExecutionState"
+    ) -> None:
+        """Deterministically execute a tool call the user just approved.
+
+        FOUNDATIONAL: continuation across an approval pause is CONTROL FLOW, not
+        reasoning. The action was already decided by the model and approved by
+        the user, so the orchestrator completes it here — with the one-shot gate
+        pass and the approved/edited inputs — and surfaces the real result. The
+        model is then invoked only to *report* that result, never to re-emit the
+        call (which it unreliably does: it would re-ask clarification or lose its
+        own proposal).
+
+        Idempotent within the run: the descriptor is consumed up front and the
+        gate's one-shot pass is spent by ``execute_tool``, so the model cannot
+        double-fire the same call. Degrades gracefully: with no descriptor, the
+        reconstructed "approved — call it again" placeholder remains and the
+        legacy model-driven path applies. Execution does NOT depend on tool
+        VISIBILITY (the tool is registered regardless of ToolSearch gating), so
+        this is immune to the schema-cap / pinning concerns entirely.
+        """
+        deps = getattr(context, "deps", None)
+        checkpoint = getattr(context, "checkpoint", None)
+        cp_action = getattr(checkpoint, "pending_approved_action", None)
+        if not isinstance(deps, dict) and cp_action is None:
+            return
+        action = cp_action.to_dict() if hasattr(cp_action, "to_dict") else None
+        if action is None and isinstance(deps, dict):
+            action = deps.get("pending_approved_action")
+        if not action:
+            return
+
+        action = _recover_approval_action_route(action, checkpoint)
+        tool_name = action.get("tool_name")
+        tool_call_id = action.get("tool_call_id")
+        inputs = action.get("inputs") or {}
+        raised_by_path = list(action.get("raised_by_path") or [])
+        interrupt_id = action.get("interrupt_id")
+        if not tool_name or not tool_call_id:
+            return
+
+        # Dispatch safety: execute locally only for tools THIS agent owns. For
+        # child-owned tools, route through an adapter-supplied deterministic
+        # child resumer. Never fall back to "let the LLM re-dispatch"; approved
+        # side effects are control flow.
+        registry = getattr(self.tool_executor, "_tool_registry", None)
+        if registry is not None and hasattr(registry, "_has_registered_tool"):
+            if not registry._has_registered_tool(tool_name):
+                frame = None
+                if checkpoint is not None and raised_by_path:
+                    frame = (getattr(checkpoint, "agent_frames", {}) or {}).get(
+                        "/".join(raised_by_path)
+                    )
+                child_resumer = (
+                    deps.get("child_approval_resumer")
+                    if isinstance(deps, dict)
+                    else None
+                )
+                if frame is not None and child_resumer is not None:
+                    if isinstance(deps, dict):
+                        deps["pending_approved_action"] = None
+                    _consume_approval_checkpoint_state(
+                        checkpoint,
+                        interrupt_id=interrupt_id,
+                        raised_by_path=raised_by_path,
+                    )
+                    raw_output = None
+                    raw_error = None
+                    try:
+                        import inspect
+
+                        outcome = child_resumer(
+                            action=action,
+                            frame=frame,
+                            context=context,
+                        )
+                        if inspect.isawaitable(outcome):
+                            outcome = await outcome
+                        if hasattr(outcome, "success"):
+                            success = bool(getattr(outcome, "success", False))
+                            out = getattr(outcome, "output", None)
+                            err = getattr(outcome, "error", None)
+                            raw_output = out
+                            raw_error = err
+                            observation = (
+                                (
+                                    out
+                                    if isinstance(out, str)
+                                    else json.dumps(out, default=str)
+                                )
+                                if success
+                                else f"Tool execution failed: {_sanitize_error_message(str(err or 'Unknown error'))}"
+                            )
+                        else:
+                            success = bool((outcome or {}).get("success", True))
+                            raw_output = (outcome or {}).get("output")
+                            raw_error = (outcome or {}).get("error")
+                            raw_obs = (outcome or {}).get("observation")
+                            if raw_obs is None:
+                                raw_obs = raw_output
+                            observation = (
+                                raw_obs
+                                if isinstance(raw_obs, str)
+                                else json.dumps(raw_obs, default=str)
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        success = False
+                        raw_error = e
+                        observation = f"Tool execution error: {e}"
+
+                    failure_payload = _approved_action_failure_payload(
+                        success=success,
+                        observation=observation,
+                        output=raw_output,
+                        error=raw_error,
+                    )
+                    if failure_payload is not None:
+                        success = False
+
+                    logger.info(
+                        "[ORCH] deterministic child approval-resume executed '%s' "
+                        "(success=%s, id=%s, path=%s)",
+                        tool_name,
+                        success,
+                        tool_call_id,
+                        raised_by_path,
+                    )
+                    if checkpoint is not None and hasattr(checkpoint, "merge_ledger"):
+                        checkpoint.merge_ledger(
+                            [
+                                DispatchLedgerEntry(
+                                    kind="tool_call",
+                                    success=success,
+                                    observation=observation,
+                                    turn=state.current_step,
+                                    tool_name=tool_name,
+                                    inputs_hash=stable_json_hash(inputs or {}),
+                                    produced_by_path=raised_by_path or ["root"],
+                                )
+                            ]
+                        )
+                    for msg in reversed(context.messages):
+                        if (
+                            getattr(msg, "role", None) == MessageRole.TOOL
+                            and getattr(msg, "tool_call_id", None) == tool_call_id
+                        ):
+                            msg.content = observation
+                            break
+                    else:
+                        context.messages.append(
+                            Message(
+                                role=MessageRole.TOOL,
+                                content=observation,
+                                tool_call_id=tool_call_id,
+                            )
+                        )
+                    try:
+                        await self.event_bus.publish(
+                            EventFactory.observation(
+                                state.current_step,
+                                observation,
+                                tool_name,
+                                success,
+                                tool_call_id=tool_call_id,
+                            )
+                        )
+                    except Exception as evt_err:  # noqa: BLE001
+                        logger.debug(
+                            "Failed to publish child approval-resume observation: %s",
+                            evt_err,
+                        )
+                    _resolve_stale_dispatch_placeholder(
+                        context.messages,
+                        parent_tool_call_id=action.get("parent_tool_call_id"),
+                        tool_name=tool_name,
+                        success=success,
+                    )
+                    if failure_payload is not None:
+                        await self._steer_report_after_approved_action_failure(
+                            context=context,
+                            state=state,
+                            tool_name=tool_name,
+                            tool_call_id=tool_call_id,
+                            observation=observation,
+                            failure_payload=failure_payload,
+                            raised_by_path=raised_by_path or ["root"],
+                        )
+                    else:
+                        context.messages.append(
+                            Message(
+                                role=MessageRole.USER,
+                                content=_approved_action_success_guidance(tool_name),
+                            )
+                        )
+                    return
+
+                message = (
+                    f"Approved tool '{tool_name}' belongs to a child agent, but "
+                    "the saved child approval frame could not be resumed. "
+                    "Stopped without executing the approved action."
+                )
+                logger.error(
+                    "[ORCH] approval-resume fail-closed: tool=%s path=%s frame=%s resumer=%s",
+                    tool_name,
+                    raised_by_path,
+                    bool(frame),
+                    bool(child_resumer),
+                )
+                if isinstance(deps, dict):
+                    deps["pending_approved_action"] = None
+                _consume_approval_checkpoint_state(
+                    checkpoint,
+                    interrupt_id=interrupt_id,
+                    raised_by_path=raised_by_path,
+                )
+                state.is_running = False
+                state.final_answer = message
+                state.failure_metadata = {
+                    "stop_reason": "child_approval_resume_missing",
+                    "last_tool": tool_name,
+                    "description": message,
+                    "raised_by_path": raised_by_path,
+                }
+                try:
+                    await self.event_bus.publish(
+                        EventFactory.final_answer(state.current_step, message)
+                    )
+                except Exception as evt_err:  # noqa: BLE001
+                    logger.debug("Failed to publish fail-closed answer: %s", evt_err)
+                return
+
+        # Consume now (we will execute) so nothing else re-runs it this turn.
+        if isinstance(deps, dict):
+            deps["pending_approved_action"] = None
+        _consume_approval_checkpoint_state(
+            checkpoint,
+            interrupt_id=interrupt_id,
+            raised_by_path=raised_by_path,
+        )
+
+        raw_output = None
+        raw_error = None
+        try:
+            result = await self.tool_executor.execute_tool(
+                tool_name, inputs, context=context
+            )
+            success = getattr(result, "success", True)
+            if not success:
+                raw_error = getattr(result, "error", None)
+                observation = (
+                    "Tool execution failed: "
+                    f"{_sanitize_error_message(str(raw_error or 'Unknown error'))}"
+                )
+            else:
+                out = getattr(result, "output", None)
+                raw_output = out
+                observation = (
+                    out if isinstance(out, str) else json.dumps(out, default=str)
+                )
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 — surface as observation, never crash the run
+            success = False
+            raw_error = e
+            observation = f"Tool execution error: {e}"
+
+        failure_payload = _approved_action_failure_payload(
+            success=success,
+            observation=observation,
+            output=raw_output,
+            error=raw_error,
+        )
+        if failure_payload is not None:
+            success = False
+
+        logger.info(
+            "[ORCH] deterministic approval-resume executed '%s' (success=%s, id=%s)",
+            tool_name,
+            success,
+            tool_call_id,
+        )
+        ReActOrchestrator._record_tool_ledger_entry(
+            self,
+            context,
+            state,
+            tool_name=tool_name,
+            inputs=inputs,
+            observation=observation,
+            success=success,
+        )
+
+        # Pair the result with the approved tool_use: replace the reconstructed
+        # "approved — call it again" placeholder for this tool_call_id, or append
+        # a fresh TOOL message if no placeholder exists (keeps the tool_use/
+        # tool_result pairing valid for the next LLM call).
+        replaced = False
+        for msg in reversed(context.messages):
+            if (
+                getattr(msg, "role", None) == MessageRole.TOOL
+                and getattr(msg, "tool_call_id", None) == tool_call_id
+            ):
+                msg.content = observation
+                replaced = True
+                break
+        if not replaced:
+            context.messages.append(
+                Message(
+                    role=MessageRole.TOOL,
+                    content=observation,
+                    tool_call_id=tool_call_id,
+                )
+            )
+
+        try:
+            await self.event_bus.publish(
+                EventFactory.observation(
+                    state.current_step,
+                    observation,
+                    tool_name,
+                    success,
+                    tool_call_id=tool_call_id,
+                )
+            )
+        except Exception as evt_err:  # noqa: BLE001
+            logger.debug("Failed to publish approval-resume observation: %s", evt_err)
+
+        _resolve_stale_dispatch_placeholder(
+            context.messages,
+            parent_tool_call_id=action.get("parent_tool_call_id"),
+            tool_name=tool_name,
+            success=success,
+        )
+        if failure_payload is not None:
+            await self._steer_report_after_approved_action_failure(
+                context=context,
+                state=state,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                observation=observation,
+                failure_payload=failure_payload,
+                raised_by_path=raised_by_path or None,
+            )
+        else:
+            context.messages.append(
+                Message(
+                    role=MessageRole.USER,
+                    content=_approved_action_success_guidance(tool_name),
+                )
+            )
+
+    def _apply_resume_command(self, context: RunContext) -> Optional[Any]:
+        """Translate an authoritative checkpoint resume into runtime action.
+
+        This is deliberately deterministic and runs before the first LLM call.
+        The adapter may still dual-write legacy ``ctx.deps`` fields during the
+        migration, but checkpoint/resume wins when present.
+
+        Returns the resume command iff it validated against the active
+        interrupt THIS turn — callers must never act on a stale persisted
+        resume from a prior turn. The checkpoint's stored copy is consumed
+        (cleared) on success so it can never replay.
+        """
+        checkpoint = getattr(context, "checkpoint", None)
+        resume = getattr(context, "resume", None) or getattr(checkpoint, "resume", None)
+        if checkpoint is None or resume is None:
+            return None
+
+        interrupt = None
+        if hasattr(checkpoint, "active_interrupt"):
+            interrupt = checkpoint.active_interrupt()
+        if interrupt is None:
+            interrupt = (getattr(checkpoint, "interrupts", {}) or {}).get(
+                resume.interrupt_id
+            )
+        if interrupt is None or interrupt.interrupt_id != resume.interrupt_id:
+            logger.warning(
+                "[ORCH] ignoring resume for unknown interrupt_id=%s",
+                getattr(resume, "interrupt_id", None),
+            )
+            return None
+        if interrupt.kind != resume.kind:
+            logger.warning(
+                "[ORCH] ignoring resume kind mismatch interrupt=%s resume=%s",
+                interrupt.kind,
+                resume.kind,
+            )
+            return None
+
+        if resume.kind == "tool_approval":
+            payload = interrupt.payload or {}
+            tool_name = payload.get("tool_name")
+            tool_call_id = interrupt.tool_call_id
+            if resume.decision == "approved" and tool_name and tool_call_id:
+                approved_inputs = (
+                    resume.value.get("modified_inputs")
+                    or resume.value.get("tool_inputs")
+                    or payload.get("tool_inputs")
+                    or {}
+                )
+                from ..checkpoint import PendingApprovedAction
+
+                action = PendingApprovedAction(
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    inputs=dict(approved_inputs or {}),
+                    interrupt_id=interrupt.interrupt_id,
+                    raised_by_path=list(interrupt.raised_by_path or []),
+                    parent_tool_call_id=payload.get("parent_tool_call_id"),
+                )
+                checkpoint.pending_approved_action = action
+                if isinstance(getattr(context, "deps", None), dict):
+                    context.deps["pending_approved_action"] = action.to_dict()
+            elif resume.decision == "rejected":
+                checkpoint.extra.setdefault("approval_rejections", []).append(
+                    {
+                        "interrupt_id": interrupt.interrupt_id,
+                        "tool_name": payload.get("tool_name"),
+                        "tool_inputs": payload.get("tool_inputs") or {},
+                        "reason": resume.value.get("reason", ""),
+                    }
+                )
+            checkpoint.clear_active_interrupt()
+        elif resume.kind in ("clarification", "plan_approval"):
+            checkpoint.clear_active_interrupt()
+
+        # If clearing promoted a queued interrupt (a second pause raised in the
+        # same batch as the one just answered), flag it so the adapter can
+        # re-surface its UI prompt at the end of this turn — the frontend only
+        # ever rendered the LAST pause of that batch.
+        promoted = checkpoint.active_interrupt()
+        if promoted is not None:
+            checkpoint.extra["resurface_interrupt_id"] = promoted.interrupt_id
+            logger.info(
+                "[ORCH] promoted queued interrupt %s after resume of %s",
+                promoted.interrupt_id,
+                resume.interrupt_id,
+            )
+
+        # Consume: the stored resume answered THIS interrupt. Leaving it on the
+        # checkpoint would make every later turn re-see a stale "rejected"/
+        # "approved" command.
+        checkpoint.resume = None
+        return resume
+
+    async def _acknowledge_rejected_approval(
+        self,
+        resume: Optional[Any],
+        context: RunContext,
+        state: "ExecutionState",
+    ) -> bool:
+        """Deterministically acknowledge a rejected tool approval — no LLM call.
+
+        A decline needs no reasoning: confirm the cancellation and ask what the
+        user wants instead. Handing the turn to the model instead has repeatedly
+        produced re-requests of the rejected action (the standing task in the
+        transcript outweighs any steering text — observed 12× consecutively in
+        the reject harness). Any follow-up arrives as a fresh user message with
+        full tool freedom, so nothing is lost by not invoking the model here.
+        """
+        if (
+            resume is None
+            or getattr(resume, "kind", None) != "tool_approval"
+            or getattr(resume, "decision", None) != "rejected"
+        ):
+            return False
+
+        reason = str((getattr(resume, "value", None) or {}).get("reason") or "").strip()
+        # UI-default placeholder, not user-authored text (set by the approval
+        # modal when the user declines without typing a reason).
+        if reason.lower() in {"", "no reason given", "user declined this change"}:
+            reason = ""
+
+        lines = [
+            "Understood — I've cancelled that proposed change. Nothing was modified."
+        ]
+        if reason:
+            lines.append(f"Noted: {reason}")
+        lines.append(
+            "What would you like to do instead? I can adjust the proposal and "
+            "run it past you again, or we can leave it as is."
+        )
+        message = "\n\n".join(lines)
+
+        logger.info(
+            "[ORCH] deterministic rejection acknowledgement (interrupt_id=%s)",
+            getattr(resume, "interrupt_id", None),
+        )
+        state.final_answer = message
+        state.is_running = False
+        await self.event_bus.publish(
+            EventFactory.final_answer(state.current_step, message)
+        )
+        return True
+
+    async def _record_interrupt(
+        self,
+        context: RunContext,
+        state: "ExecutionState",
+        *,
+        kind: str,
+        payload: Dict[str, Any],
+        tool_call_id: Optional[str] = None,
+        raised_by_path: Optional[List[str]] = None,
+    ) -> PendingInterrupt:
+        """Persist and publish the canonical runtime interrupt.
+
+        Legacy pause paths still emit their specialized events for the current
+        UI, but this typed checkpoint record is the authoritative control-plane
+        state used by deterministic resume.
+        """
+        interrupt_id = payload.get("interrupt_id") or mint_interrupt_id(
+            kind, tool_call_id
+        )
+        interrupt = PendingInterrupt(
+            interrupt_id=interrupt_id,
+            kind=kind,
+            raised_by_path=raised_by_path or ["root"],
+            payload=dict(payload),
+            tool_call_id=tool_call_id,
+        )
+        # Tolerates stand-in states (tests) that predate the field.
+        raised_this_run = getattr(state, "raised_interrupt_ids", None)
+        if raised_this_run is None:
+            raised_this_run = []
+            try:
+                state.raised_interrupt_ids = raised_this_run
+            except AttributeError:
+                pass
+        checkpoint = getattr(context, "checkpoint", None)
+        if checkpoint is not None and hasattr(checkpoint, "set_interrupt"):
+            # Parallel pauses in one run (dispatch_assistant is parallelizable):
+            # the previously-active interrupt must be QUEUED, not dropped, or
+            # the earlier child is stranded forever — it stays in `interrupts`
+            # but nothing ever activates it again. Demote only interrupts this
+            # run raised: a stale active from an old turn keeps today's
+            # replace-and-forget behavior instead of being resurrected.
+            prior_active = getattr(checkpoint, "active_interrupt_id", None)
+            checkpoint.set_interrupt(interrupt)
+            if (
+                prior_active
+                and prior_active != interrupt.interrupt_id
+                and prior_active in raised_this_run
+                and prior_active in (getattr(checkpoint, "interrupts", {}) or {})
+                and prior_active not in (getattr(checkpoint, "interrupt_queue", []) or [])
+            ):
+                checkpoint.interrupt_queue.append(prior_active)
+        raised_this_run.append(interrupt_id)
+        await self.event_bus.publish(
+            EventFactory.interrupt_requested(state.current_step, interrupt)
+        )
+        return interrupt
+
+    async def _handle_tool_approval_marker_result(
+        self,
+        context: RunContext,
+        state: "ExecutionState",
+        result: Any,
+        *,
+        parent_tool_call_id: Optional[str],
+    ) -> bool:
+        """Pause on a child-owned tool approval surfaced as a marker result.
+
+        ``dispatch_assistant`` returns this marker when a sub-agent pauses on a
+        write tool. The parent must persist the CHILD interrupt and stop; it
+        must not throw a new parent-owned ``ToolApprovalRequired`` or ask the
+        model to re-dispatch.
+        """
+        from ..tools.clarification import is_tool_approval_result
+
+        if not is_tool_approval_result(result):
+            return False
+
+        output = result.output if isinstance(result.output, dict) else {}
+        child_tool_call_id = output.get("tool_call_id")
+        subagent_path = output.get("subagent_path") or []
+        raised_by_path = output.get("raised_by_path") or ["root"] + list(subagent_path)
+        payload = {
+            "interrupt_id": output.get("interrupt_id"),
+            "tool_name": output.get("tool_name"),
+            "tool_inputs": output.get("tool_inputs") or {},
+            "tool_description": output.get("tool_description") or "",
+            "tool_schema": output.get("tool_schema") or {},
+            "reason": output.get("reason"),
+            "handle": output.get("handle"),
+            "child_assistant_id": output.get("child_assistant_id"),
+            "child_thread_id": output.get("child_thread_id"),
+            "subagent_id": output.get("subagent_id"),
+            "subagent_path": subagent_path,
+            "parent_tool_call_id": parent_tool_call_id,
+        }
+
+        interrupt = await self._record_interrupt(
+            context,
+            state,
+            kind="tool_approval",
+            payload=payload,
+            tool_call_id=child_tool_call_id,
+            raised_by_path=raised_by_path,
+        )
+
+        checkpoint = getattr(context, "checkpoint", None)
+        frame_key = "/".join(interrupt.raised_by_path or [])
+        frame = (
+            checkpoint.agent_frames.get(frame_key)
+            if checkpoint is not None and hasattr(checkpoint, "agent_frames")
+            else None
+        )
+        if frame is not None:
+            frame.pending_interrupt = interrupt
+            frame.metadata.setdefault("parent_tool_call_id", parent_tool_call_id)
+            frame.metadata.setdefault("child_thread_id", payload.get("child_thread_id"))
+            frame.metadata.setdefault(
+                "child_assistant_id", payload.get("child_assistant_id")
+            )
+
+        state.needs_clarification = True
+        state.clarification_data = {
+            "type": "tool_approval",
+            "tool_name": payload["tool_name"],
+            "tool_inputs": payload["tool_inputs"],
+            "tool_description": payload["tool_description"],
+            "tool_schema": payload["tool_schema"],
+            "tool_call_id": child_tool_call_id,
+            "interrupt_id": interrupt.interrupt_id,
+            "raised_by_path": interrupt.raised_by_path,
+            "reason": payload["reason"],
+            "parent_tool_call_id": parent_tool_call_id,
+            "child_assistant_id": payload.get("child_assistant_id"),
+            "child_thread_id": payload.get("child_thread_id"),
+            "subagent_id": payload.get("subagent_id"),
+            "subagent_path": subagent_path,
+        }
+        await self.event_bus.publish(
+            ReActEvent(
+                event_type=ReActEventType.TOOL_APPROVAL_NEEDED,
+                step_number=state.current_step,
+                data=state.clarification_data,
+            )
+        )
+        return True
+
+    def _record_tool_ledger_entry(
+        self,
+        context: RunContext,
+        state: "ExecutionState",
+        *,
+        tool_name: Optional[str],
+        inputs: Optional[Dict[str, Any]],
+        observation: Optional[str],
+        success: bool,
+    ) -> None:
+        """Reduce a completed tool call into the checkpoint ledger."""
+        if not tool_name:
+            return
+        checkpoint = getattr(context, "checkpoint", None)
+        if checkpoint is None or not hasattr(checkpoint, "merge_ledger"):
+            return
+        checkpoint.merge_ledger(
+            [
+                DispatchLedgerEntry(
+                    kind="tool_call",
+                    success=bool(success),
+                    observation=observation or "",
+                    turn=state.current_step,
+                    tool_name=tool_name,
+                    inputs_hash=stable_json_hash(inputs or {}),
+                    produced_by_path=["root"],
+                )
+            ]
+        )
+
     async def _execute_reasoning_step_native(
         self, context: RunContext, state: "ExecutionState"
     ) -> ReActStep:
@@ -658,6 +1648,7 @@ class ReActOrchestrator:
 
             # Single-phase: Stream LLM response WITH tools enabled
             buffer = ""
+            pending_answer_deltas: List[str] = []
             tokens_used = 0
             cost = 0.0
             # Accumulate tool calls during streaming
@@ -677,7 +1668,9 @@ class ReActOrchestrator:
                     # Providers vary: OpenAI nests under function.name, others use top-level name.
                     _fn = _t.get("function") if isinstance(_t, dict) else None
                     _trace_tool_names.append(
-                        (_fn or {}).get("name") if _fn else (_t.get("name") if isinstance(_t, dict) else str(_t))
+                        (_fn or {}).get("name")
+                        if _fn
+                        else (_t.get("name") if isinstance(_t, dict) else str(_t))
                     )
             except Exception as _trace_err:
                 _trace_tool_names = [f"<unavailable: {_trace_err}>"]
@@ -692,7 +1685,9 @@ class ReActOrchestrator:
                 _trace_tool_names,
             )
 
-            async for chunk in self.tool_executor.stream_with_tools(messages=context.messages):
+            async for chunk in self.tool_executor.stream_with_tools(
+                messages=context.messages
+            ):
                 # Native extended thinking (Anthropic thinking blocks, OpenAI
                 # reasoning tokens) arrive on a dedicated channel separate
                 # from response text. Pass through to the UI's thinking panel;
@@ -704,12 +1699,12 @@ class ReActOrchestrator:
                         )
                     )
 
-                # Text deltas. Per the per-turn invariant in prompts.py the
-                # model emits text only on answer turns, so stream text live
-                # into the final-answer bubble. If a tool call later appears
-                # in the same turn (prompt violation), we log and switch
-                # routing for any subsequent text — the small amount already
-                # streamed is a tolerable UI artifact.
+                # Text deltas are not final until the provider turn is classified.
+                # Frontier models often emit narration before tool_use blocks; if we
+                # stream that as FINAL_ANSWER_CHUNK and a tool appears later, runtime
+                # control-flow text leaks into the final answer. Buffer answer
+                # candidates and replay them only after the stream closes with no
+                # tool calls.
                 if chunk.delta:
                     buffer += chunk.delta
                     if accumulated_tool_calls:
@@ -721,11 +1716,7 @@ class ReActOrchestrator:
                             )
                         )
                     else:
-                        await self.event_bus.publish(
-                            EventFactory.final_answer_chunk(
-                                state.current_step, chunk.delta, buffer
-                            )
-                        )
+                        pending_answer_deltas.append(chunk.delta)
 
                 # Accumulate tool calls if present in chunk
                 # All providers now normalize to dict format via stream normalizers
@@ -740,6 +1731,14 @@ class ReActOrchestrator:
                             state.current_step,
                             _preview(buffer, 200),
                         )
+                        if pending_answer_deltas:
+                            preamble = "".join(pending_answer_deltas)
+                            pending_answer_deltas = []
+                            await self.event_bus.publish(
+                                EventFactory.thinking_chunk(
+                                    state.current_step, preamble, buffer
+                                )
+                            )
                     for tool_call_dict in chunk.tool_calls:
                         # All tool calls are now dicts thanks to provider normalizers.
                         # Resolve the index for this tool call chunk so parallel
@@ -792,7 +1791,9 @@ class ReActOrchestrator:
 
                         # Update type if present
                         if tool_call_dict.get("type") is not None:
-                            accumulated_tool_calls[idx]["type"] = tool_call_dict.get("type")
+                            accumulated_tool_calls[idx]["type"] = tool_call_dict.get(
+                                "type"
+                            )
 
                         # Preserve function_call_metadata (e.g. Gemini thought_signature)
                         if tool_call_dict.get("function_call_metadata"):
@@ -803,8 +1804,8 @@ class ReActOrchestrator:
                         # Update function name if present
                         function_data = tool_call_dict.get("function", {})
                         if function_data.get("name") is not None:
-                            accumulated_tool_calls[idx]["function"]["name"] = function_data.get(
-                                "name"
+                            accumulated_tool_calls[idx]["function"]["name"] = (
+                                function_data.get("name")
                             )
 
                         # Handle arguments based on format:
@@ -812,16 +1813,24 @@ class ReActOrchestrator:
                         # - Anthropic: sends complete dict in final chunk
                         new_args = function_data.get("arguments")
                         if new_args is not None:
-                            current_args = accumulated_tool_calls[idx]["function"]["arguments"]
+                            current_args = accumulated_tool_calls[idx]["function"][
+                                "arguments"
+                            ]
 
                             if isinstance(new_args, str):
                                 # OpenAI format: string that grows with each chunk
                                 # Provider already accumulates, so just use the latest value
-                                accumulated_tool_calls[idx]["function"]["arguments"] = new_args
+                                accumulated_tool_calls[idx]["function"][
+                                    "arguments"
+                                ] = new_args
                             elif isinstance(new_args, dict):
                                 # Anthropic format: dict (usually sent complete in one chunk)
-                                if current_args is None or not isinstance(current_args, dict):
-                                    accumulated_tool_calls[idx]["function"]["arguments"] = new_args
+                                if current_args is None or not isinstance(
+                                    current_args, dict
+                                ):
+                                    accumulated_tool_calls[idx]["function"][
+                                        "arguments"
+                                    ] = new_args
                                 else:
                                     # Merge dicts if both exist (defensive)
                                     current_args.update(new_args)
@@ -830,9 +1839,13 @@ class ReActOrchestrator:
                                 logger.warning(
                                     f"Unexpected arguments type in chunk: {type(new_args)}"
                                 )
-                                accumulated_tool_calls[idx]["function"]["arguments"] = new_args
+                                accumulated_tool_calls[idx]["function"][
+                                    "arguments"
+                                ] = new_args
 
-                        logger.debug(f"Tool call accumulated: {accumulated_tool_calls[idx]}")
+                        logger.debug(
+                            f"Tool call accumulated: {accumulated_tool_calls[idx]}"
+                        )
 
                 # Accumulate metrics
                 output_tokens = None
@@ -850,6 +1863,21 @@ class ReActOrchestrator:
             step.cost = cost
 
             assistant_content = buffer.strip()
+            if not accumulated_tool_calls and finish_reason != "length":
+                replayed = ""
+                for delta in pending_answer_deltas:
+                    replayed += delta
+                    await self.event_bus.publish(
+                        EventFactory.final_answer_chunk(
+                            state.current_step, delta, replayed
+                        )
+                    )
+            elif not accumulated_tool_calls and pending_answer_deltas:
+                await self.event_bus.publish(
+                    EventFactory.thinking_chunk(
+                        state.current_step, "".join(pending_answer_deltas), buffer
+                    )
+                )
 
             agent_max_tokens = getattr(self.tool_executor.agent, "max_tokens", None)
 
@@ -865,7 +1893,9 @@ class ReActOrchestrator:
                 tokens_used,
                 cost,
                 _preview(assistant_content, 240),
-                ", ".join(_summarize_tool_call(tc) for tc in accumulated_tool_calls.values()),
+                ", ".join(
+                    _summarize_tool_call(tc) for tc in accumulated_tool_calls.values()
+                ),
             )
 
             # Dedicated warning + event when the model hit max_tokens. Carries
@@ -881,11 +1911,17 @@ class ReActOrchestrator:
                 # fails at content_block_stop; an _truncation_error-less tool call
                 # means the model emitted a complete tool_use block but max_tokens
                 # cut off subsequent content (or the buffer was empty).
-                trunc_meta = next(
-                    (tc.get("_truncation_error") for tc in accumulated_tool_calls.values()
-                     if tc.get("_truncation_error")),
-                    None,
-                ) or {}
+                trunc_meta = (
+                    next(
+                        (
+                            tc.get("_truncation_error")
+                            for tc in accumulated_tool_calls.values()
+                            if tc.get("_truncation_error")
+                        ),
+                        None,
+                    )
+                    or {}
+                )
                 accumulated_json_length = trunc_meta.get("accumulated_length")
                 raw_prefix = trunc_meta.get("raw_prefix")
 
@@ -972,7 +2008,9 @@ class ReActOrchestrator:
                 # JSONDecodeError gets routed through the truncation handler
                 # (mirrors Anthropic, where stream_normalizer attaches
                 # _truncation_error at content_block_stop).
-                _preparse_tool_args_string(tool_call_data, state.current_step, step.action)
+                _preparse_tool_args_string(
+                    tool_call_data, state.current_step, step.action
+                )
                 tool_args = tool_call_data["function"]["arguments"]
 
                 # Detect tool_use truncation. Two signals:
@@ -1012,7 +2050,9 @@ class ReActOrchestrator:
                         step.metadata["truncation"] = {
                             "finish_reason": finish_reason,
                             "tool_names": [step.action],
-                            "accumulated_json_length": truncation_error.get("accumulated_length"),
+                            "accumulated_json_length": truncation_error.get(
+                                "accumulated_length"
+                            ),
                             "raw_prefix": truncation_error.get("raw_prefix"),
                             "parse_error": truncation_error.get("message"),
                         }
@@ -1035,7 +2075,10 @@ class ReActOrchestrator:
                     else:
                         if assistant_content:
                             context.messages.append(
-                                Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                                Message(
+                                    role=MessageRole.ASSISTANT,
+                                    content=assistant_content,
+                                )
                             )
                         context.messages.append(
                             Message(role=MessageRole.USER, content=step.observation)
@@ -1072,7 +2115,9 @@ class ReActOrchestrator:
                                 f"Step {state.current_step} - Failed to parse tool arguments as JSON. "
                                 f"Error: {e}. Arguments preview: {tool_args[:200]}..."
                             )
-                            step.error = f"Malformed tool arguments: Invalid JSON format"
+                            step.error = (
+                                f"Malformed tool arguments: Invalid JSON format"
+                            )
                             step.action_input = {}
                 elif isinstance(tool_args, dict):
                     # Already parsed (Anthropic format)
@@ -1082,9 +2127,7 @@ class ReActOrchestrator:
                         f"Step {state.current_step} - Unexpected tool_args type: {type(tool_args)}, "
                         f"value: {tool_args}"
                     )
-                    step.error = (
-                        f"Malformed tool call: arguments type is {type(tool_args).__name__}"
-                    )
+                    step.error = f"Malformed tool call: arguments type is {type(tool_args).__name__}"
                     step.action_input = {}
 
                 # Extract __description from action_input (LLM-generated human-readable description).
@@ -1121,12 +2164,16 @@ class ReActOrchestrator:
                 elif step.action_input is not None:
                     # Get tool schema to check required parameters
                     tool_schema = self.tool_executor.get_tool_schema(step.action)
-                    required_params = tool_schema.get("parameters", {}).get("required", [])
+                    required_params = tool_schema.get("parameters", {}).get(
+                        "required", []
+                    )
 
                     # Check if any required parameters are missing
                     if required_params:
                         missing_params = [
-                            param for param in required_params if param not in step.action_input
+                            param
+                            for param in required_params
+                            if param not in step.action_input
                         ]
 
                         if missing_params:
@@ -1172,7 +2219,9 @@ class ReActOrchestrator:
                                     )
                                 )
                                 context.messages.append(
-                                    Message(role=MessageRole.USER, content=step.observation)
+                                    Message(
+                                        role=MessageRole.USER, content=step.observation
+                                    )
                                 )
                         else:
                             # All required parameters present, execute tool
@@ -1188,7 +2237,11 @@ class ReActOrchestrator:
 
                             # Execute the tool
                             await self._handle_tool_action(
-                                step, context, state, tool_call_id=tool_call_id, tool_description=tool_description
+                                step,
+                                context,
+                                state,
+                                tool_call_id=tool_call_id,
+                                tool_description=tool_description,
                             )
                     else:
                         # No required parameters, safe to execute
@@ -1204,7 +2257,11 @@ class ReActOrchestrator:
 
                         # Execute the tool
                         await self._handle_tool_action(
-                            step, context, state, tool_call_id=tool_call_id, tool_description=tool_description
+                            step,
+                            context,
+                            state,
+                            tool_call_id=tool_call_id,
+                            tool_description=tool_description,
                         )
                 else:
                     # action_input is None (shouldn't happen, but defensive)
@@ -1270,8 +2327,8 @@ class ReActOrchestrator:
                 # Don't set step.answer — loop will continue
 
             else:
-                # Answer turn: no tool calls, no truncation. Streamed text
-                # deltas already went out as final_answer_chunk events;
+                # Answer turn: no tool calls, no truncation. Buffered text
+                # deltas were replayed as final_answer_chunk events above;
                 # set step.answer so is_final_step returns True and the
                 # main loop publishes the closing final_answer event.
                 logger.debug(
@@ -1287,7 +2344,9 @@ class ReActOrchestrator:
 
         finally:
             step.execution_time = time.time() - step_start_time
-            await self.event_bus.publish(EventFactory.step_complete(state.current_step, step))
+            await self.event_bus.publish(
+                EventFactory.step_complete(state.current_step, step)
+            )
 
         # Add observation to context if present (from tool execution)
         # NOTE: This is actually added in _handle_tool_action now with proper tool_call_id
@@ -1341,7 +2400,9 @@ class ReActOrchestrator:
             tool_call_data = accumulated_tool_calls[key]
             name = tool_call_data.get("function", {}).get("name")
             raw_args = tool_call_data.get("function", {}).get("arguments")
-            tool_call_id = tool_call_data.get("id") or f"call_{state.current_step}_{key}"
+            tool_call_id = (
+                tool_call_data.get("id") or f"call_{state.current_step}_{key}"
+            )
 
             # Parse args (OpenAI sends string; Anthropic sends dict)
             _preparse_tool_args_string(tool_call_data, state.current_step, name)
@@ -1396,11 +2457,13 @@ class ReActOrchestrator:
                     if required_params:
                         missing = [p for p in required_params if p not in inputs]
                         if missing:
-                            pre_exec_errors[tool_call_id] = _format_missing_params_error(
-                                tool_name=name,
-                                missing_params=missing,
-                                provided_params=list(inputs.keys()),
-                                tool_schema=tool_schema,
+                            pre_exec_errors[tool_call_id] = (
+                                _format_missing_params_error(
+                                    tool_name=name,
+                                    missing_params=missing,
+                                    provided_params=list(inputs.keys()),
+                                    tool_schema=tool_schema,
+                                )
                             )
                 except Exception as exc:
                     # Schema lookup failure is non-fatal; let the
@@ -1445,7 +2508,9 @@ class ReActOrchestrator:
             if inv.tool_call_id in pre_exec_errors or not inv.name:
                 continue
             runnable.append(
-                ToolCall(tool_call_id=inv.tool_call_id, name=inv.name, inputs=inv.inputs)
+                ToolCall(
+                    tool_call_id=inv.tool_call_id, name=inv.name, inputs=inv.inputs
+                )
             )
             runnable_indices.append(i)
 
@@ -1466,6 +2531,16 @@ class ReActOrchestrator:
                     logger.debug("Failed to publish action_planned: %s", evt_err)
 
         results: List[Optional[ToolResult]] = [None] * len(invocations)
+        # Set when an approval-required tool in the batch trips the approval
+        # gate. ``execute_many`` forces a batch serial when any tool is
+        # ``require_approval=True`` and raises ``ToolApprovalRequired`` at that
+        # tool. We catch it here (the single-tool path catches it too, but the
+        # batch path previously let it escape to the generic step-error handler,
+        # which routed an unsatisfiable approval through the recovery ladder AND
+        # left the just-appended tool_use blocks without matching tool_results —
+        # the next LLM call then 400s with "tool_use ids were found without
+        # tool_result blocks"). Pausing here keeps the transcript valid.
+        approval_pause: Optional[ToolApprovalRequired] = None
         if runnable:
             # Mirror the per-step ctx.run_state injection that _execute_tool
             # does on the single-tool path. Without this, tools running in a
@@ -1486,11 +2561,19 @@ class ReActOrchestrator:
             # Provide context only if any tool needs it (single-tool path
             # checks per-tool; here we pass it always — execute_tool
             # internally handles the per-tool needs_context check).
-            batch_results = await self.tool_executor.execute_many(
-                runnable, context=context
-            )
-            for runnable_pos, idx in enumerate(runnable_indices):
-                results[idx] = batch_results[runnable_pos]
+            try:
+                batch_results = await self.tool_executor.execute_many(
+                    runnable, context=context
+                )
+                for runnable_pos, idx in enumerate(runnable_indices):
+                    results[idx] = batch_results[runnable_pos]
+            except ToolApprovalRequired as e:
+                approval_pause = e
+                logger.info(
+                    "Parallel batch contains approval-required tool '%s' - "
+                    "pausing execution for user approval",
+                    e.tool_name,
+                )
 
         # ── Phase 4: process results into observations ─────────────────
         # Per-invocation observation handling: basic stringification +
@@ -1502,7 +2585,78 @@ class ReActOrchestrator:
             is_visualization_result,
         )
 
-        for i, inv in enumerate(invocations):
+        if approval_pause is not None:
+            # An approval-required tool tripped the gate. Pause the run (mirrors
+            # the single-tool ToolApprovalRequired handler) and give EVERY
+            # invocation a placeholder observation so Phase 5 can pair each
+            # tool_use block with a tool_result. ``execute_many`` raised before
+            # returning, so no tool in the batch actually ran.
+            approval_inv = next(
+                (iv for iv in invocations if iv.name == approval_pause.tool_name),
+                None,
+            )
+            state.needs_clarification = True
+            state.clarification_data = {
+                "type": "tool_approval",
+                "tool_name": approval_pause.tool_name,
+                "tool_inputs": approval_pause.tool_inputs
+                or (approval_inv.inputs if approval_inv else {}),
+                "tool_description": (approval_inv.description if approval_inv else "")
+                or "",
+                "tool_schema": self.tool_executor.get_tool_schema(
+                    approval_pause.tool_name
+                ),
+                "tool_call_id": approval_inv.tool_call_id if approval_inv else None,
+                "reason": approval_pause.reason,
+            }
+            interrupt = await self._record_interrupt(
+                context,
+                state,
+                kind="tool_approval",
+                payload={
+                    "tool_name": approval_pause.tool_name,
+                    "tool_inputs": approval_pause.tool_inputs
+                    or (approval_inv.inputs if approval_inv else {}),
+                    "tool_description": (
+                        approval_inv.description if approval_inv else ""
+                    )
+                    or "",
+                    "tool_schema": self.tool_executor.get_tool_schema(
+                        approval_pause.tool_name
+                    ),
+                    "reason": approval_pause.reason,
+                },
+                tool_call_id=approval_inv.tool_call_id if approval_inv else None,
+            )
+            state.clarification_data["interrupt_id"] = interrupt.interrupt_id
+            state.clarification_data["raised_by_path"] = interrupt.raised_by_path
+            try:
+                await self.event_bus.publish(
+                    ReActEvent(
+                        event_type=ReActEventType.TOOL_APPROVAL_NEEDED,
+                        step_number=state.current_step,
+                        data=state.clarification_data,
+                    )
+                )
+            except Exception as evt_err:
+                logger.debug("Failed to publish approval event: %s", evt_err)
+            for inv in invocations:
+                if inv.name == approval_pause.tool_name:
+                    inv.observation = (
+                        "Tool execution paused - waiting for user approval."
+                    )
+                else:
+                    inv.observation = (
+                        f"Not executed - batch paused pending approval of "
+                        f"'{approval_pause.tool_name}'."
+                    )
+            # Skip normal result processing; fall through to Phase 5 which
+            # appends one TOOL message per invocation (pairing invariant).
+            invocations_to_process: List[ToolInvocation] = []
+        else:
+            invocations_to_process = invocations
+
+        for i, inv in enumerate(invocations_to_process):
             # Pre-execution error case
             if inv.tool_call_id in pre_exec_errors:
                 err = pre_exec_errors[inv.tool_call_id]
@@ -1548,7 +2702,23 @@ class ReActOrchestrator:
                 else:
                     inv.observation = _observation_with_citation_ref(result.output)
 
+            if await self._handle_tool_approval_marker_result(
+                context,
+                state,
+                result,
+                parent_tool_call_id=inv.tool_call_id,
+            ):
+                inv.observation = "Tool execution paused - waiting for user approval."
+
             # Per-invocation observation event for downstream consumers.
+            self._record_tool_ledger_entry(
+                context,
+                state,
+                tool_name=inv.name,
+                inputs=inv.inputs,
+                observation=inv.observation,
+                success=inv.error is None,
+            )
             try:
                 await self.event_bus.publish(
                     EventFactory.observation(
@@ -1598,7 +2768,9 @@ class ReActOrchestrator:
                 # carry the corrective hint the LLM needs to fix its next call.
                 # Without this, two parallel preflight failures would burn the
                 # 3-attempt recovery ladder and force a fallback answer.
-                if all(getattr(inv, "is_validation_error", False) for inv in invocations):
+                if all(
+                    getattr(inv, "is_validation_error", False) for inv in invocations
+                ):
                     step.metadata["failure_kind"] = "schema"
                 else:
                     step.metadata["failure_kind"] = "all_failed"
@@ -1626,11 +2798,23 @@ class ReActOrchestrator:
 
         # Publish action events with tool_description for human-readable display
         await self.event_bus.publish(
-            EventFactory.action_planned(state.current_step, step.action, step.action_input, tool_description, tool_call_id=tool_call_id)
+            EventFactory.action_planned(
+                state.current_step,
+                step.action,
+                step.action_input,
+                tool_description,
+                tool_call_id=tool_call_id,
+            )
         )
 
         await self.event_bus.publish(
-            EventFactory.action_executing(state.current_step, step.action, step.action_input, tool_description, tool_call_id=tool_call_id)
+            EventFactory.action_executing(
+                state.current_step,
+                step.action,
+                step.action_input,
+                tool_description,
+                tool_call_id=tool_call_id,
+            )
         )
 
         # Execute tool
@@ -1641,11 +2825,18 @@ class ReActOrchestrator:
                 # Check if this is a visualization result BEFORE stringification
                 # This is critical because str(VisualizationResult) returns [VIZ:uuid]
                 # which loses the actual chart data
-                from miiflow_agent.visualization import is_visualization_result, extract_visualization_data
+                from miiflow_agent.visualization import (
+                    is_visualization_result,
+                    extract_visualization_data,
+                )
                 from miiflow_agent.visualization.types import (
-                    is_media_result, extract_media_data,
-                    is_media_collection, extract_media_collection, extract_collection_metadata,
-                    is_llm_block_injection, extract_llm_blocks,
+                    is_media_result,
+                    extract_media_data,
+                    is_media_collection,
+                    extract_media_collection,
+                    extract_collection_metadata,
+                    is_llm_block_injection,
+                    extract_llm_blocks,
                 )
                 from miiflow_agent.artifacts import (
                     extract_artifact_data,
@@ -1673,14 +2864,18 @@ class ReActOrchestrator:
                     observation_lines = []
                     for idx, media_data in enumerate(media_items):
                         await self.event_bus.publish(
-                            EventFactory.media(state.current_step, media_data, step.action)
+                            EventFactory.media(
+                                state.current_step, media_data, step.action
+                            )
                         )
-                        media_id = media_data['id']
-                        media_url = media_data.get('url', '')
-                        if media_url and not media_url.startswith('data:'):
+                        media_id = media_data["id"]
+                        media_url = media_data.get("url", "")
+                        if media_url and not media_url.startswith("data:"):
                             state.media_store[media_id] = media_url
                         # Correlate metadata entries by index (tools return parallel lists)
-                        meta = metadata_items[idx] if idx < len(metadata_items) else None
+                        meta = (
+                            metadata_items[idx] if idx < len(metadata_items) else None
+                        )
                         if meta is not None:
                             try:
                                 meta_json = json.dumps(meta, default=str)
@@ -1705,20 +2900,20 @@ class ReActOrchestrator:
                     await self.event_bus.publish(
                         EventFactory.media(state.current_step, media_data, step.action)
                     )
-                    media_id = media_data['id']
-                    media_url = media_data.get('url', '')
+                    media_id = media_data["id"]
+                    media_url = media_data.get("url", "")
 
                     # Store media URL in execution state so subsequent tool calls
                     # (e.g. image editing) can resolve media_ref:<id> to actual URL.
                     # Only store actual URLs, not data URIs (which can be MBs of base64).
                     # System tools already persist to S3 before reaching here, so
                     # media_url should be an S3 URL for normal image gen flows.
-                    if media_url and not media_url.startswith('data:'):
+                    if media_url and not media_url.startswith("data:"):
                         state.media_store[media_id] = media_url
 
                     # Always include media_ref so LLM can reference this image
                     # in subsequent tool calls (e.g. edit_gpt_image_1)
-                    if media_url and not media_url.startswith('data:'):
+                    if media_url and not media_url.startswith("data:"):
                         step.observation = (
                             f"[MEDIA:{media_id}] Image generated successfully. "
                             f"To edit this image, use media_ref:{media_id} as the image parameter. "
@@ -1738,12 +2933,16 @@ class ReActOrchestrator:
                     if viz_data:
                         # Emit visualization event with full data BEFORE stringification
                         await self.event_bus.publish(
-                            EventFactory.visualization(state.current_step, viz_data, step.action)
+                            EventFactory.visualization(
+                                state.current_step, viz_data, step.action
+                            )
                         )
                         # Store marker for observation (what gets sent to LLM context)
                         # For auth_prompt visualizations, include context so LLM knows tool was blocked
                         if viz_data.get("type") == "auth_prompt":
-                            provider_name = viz_data.get("data", {}).get("providerName", "the provider")
+                            provider_name = viz_data.get("data", {}).get(
+                                "providerName", "the provider"
+                            )
                             step.observation = (
                                 f"[VIZ:{viz_data['id']}] "
                                 f"Tool was blocked: authentication required for {provider_name}. "
@@ -1763,7 +2962,9 @@ class ReActOrchestrator:
                     artifact_data = extract_artifact_data(result.output)
                     if artifact_data:
                         await self.event_bus.publish(
-                            EventFactory.artifact(state.current_step, artifact_data, step.action)
+                            EventFactory.artifact(
+                                state.current_step, artifact_data, step.action
+                            )
                         )
                         step.observation = format_artifact_observation(artifact_data)
                         logger.info(
@@ -1775,33 +2976,136 @@ class ReActOrchestrator:
                 else:
                     step.observation = _observation_with_citation_ref(result.output)
 
-                # Check if this is a clarification request
-                from ..tools.clarification import is_clarification_result, extract_clarification_data
+                if await self._handle_tool_approval_marker_result(
+                    context,
+                    state,
+                    result,
+                    parent_tool_call_id=tool_call_id,
+                ):
+                    step.observation = (
+                        "Tool execution paused - waiting for user approval."
+                    )
 
-                if is_clarification_result(result):
+                # Check if this is a clarification request
+                from ..tools.clarification import (
+                    is_clarification_result,
+                    extract_clarification_data,
+                )
+
+                if not state.needs_clarification and is_clarification_result(result):
                     clarification = extract_clarification_data(result)
                     if clarification:
-                        # Mark state for clarification
-                        state.needs_clarification = True
-                        state.clarification_data = clarification.to_dict()
-                        state.clarification_data["tool_call_id"] = tool_call_id
-                        logger.info(
-                            f"Clarification requested: {len(clarification.questions)} question(s)"
+                        # Phase 1: deterministic established-facts short-circuit (R4).
+                        # Check the asked questions against facts already resolved this
+                        # run (threaded in via deps["established_facts"] by the adapter —
+                        # absent ⇒ behaviour identical to before). Questions whose stable
+                        # key is already answered NEVER re-pause; if every question is
+                        # resolved we skip the pause entirely and hand the model the
+                        # known answers as the observation.
+                        from ..checkpoint import EstablishedFact
+                        from ..interrupt import decide_clarification
+
+                        facts_by_key = {}
+                        deps = getattr(context, "deps", None)
+                        if isinstance(deps, dict):
+                            for fd in deps.get("established_facts") or []:
+                                try:
+                                    f = EstablishedFact.from_dict(fd)
+                                    facts_by_key[f.key] = f
+                                except Exception:
+                                    continue
+
+                        question_dicts = [q.to_dict() for q in clarification.questions]
+                        clarification_round = 0
+                        if isinstance(deps, dict):
+                            clarification_round = int(
+                                deps.get("clarification_round", 0) or 0
+                            )
+                        decision = decide_clarification(
+                            question_dicts,
+                            facts_by_key,
+                            interrupt_count=clarification_round,
                         )
 
-                        # Emit clarification event
-                        await self.event_bus.publish(
-                            ReActEvent(
-                                event_type=ReActEventType.CLARIFICATION_NEEDED,
-                                step_number=state.current_step,
-                                data={
-                                    "step": state.current_step,
-                                    "questions": [q.to_dict() for q in clarification.questions],
-                                    "context": clarification.context,
-                                    "tool_call_id": tool_call_id,
-                                },
+                        if not decision.should_pause:
+                            # Everything was already answered — do NOT pause; the model
+                            # proceeds deterministically with the known answers.
+                            step.observation = (
+                                decision.resolved_observation or step.observation
                             )
-                        )
+                            logger.info(
+                                "Clarification short-circuited: all question(s) already settled"
+                            )
+                        else:
+                            state.needs_clarification = True
+                            clarification_data = clarification.to_dict()
+                            clarification_data["questions"] = decision.pause_questions
+                            clarification_data["tool_call_id"] = tool_call_id
+                            raw_clarification_output = (
+                                result.output if isinstance(result.output, dict) else {}
+                            )
+                            for meta_key in (
+                                "handle",
+                                "child_assistant_id",
+                                "subagent_id",
+                                "status",
+                                "subagent_path",
+                            ):
+                                if meta_key in raw_clarification_output:
+                                    clarification_data[meta_key] = (
+                                        raw_clarification_output[meta_key]
+                                    )
+                            subagent_path = raw_clarification_output.get(
+                                "subagent_path"
+                            )
+                            raised_by_path = ["root"] + list(subagent_path or [])
+                            interrupt = await self._record_interrupt(
+                                context,
+                                state,
+                                kind="clarification",
+                                payload={
+                                    "questions": decision.pause_questions,
+                                    "context": clarification.context,
+                                    **{
+                                        k: v
+                                        for k, v in clarification_data.items()
+                                        if k
+                                        in (
+                                            "handle",
+                                            "child_assistant_id",
+                                            "subagent_id",
+                                            "status",
+                                            "subagent_path",
+                                        )
+                                    },
+                                },
+                                tool_call_id=tool_call_id,
+                                raised_by_path=raised_by_path,
+                            )
+                            clarification_data["interrupt_id"] = interrupt.interrupt_id
+                            clarification_data["raised_by_path"] = (
+                                interrupt.raised_by_path
+                            )
+                            state.clarification_data = clarification_data
+                            logger.info(
+                                f"Clarification requested: {len(decision.pause_questions)} question(s)"
+                            )
+
+                            # Emit clarification event
+                            await self.event_bus.publish(
+                                ReActEvent(
+                                    event_type=ReActEventType.CLARIFICATION_NEEDED,
+                                    step_number=state.current_step,
+                                    data={
+                                        "step": state.current_step,
+                                        "questions": decision.pause_questions,
+                                        "context": clarification.context,
+                                        "tool_call_id": tool_call_id,
+                                        "interrupt_id": interrupt.interrupt_id,
+                                        "raised_by_path": interrupt.raised_by_path,
+                                    },
+                                )
+                            )
             else:
                 # Sanitize error message for LLM consumption
                 sanitized_error = _sanitize_error_message(result.error)
@@ -1813,9 +3117,21 @@ class ReActOrchestrator:
             step.execution_time += result.execution_time
 
             # Publish observation event
+            self._record_tool_ledger_entry(
+                context,
+                state,
+                tool_name=step.action,
+                inputs=step.action_input,
+                observation=step.observation,
+                success=result.success,
+            )
             await self.event_bus.publish(
                 EventFactory.observation(
-                    state.current_step, step.observation, step.action, result.success, tool_call_id=tool_call_id
+                    state.current_step,
+                    step.observation,
+                    step.action,
+                    result.success,
+                    tool_call_id=tool_call_id,
                 )
             )
 
@@ -1878,6 +3194,21 @@ class ReActOrchestrator:
                 "tool_call_id": tool_call_id,
                 "reason": e.reason,
             }
+            interrupt = await self._record_interrupt(
+                context,
+                state,
+                kind="tool_approval",
+                payload={
+                    "tool_name": e.tool_name,
+                    "tool_inputs": e.tool_inputs or {},
+                    "tool_description": tool_description or "",
+                    "tool_schema": self.tool_executor.get_tool_schema(e.tool_name),
+                    "reason": e.reason,
+                },
+                tool_call_id=tool_call_id,
+            )
+            state.clarification_data["interrupt_id"] = interrupt.interrupt_id
+            state.clarification_data["raised_by_path"] = interrupt.raised_by_path
 
             # Emit approval event for SSE
             await self.event_bus.publish(
@@ -1888,9 +3219,7 @@ class ReActOrchestrator:
                 )
             )
 
-            logger.info(
-                f"Tool '{e.tool_name}' requires approval - pausing execution"
-            )
+            logger.info(f"Tool '{e.tool_name}' requires approval - pausing execution")
 
             # CRITICAL: Must add a tool result to context, otherwise Anthropic API
             # rejects with "tool_use ids were found without tool_result blocks"
@@ -1914,6 +3243,15 @@ class ReActOrchestrator:
                 "plan": e.plan_text,
                 "tool_call_id": tool_call_id or e.tool_call_id,
             }
+            interrupt = await self._record_interrupt(
+                context,
+                state,
+                kind="plan_approval",
+                payload={"plan": e.plan_text},
+                tool_call_id=tool_call_id or e.tool_call_id,
+            )
+            state.clarification_data["interrupt_id"] = interrupt.interrupt_id
+            state.clarification_data["raised_by_path"] = interrupt.raised_by_path
 
             await self.event_bus.publish(
                 ReActEvent(
@@ -1942,12 +3280,20 @@ class ReActOrchestrator:
         except Exception as e:
             # Sanitize error message for LLM consumption
             sanitized_error = _sanitize_error_message(str(e))
-            step.error = f"Tool execution error: {str(e)}"  # Keep full error for debugging
+            step.error = (
+                f"Tool execution error: {str(e)}"  # Keep full error for debugging
+            )
             step.observation = f"Tool '{step.action}' failed: {sanitized_error}"
             logger.error(f"Tool execution failed: {e}", exc_info=True)
 
             await self.event_bus.publish(
-                EventFactory.observation(state.current_step, step.observation, step.action, False, tool_call_id=tool_call_id)
+                EventFactory.observation(
+                    state.current_step,
+                    step.observation,
+                    step.action,
+                    False,
+                    tool_call_id=tool_call_id,
+                )
             )
 
             # Add tool result to context even on exception (required for native tool calling)
@@ -1955,14 +3301,18 @@ class ReActOrchestrator:
             # "tool_use ids were found without tool_result blocks"
             if tool_call_id:
                 observation_message = Message(
-                    role=MessageRole.TOOL, content=step.observation, tool_call_id=tool_call_id
+                    role=MessageRole.TOOL,
+                    content=step.observation,
+                    tool_call_id=tool_call_id,
                 )
                 context.messages.append(observation_message)
                 logger.debug(
                     f"Step {state.current_step} - Added error tool result to context with ID: {tool_call_id}"
                 )
 
-    async def _execute_tool(self, step: ReActStep, context: RunContext, state: "ExecutionState" = None):
+    async def _execute_tool(
+        self, step: ReActStep, context: RunContext, state: "ExecutionState" = None
+    ):
         """Execute tool with proper context injection."""
         # Tool name should already be resolved by _handle_tool_action
         # Just verify it exists (fuzzy matching was already done if needed)
@@ -2041,9 +3391,12 @@ class ReActOrchestrator:
             return inputs
 
         resolved = {}
-        media_ref_pattern = re.compile(r'^media_ref:(.+)$')
+        media_ref_pattern = re.compile(r"^media_ref:(.+)$")
         # Match UUIDs in hallucinated file paths like /mnt/data/<uuid>.png
-        uuid_pattern = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE)
+        uuid_pattern = re.compile(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            re.IGNORECASE,
+        )
 
         for key, value in inputs.items():
             if isinstance(value, str):
@@ -2063,7 +3416,7 @@ class ReActOrchestrator:
 
                 # 2. Non-URL string (hallucinated path like /mnt/data/..., or bare filename)
                 #    Try to find a UUID in the string that matches a stored media ID
-                if not stripped.startswith(('http://', 'https://', 'data:')):
+                if not stripped.startswith(("http://", "https://", "data:")):
                     uuid_matches = uuid_pattern.findall(stripped)
                     resolved_from_uuid = False
                     for uuid_str in uuid_matches:
@@ -2082,7 +3435,7 @@ class ReActOrchestrator:
                     # 3. If only one media exists and the value looks like a file path,
                     #    assume it refers to the most recent generated image
                     if len(media_store) == 1 and (
-                        stripped.startswith('/') or stripped.startswith('file://')
+                        stripped.startswith("/") or stripped.startswith("file://")
                     ):
                         only_url = next(iter(media_store.values()))
                         resolved[key] = only_url
@@ -2097,13 +3450,17 @@ class ReActOrchestrator:
 
         return resolved
 
-    def _handle_step_error(self, step: ReActStep, error: Exception, state: "ExecutionState"):
+    def _handle_step_error(
+        self, step: ReActStep, error: Exception, state: "ExecutionState"
+    ):
         """Handle step execution errors."""
         step.error = f"Step execution failed: {str(error)}"
         step.observation = f"An error occurred: {str(error)}"
         logger.error(f"Step {state.current_step} failed: {error}", exc_info=True)
 
-    async def _publish_final_answer_event(self, step: ReActStep, state: "ExecutionState"):
+    async def _publish_final_answer_event(
+        self, step: ReActStep, state: "ExecutionState"
+    ):
         """Publish the closing final_answer event for the complete answer.
 
         Answer chunks are streamed live as they arrive in the streaming loop;
@@ -2111,9 +3468,13 @@ class ReActOrchestrator:
         agent.run() the full answer string in one place.
         """
         if step.answer:
-            await self.event_bus.publish(EventFactory.final_answer(state.current_step, step.answer))
+            await self.event_bus.publish(
+                EventFactory.final_answer(state.current_step, step.answer)
+            )
 
-    async def _build_result(self, state: "ExecutionState", context: RunContext = None) -> ReActResult:
+    async def _build_result(
+        self, state: "ExecutionState", context: RunContext = None
+    ) -> ReActResult:
         """Build successful result."""
         # Determine stop reason
         if state.needs_clarification:
@@ -2163,6 +3524,16 @@ class ReActOrchestrator:
         if state.clarification_data:
             result.clarification_data = state.clarification_data
 
+        if context is not None:
+            checkpoint = getattr(context, "checkpoint", None)
+            interrupt = (
+                checkpoint.active_interrupt()
+                if checkpoint is not None and hasattr(checkpoint, "active_interrupt")
+                else None
+            )
+            if interrupt is not None:
+                result.metadata["pending_interrupt"] = interrupt.to_dict()
+
         # Carry the structured failure (set by ``_should_stop`` when a
         # safety condition halts the loop) so the dispatch envelope can
         # surface a real cause to the parent agent.
@@ -2171,7 +3542,9 @@ class ReActOrchestrator:
 
         return result
 
-    def _build_error_result(self, state: "ExecutionState", error: Exception) -> ReActResult:
+    def _build_error_result(
+        self, state: "ExecutionState", error: Exception
+    ) -> ReActResult:
         """Build error result."""
         return ReActResult(
             steps=state.steps,
@@ -2200,12 +3573,10 @@ class ReActOrchestrator:
                 "question, or try again in a moment."
             )
 
-        if last_step.observation:
-            return f"Based on the available information: {last_step.observation}"
-        elif last_step.thought:
-            return f"My reasoning: {last_step.thought}"
-        else:
-            return "Unable to provide a complete answer due to execution issues."
+        return (
+            "I wasn't able to produce a complete answer from this run. "
+            "Please try again, or narrow the request if it involves a lot of work."
+        )
 
     def _find_similar_tool(self, requested_name: str) -> Optional[str]:
         """Find a similar tool name using fuzzy matching.

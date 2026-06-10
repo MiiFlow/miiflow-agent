@@ -11,6 +11,7 @@ from miiflow_agent.core.react.events import EventBus, EventFactory
 from miiflow_agent.core.react.enums import ReActEventType, StopReason
 from miiflow_agent.core.react.models import ReActStep
 from miiflow_agent.core.react.react_events import ReActEvent
+from miiflow_agent.core.checkpoint import PendingInterrupt
 
 
 class TestEventFactory:
@@ -139,6 +140,20 @@ class TestEventFactory:
 
         assert event.event_type == ReActEventType.STOP_CONDITION
         assert event.data["stop_reason"] == "max_steps"
+
+    def test_interrupt_requested_event(self):
+        """Test creating canonical interrupt event."""
+        interrupt = PendingInterrupt(
+            interrupt_id="int_clarification_tc_1",
+            kind="clarification",
+            payload={"questions": [{"key": "goal"}]},
+            tool_call_id="tc_1",
+        )
+        event = EventFactory.interrupt_requested(1, interrupt)
+
+        assert event.event_type == ReActEventType.INTERRUPT_REQUESTED
+        assert event.data["interrupt"]["interrupt_id"] == "int_clarification_tc_1"
+        assert event.data["interrupt"]["kind"] == "clarification"
 
 
 class TestEventBusStreaming:

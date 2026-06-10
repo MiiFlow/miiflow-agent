@@ -185,7 +185,8 @@ async def forward_subagent_events(
     own_path: List[str],
     handle: Optional[str] = None,
     started_at_monotonic: Optional[float] = None,
-) -> None:
+    surface_interrupts: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Consume the child's event stream and forward the relevant events
     to the parent's bus.
 
@@ -206,14 +207,21 @@ async def forward_subagent_events(
          prepended to ``subagent_path`` so depth-2+ dispatches nest
          correctly.
 
-    Other event types stay in the child's run (STEP_START / STEP_COMPLETE
-    / VISUALIZATION / MEDIA / ARTIFACT / CLARIFICATION_NEEDED / etc. are
-    private to the child — clarifications bubble through the
-    ClarificationPolicy, not through this helper).
+    When ``surface_interrupts`` is True (Phase 2, R1), CLARIFICATION_NEEDED /
+    TOOL_APPROVAL_NEEDED events are **captured and forwarded up** the parent
+    bus (path-prefixed) and returned to the caller, so a sub-agent that needs
+    the user no longer pauses into a void — ``dispatch_subagent`` surfaces the
+    captured interrupt to the parent instead of reading an empty
+    ``final_result()``. When False, behaviour is unchanged: these events stay
+    private to the child (legacy default).
+
+    Other event types stay in the child's run (STEP_START / STEP_COMPLETE /
+    VISUALIZATION / MEDIA / ARTIFACT / etc. are private to the child).
 
     This is a *consumer*: it iterates the entire generator before
     returning. The caller is responsible for calling
-    `SubAgent.final_result()` afterward.
+    `SubAgent.final_result()` afterward. Returns the captured interrupt data
+    (path-prefixed) when a surfaced interrupt was seen, else None.
 
     ``handle`` + ``started_at_monotonic`` are optional and used only for
     the ``[DISPATCH_TIMING] phase=first_chunk`` log line — emitted on
@@ -222,12 +230,40 @@ async def forward_subagent_events(
     parallel or stacked end-to-start.
     """
     first_chunk_logged = False
+    captured_interrupt: Optional[Dict[str, Any]] = None
     async for child_event in child_events:
         if not isinstance(child_event, ReActEvent):
             continue
 
         et = child_event.event_type
         data = child_event.data or {}
+
+        if surface_interrupts and et in (
+            ReActEventType.CLARIFICATION_NEEDED,
+            ReActEventType.TOOL_APPROVAL_NEEDED,
+        ):
+            # Capture the child's pause and forward it up (path-prefixed) so it
+            # reaches the user instead of being dropped. The child's stream ends
+            # right after this (its orchestrator suspended); dispatch_subagent
+            # reads the captured interrupt rather than an empty final_result().
+            captured_interrupt = {
+                "kind": (
+                    "tool_approval"
+                    if et == ReActEventType.TOOL_APPROVAL_NEEDED
+                    else "clarification"
+                ),
+                "subagent_id": subagent_id,
+                "subagent_path": own_path,
+                "data": dict(data),
+            }
+            await parent_event_bus.publish(
+                ReActEvent(
+                    event_type=et,
+                    step_number=parent_step_number,
+                    data={**data, "subagent_id": subagent_id, "subagent_path": own_path},
+                )
+            )
+            continue
 
         if et == ReActEventType.FINAL_ANSWER_CHUNK:
             chunk = data.get("delta") or data.get("chunk") or data.get("content") or ""
@@ -329,6 +365,8 @@ async def forward_subagent_events(
                 )
             )
 
+    return captured_interrupt
+
 
 async def dispatch_subagent(
     sub_agent: "SubAgent",
@@ -340,6 +378,7 @@ async def dispatch_subagent(
     child_id: str,
     counter: DispatchCounter,
     max_depth: int = MAX_NESTING_DEPTH,
+    surface_interrupts: bool = False,
 ) -> "SubAgentResult":
     """Run one parent → child dispatch under the framework's lifecycle.
 
@@ -414,6 +453,7 @@ async def dispatch_subagent(
     # Phase 3: run the child + forward events.
     error: Optional[str] = None
     result: Optional[SubAgentResult] = None
+    captured_interrupt: Optional[Dict[str, Any]] = None
     try:
         child_stream = sub_agent.stream(handoff)
         # The Protocol declares stream() as an async iterator; defensively
@@ -422,7 +462,7 @@ async def dispatch_subagent(
         if asyncio.iscoroutine(child_stream):
             child_stream = await child_stream  # type: ignore[assignment]
         if parent_event_bus is not None:
-            await forward_subagent_events(
+            captured_interrupt = await forward_subagent_events(
                 child_stream,
                 parent_event_bus=parent_event_bus,
                 parent_step_number=parent_step_number,
@@ -430,6 +470,7 @@ async def dispatch_subagent(
                 own_path=own_path,
                 handle=handle,
                 started_at_monotonic=started_at,
+                surface_interrupts=surface_interrupts,
             )
         else:
             # No bus — just drain the stream so the child completes.
@@ -484,6 +525,13 @@ async def dispatch_subagent(
     # in the tool observation back to the parent LLM.
     if not result.metadata.get("subagent_id"):
         result.metadata["subagent_id"] = subagent_id
+
+    # Phase 2 (R1): if the child paused for the user, surface the interrupt on the
+    # result so the dispatch tool returns a clarification-marker observation and the
+    # parent pauses too — instead of swallowing an empty final_result().
+    if captured_interrupt is not None:
+        result.metadata["pending_child_interrupt"] = captured_interrupt
+
     return result
 
 
@@ -717,15 +765,125 @@ def make_subagent_dispatcher_tool(
                 parent_assistant_id=parent_assistant_id,
                 child_id=child_id,
                 counter=runtime_counter,
+                surface_interrupts=bool(deps.get("surface_child_interrupts")),
             )
         except DispatchGuardrailError as guard:
             return _err(guard.kind, str(guard))
 
-        # Tool observation back to the parent LLM. Match the shape the
-        # Django-side dispatch_assistant tool returns so consumers of the
-        # observation (recovery, citation, the parent's own reasoning)
-        # don't need to fork.
-        return {
+        # Phase 2 (R1/R2): the child paused for the user. Return a private
+        # marker observation so the parent's pause detection fires with the
+        # CHILD interrupt id/path — instead of handing the model an empty answer
+        # or fabricating a parent-owned approval.
+        child_interrupt = result.metadata.get("pending_child_interrupt")
+        if child_interrupt and child_interrupt.get("kind") == "tool_approval":
+            from ..checkpoint import AgentFrame, PendingInterrupt
+            from ..interrupt import mint_interrupt_id
+            from ..tools.clarification import child_tool_approval_observation
+
+            idata = child_interrupt.get("data") or {}
+            frame_path = ["root"] + list(child_interrupt.get("subagent_path") or [])
+            child_tool_call_id = idata.get("tool_call_id")
+            interrupt_id = idata.get("interrupt_id") or mint_interrupt_id(
+                "tool_approval", child_tool_call_id
+            )
+            payload = {
+                "tool_name": idata.get("tool_name"),
+                "tool_inputs": idata.get("tool_inputs") or {},
+                "tool_description": idata.get("tool_description") or "",
+                "tool_schema": idata.get("tool_schema") or {},
+                "reason": idata.get("reason"),
+                "handle": handle,
+                "child_assistant_id": child_id,
+                "child_thread_id": result.child_run_id,
+                "subagent_id": result.metadata.get("subagent_id"),
+                "subagent_path": child_interrupt.get("subagent_path"),
+            }
+            checkpoint = getattr(ctx, "checkpoint", None)
+            if checkpoint is not None:
+                pending = PendingInterrupt(
+                    interrupt_id=interrupt_id,
+                    kind="tool_approval",
+                    raised_by_path=frame_path,
+                    payload=payload,
+                    tool_call_id=child_tool_call_id,
+                )
+                checkpoint.agent_frames["/".join(frame_path)] = AgentFrame(
+                    path=frame_path,
+                    pending_interrupt=pending,
+                    metadata={
+                        "handle": handle,
+                        "child_assistant_id": child_id,
+                        "child_thread_id": result.child_run_id,
+                        "subagent_id": result.metadata.get("subagent_id"),
+                        "subagent_path": child_interrupt.get("subagent_path"),
+                    },
+                )
+            return child_tool_approval_observation(
+                tool_name=payload["tool_name"],
+                tool_inputs=payload["tool_inputs"],
+                tool_call_id=child_tool_call_id,
+                interrupt_id=interrupt_id,
+                reason=payload["reason"],
+                tool_description=payload["tool_description"],
+                tool_schema=payload["tool_schema"],
+                dispatch_meta={
+                    "handle": handle,
+                    "child_assistant_id": child_id,
+                    "child_thread_id": result.child_run_id,
+                    "subagent_id": result.metadata.get("subagent_id"),
+                    "status": "awaiting_tool_approval",
+                    "subagent_path": child_interrupt.get("subagent_path"),
+                    "raised_by_path": frame_path,
+                },
+            )
+
+        if child_interrupt and child_interrupt.get("kind") == "clarification":
+            from ..checkpoint import AgentFrame, PendingInterrupt
+            from ..interrupt import mint_interrupt_id
+            from ..tools.clarification import child_clarification_observation
+
+            idata = child_interrupt.get("data") or {}
+            frame_path = ["root"] + list(child_interrupt.get("subagent_path") or [])
+            checkpoint = getattr(ctx, "checkpoint", None)
+            if checkpoint is not None:
+                pending = PendingInterrupt(
+                    interrupt_id=idata.get("interrupt_id")
+                    or mint_interrupt_id("clarification", idata.get("tool_call_id")),
+                    kind="clarification",
+                    raised_by_path=frame_path,
+                    payload={
+                        "questions": idata.get("questions") or [],
+                        "context": idata.get("context"),
+                        "handle": handle,
+                        "child_assistant_id": child_id,
+                        "subagent_id": result.metadata.get("subagent_id"),
+                        "subagent_path": child_interrupt.get("subagent_path"),
+                    },
+                    tool_call_id=idata.get("tool_call_id"),
+                )
+                checkpoint.agent_frames["/".join(frame_path)] = AgentFrame(
+                    path=frame_path,
+                    pending_interrupt=pending,
+                    metadata={
+                        "handle": handle,
+                        "child_assistant_id": child_id,
+                        "subagent_id": result.metadata.get("subagent_id"),
+                        "subagent_path": child_interrupt.get("subagent_path"),
+                    },
+                )
+            return child_clarification_observation(
+                questions=idata.get("questions") or [],
+                context=idata.get("context"),
+                dispatch_meta={
+                    "handle": handle,
+                    "child_assistant_id": child_id,
+                    "subagent_id": result.metadata.get("subagent_id"),
+                    "status": "awaiting_clarification",
+                    "subagent_path": child_interrupt.get("subagent_path"),
+                },
+            )
+
+        observation = {
             "handle": handle,
             "child_assistant_id": child_id,
             "subagent_id": result.metadata.get("subagent_id"),
@@ -734,6 +892,34 @@ def make_subagent_dispatcher_tool(
             "error": result.error,
             "duration_ms": result.duration_ms,
         }
+        checkpoint = getattr(ctx, "checkpoint", None)
+        if checkpoint is not None and hasattr(checkpoint, "merge_ledger"):
+            from ..checkpoint import DispatchLedgerEntry, stable_json_hash
+
+            checkpoint.merge_ledger(
+                [
+                    DispatchLedgerEntry(
+                        kind="dispatch",
+                        success=result.status == "completed",
+                        observation=str(observation),
+                        handle=handle,
+                        task_hash=stable_json_hash(
+                            {
+                                "task": task,
+                                "intent_summary": intent_summary,
+                                "structured_handoff_data": structured_handoff_data,
+                            }
+                        ),
+                        produced_by_path=["root"],
+                    )
+                ]
+            )
+
+        # Tool observation back to the parent LLM. Match the shape the
+        # Django-side dispatch_assistant tool returns so consumers of the
+        # observation (recovery, citation, the parent's own reasoning)
+        # don't need to fork.
+        return observation
 
     _dispatch._tool_schema = schema  # type: ignore[attr-defined]
     return FunctionTool(_dispatch)

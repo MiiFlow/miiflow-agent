@@ -62,7 +62,7 @@ def test_recovery_short_circuits_to_compression_on_overflow():
 
     err = RuntimeError("prompt is too long; exceeded the context window")
 
-    action = asyncio.get_event_loop().run_until_complete(
+    action = asyncio.run(
         rm.attempt_recovery(error=err, context=ctx, step=None, tool_name=None)
     )
 
@@ -78,7 +78,7 @@ def test_recovery_short_circuit_skipped_without_compressor():
     ctx = _FakeContext([])
     err = RuntimeError("prompt is too long")
 
-    action = asyncio.get_event_loop().run_until_complete(
+    action = asyncio.run(
         rm.attempt_recovery(error=err, context=ctx, step=None, tool_name=None)
     )
     # Without a compressor we fall through to the normal ladder, which on

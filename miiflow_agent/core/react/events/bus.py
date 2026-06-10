@@ -266,6 +266,11 @@ class EventBus:
                 "description": data.get("description", "")
             })
 
+        elif event_type == ReActEventType.INTERRUPT_REQUESTED:
+            return self._agui_factory.custom("interrupt_requested", {
+                "interrupt": data.get("interrupt", {})
+            })
+
         return None
 
     async def publish_react_event(self, react_event: ReActEvent):
@@ -425,6 +430,16 @@ class EventFactory:
             event_type=ReActEventType.STOP_CONDITION,
             step_number=step_number,
             data=data,
+        )
+
+    @staticmethod
+    def interrupt_requested(step_number: int, interrupt: Any) -> ReActEvent:
+        """Create the canonical human-in-the-loop interrupt event."""
+        payload = interrupt.to_dict() if hasattr(interrupt, "to_dict") else interrupt
+        return ReActEvent(
+            event_type=ReActEventType.INTERRUPT_REQUESTED,
+            step_number=step_number,
+            data={"interrupt": payload},
         )
 
     @staticmethod

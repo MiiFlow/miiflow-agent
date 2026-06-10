@@ -37,6 +37,23 @@ _CONTEXT_OVERFLOW_HINTS = (
 )
 
 
+def is_tool_approval_error(error: BaseException) -> bool:
+    """True if ``error`` is (or stringifies to) a tool-approval pause.
+
+    Approval pauses are control flow, not failures: the only resolution is the
+    user approving the tool, so retrying with "try a different approach" or
+    compacting the context just burns the recovery ladder and corrupts the
+    transcript. The batch tool path now pauses correctly before recovery ever
+    runs (see ``_handle_parallel_tool_batch``); this is a belt-and-suspenders
+    guard for any path that surfaces the pause as a generic step error.
+    """
+    if error is None:
+        return False
+    if type(error).__name__ == "ToolApprovalRequired":
+        return True
+    return "requires user approval" in (str(error) or "").lower()
+
+
 def is_context_overflow_error(error: BaseException) -> bool:
     """Heuristically classify ``error`` as a context-overflow / token-limit error.
 
@@ -178,6 +195,22 @@ class RecoveryManager:
             return RecoveryAction(
                 strategy_used=RecoveryStrategy.RETRY_WITH_GUIDANCE,
                 should_continue=True,
+                guidance_message=None,
+                attempt_number=self._attempt_count,
+            )
+
+        # Tool-approval pauses are not recoverable failures — stop cleanly
+        # instead of retrying an action that can only proceed with user
+        # approval. (The orchestrator's tool paths pause before recovery runs;
+        # this catches any path that leaked the pause as a step error.)
+        if is_tool_approval_error(error):
+            logger.info(
+                "Recovery received a tool-approval pause; stopping the loop "
+                "(approval cannot be satisfied by a retry)."
+            )
+            return RecoveryAction(
+                strategy_used=RecoveryStrategy.RETRY_WITH_GUIDANCE,
+                should_continue=False,
                 guidance_message=None,
                 attempt_number=self._attempt_count,
             )

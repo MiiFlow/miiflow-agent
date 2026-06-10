@@ -24,8 +24,11 @@ class ReActEventType(Enum):
     FINAL_ANSWER_CHUNK = "final_answer_chunk"  # Streaming chunks for final answer
     ERROR = "error"
     STOP_CONDITION = "stop_condition"
+    INTERRUPT_REQUESTED = "interrupt_requested"  # Canonical human-in-the-loop pause
     CLARIFICATION_NEEDED = "clarification_needed"  # Agent needs user input
-    TOOL_APPROVAL_NEEDED = "tool_approval_needed"  # Tool requires user approval before execution
+    TOOL_APPROVAL_NEEDED = (
+        "tool_approval_needed"  # Tool requires user approval before execution
+    )
     VISUALIZATION = "visualization"  # Tool returned a visualization result
     MEDIA = "media"  # Tool returned a media result (image/video/audio)
     ARTIFACT = "artifact"  # Tool returned a downloadable artifact (PDF, HTML, ...)
@@ -34,7 +37,9 @@ class ReActEventType(Enum):
     SUBAGENT_DISPATCH = "subagent_dispatch"  # Sub-assistant dispatch (start/progress/complete/failed sub-events)
     PLAN_MODE_ENTERED = "plan_mode_entered"  # Model called enter_plan_mode; only read-only tools execute until exit
     PLAN_MODE_EXITED = "plan_mode_exited"  # User-approved exit_plan_mode; loop resumes with permission_mode=default
-    PLAN_APPROVAL_NEEDED = "plan_approval_needed"  # exit_plan_mode raised — loop pauses for user decision
+    PLAN_APPROVAL_NEEDED = (
+        "plan_approval_needed"  # exit_plan_mode raised — loop pauses for user decision
+    )
     TOOL_BLOCKED_BY_PLAN_MODE = "tool_blocked_by_plan_mode"  # Executor refused a non-read-only tool while in plan mode
 
 
@@ -51,5 +56,7 @@ class StopReason(Enum):
     FORCED_STOP = "forced_stop"
     USER_CANCELLED = "user_cancelled"
     NEEDS_CLARIFICATION = "needs_clarification"  # Agent needs user input to continue
+    NEEDS_HUMAN_INPUT = (
+        "needs_human_input"  # Canonical HITL pause (clarification/approval)
+    )
     RECOVERY_EXHAUSTED = "recovery_exhausted"  # All recovery strategies exhausted
-

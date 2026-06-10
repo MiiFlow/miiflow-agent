@@ -87,14 +87,49 @@ TOOL_SEARCH_TOOL_NAME = "tool_search"
 #: enabled) during the current agent run. ``None`` means "no session active",
 #: which causes the registry to fall back to its legacy behaviour of exposing
 #: all tools.
-_enabled_tools: ContextVar[Optional[Set[str]]] = ContextVar(
+#: The enabled set is stored as an INSERTION-ORDERED set (``dict[str, None]``)
+#: so the schema-emission cap (``ToolRegistry.get_filtered_schemas``) can keep
+#: the most-recently-discovered tools and evict the oldest when the combined
+#: tool schema would exceed the provider's grammar-compiler budget. ``None``
+#: means "no session active" → the registry falls back to exposing all tools.
+_enabled_tools: ContextVar[Optional[Dict[str, None]]] = ContextVar(
     "miiflow_tool_search_enabled", default=None
 )
 
+#: Continuation tools that are ALWAYS visible and NEVER evicted by the schema
+#: cap — seeded at session open from the recent conversation (the tool the model
+#: was just using / was told to "call again" after an approval). Without pinning,
+#: such a tool sits in the evictable discovered set and a couple of later
+#: ``tool_search`` calls in the SAME run could bury it past the cap, hiding the
+#: very tool the model needs to call next. ``frozenset()`` = nothing pinned.
+_pinned_tools: ContextVar[frozenset] = ContextVar(
+    "miiflow_tool_search_pinned", default=frozenset()
+)
+
+
+def get_pinned_tool_names() -> frozenset:
+    """Return the always-visible continuation tools for the current run."""
+    return _pinned_tools.get()
+
 
 def get_enabled_tool_names() -> Optional[Set[str]]:
-    """Return the set of tool names enabled for the current run, or None."""
-    return _enabled_tools.get()
+    """Return the set of tool names enabled for the current run, or None.
+
+    Returns a fresh set (membership/iteration); use
+    ``get_enabled_tool_names_ordered`` when enablement order matters.
+    """
+    enabled = _enabled_tools.get()
+    return set(enabled) if enabled is not None else None
+
+
+def get_enabled_tool_names_ordered() -> List[str]:
+    """Discovered tool names in enablement order (oldest → newest).
+
+    Empty list when no session is active. Used by the schema-emission cap to
+    decide which discovered tools to keep (most recent) vs evict (oldest).
+    """
+    enabled = _enabled_tools.get()
+    return list(enabled) if enabled else []
 
 
 def is_session_active() -> bool:
@@ -103,29 +138,49 @@ def is_session_active() -> bool:
 
 
 @contextlib.contextmanager
-def tool_search_session(initial: Optional[Set[str]] = None) -> Iterator[Set[str]]:
+def tool_search_session(initial: Optional[Set[str]] = None) -> Iterator[Dict[str, None]]:
     """Open a ToolSearch session for the current async task.
 
-    The yielded set is the live set of enabled tool names; mutating it (or
-    calling ``tool_search``) updates which tools the LLM sees on the next
-    turn. The session is torn down on exit, restoring whatever state was
-    visible to the caller.
+    The yielded mapping is the live, insertion-ordered set of *discovered* tool
+    names (grown by ``tool_search`` / ``mark_tools_enabled``, evictable by the
+    schema cap). ``initial`` seeds the **pinned** continuation set instead — the
+    tools the conversation was already using (e.g. a just-approved tool the model
+    must call again). Pinned tools are always visible and never evicted, so a
+    later ``tool_search`` in the same run can't bury them. The session is torn
+    down on exit, restoring whatever state was visible to the caller.
     """
-    enabled: Set[str] = set(initial) if initial else set()
+    enabled: Dict[str, None] = {}
+    pinned = frozenset(initial or [])
     token = _enabled_tools.set(enabled)
+    ptoken = _pinned_tools.set(pinned)
     try:
         yield enabled
     finally:
-        _enabled_tools.reset(token)
+        # When the owning async generator is closed from a different asyncio
+        # context (GeneratorExit during teardown), token.reset raises
+        # "created in a different Context" — and, raised from a finally,
+        # REPLACES the real exception that closed the generator. Fall back to
+        # clearing the vars directly: same end state, nothing masked.
+        try:
+            _enabled_tools.reset(token)
+            _pinned_tools.reset(ptoken)
+        except ValueError:
+            _enabled_tools.set(None)
+            _pinned_tools.set(frozenset())
 
 
 def mark_tools_enabled(names: List[str]) -> None:
-    """Add tool names to the active session's enabled set, if any."""
+    """Add tool names to the active session's enabled set, if any.
+
+    Re-marking an already-enabled tool moves it to the most-recent end (LRU),
+    so a tool the model keeps using is never the one the schema cap evicts.
+    """
     enabled = _enabled_tools.get()
     if enabled is None:
         return
     for name in names:
-        enabled.add(name)
+        enabled.pop(name, None)  # move-to-end: drop then re-insert as newest
+        enabled[name] = None
 
 
 # ---- lexical scoring ---------------------------------------------------------

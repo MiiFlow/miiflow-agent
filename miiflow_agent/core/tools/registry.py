@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
+
+#: Rough average compiled JSON-schema size (bytes) of a single tool, measured
+#: across this codebase's tool surface (median ~1.0 KB, mean ~1.8 KB). The
+#: per-provider ToolSearch threshold is a COUNT, but the provider's grammar
+#: compiler actually trips on combined SIZE — and a few param-heavy tools
+#: (recommend_action ~22 KB, dispatch_assistant ~10 KB, google_ads_* ~4 KB) can
+#: blow the limit at a low count. So the schema cap also bounds total size at
+#: ``threshold * this``, which equals the count budget for typical tools but
+#: clamps sooner when big schemas are present.
+_TYPICAL_TOOL_SCHEMA_BYTES = 1500
 
 from .exceptions import ToolPreparationError
 from .function import FunctionTool
@@ -447,6 +458,20 @@ class ToolRegistry:
                 results.append(schema)
         return results
 
+    def _has_registered_tool(self, name: str) -> bool:
+        """True if ``name`` is a registered function/http/mcp tool."""
+        return name in self.tools or name in self.http_tools or name in self.mcp_tools
+
+    def _schema_size(self, name: str) -> int:
+        """Approximate JSON-schema size (bytes) of a tool, for the size cap."""
+        schema = self._get_universal_schema(name)
+        if not schema:
+            return 0
+        try:
+            return len(json.dumps(schema, default=str))
+        except Exception:  # noqa: BLE001 — never let sizing break schema emission
+            return _TYPICAL_TOOL_SCHEMA_BYTES
+
     def _get_universal_schema(self, name: str) -> Optional[Dict[str, Any]]:
         """Return the universal-format schema for any registered tool by name."""
         if name in self.tools:
@@ -481,22 +506,92 @@ class ToolRegistry:
         self,
         provider: str,
         client=None,
-        enabled_names: Optional[set] = None,
+        enabled_names: Optional[Iterable[str]] = None,
+        pinned_names: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Return schemas for the next LLM turn under ToolSearch.
 
-        Always includes: the ``tool_search`` meta-tool, every tool flagged
-        ``always_load``, and any tools the model has already discovered (via
-        ``enabled_names``). All other tools are hidden until ``tool_search``
+        Always-visible (never evicted): the ``tool_search`` meta-tool, every
+        ``always_load`` tool, and the **pinned** continuation tools
+        (``pinned_names`` — e.g. a just-approved tool the model must call again;
+        defaults to the active session's pinned set). Discovered tools
+        (``enabled_names``, oldest → newest) then fill the remaining budget
+        MOST-RECENT-FIRST. All other tools are hidden until ``tool_search``
         surfaces them.
+
+        CAP: the active (non-meta) tool set is bounded by the provider-safe
+        budget so the combined tool schema never trips the provider's grammar
+        compiler ("Schema is too complex for compilation"). Without this, each
+        ``tool_search`` call appends its top-N results to an unbounded enabled
+        set, and a couple of searches push the active set past the limit. The
+        cap only shrinks the SCHEMA PAYLOAD — an evicted tool stays executable
+        (``execute_safe`` doesn't consult this list), so the model can still
+        call a tool it discovered earlier even if it's no longer in the schema.
+        Pinned tools are exempt from the cap so a continuation tool can never be
+        evicted out from under the model mid-run.
         """
         # Build the meta-tool (lives off-registry so it never leaks into
         # legacy schema callers).
         meta_tool = self.get_tool_search_tool()
 
-        visible: set = set(self.get_always_load_names())
-        if enabled_names:
-            visible.update(enabled_names)
+        always_set: set = set(self.get_always_load_names())
+
+        # Pinned continuation tools (default: the active session's pinned set).
+        if pinned_names is None:
+            from . import tool_search as _tool_search_mod
+
+            pinned_names = _tool_search_mod.get_pinned_tool_names()
+        # Keep only pinned names that are real registered tools so a stale name
+        # can't consume budget without producing a schema.
+        pinned_set: set = {n for n in (pinned_names or ()) if self._has_registered_tool(n)}
+
+        # Mandatory set is never evicted (always_load + pinned continuation).
+        mandatory: set = always_set | pinned_set
+
+        # Provider-safe budgets for NON-meta tools. ``tool_search_threshold`` is
+        # the COUNT above which we gate (per provider — 12 for Anthropic); reserve
+        # one slot for the always-sent meta-tool. We ALSO bound total schema SIZE,
+        # because the provider's compiler trips on combined size and a few heavy
+        # tools blow it at a low count. Never cap below the mandatory floor.
+        non_meta_budget = max(len(mandatory), self.tool_search_threshold - 1)
+        size_budget = max(1, self.tool_search_threshold) * _TYPICAL_TOOL_SCHEMA_BYTES
+
+        # Discovered (non-mandatory) names, MOST-RECENT-FIRST.
+        ordered = list(enabled_names or [])
+        discovered_recent_first = [n for n in reversed(ordered) if n not in mandatory]
+
+        # Fill discovered under BOTH the count and the size budget. The most-
+        # recent discovered tool (idx 0) is always kept so a just-searched tool is
+        # never hidden purely by size (which would cause a search→evict→search
+        # loop); older tools are gated on cumulative size.
+        used_size = sum(self._schema_size(n) for n in mandatory)
+        remaining_count = max(0, non_meta_budget - len(mandatory))
+        kept_discovered: List[str] = []
+        for idx, name in enumerate(discovered_recent_first):
+            if len(kept_discovered) >= remaining_count:
+                break
+            sz = self._schema_size(name)
+            if idx > 0 and used_size + sz > size_budget:
+                break
+            kept_discovered.append(name)
+            used_size += sz
+
+        visible: set = mandatory | set(kept_discovered)
+
+        evicted = len(discovered_recent_first) - len(kept_discovered)
+        if evicted > 0:
+            logger.info(
+                "[TOOL_SEARCH] capped active tools to %d (+meta) for provider=%s "
+                "count_budget=%d size~%dB/%dB (pinned=%d); evicted %d "
+                "least-recently-discovered tool(s) from the schema (still executable)",
+                len(visible),
+                provider,
+                non_meta_budget,
+                used_size,
+                size_budget,
+                len(pinned_set),
+                evicted,
+            )
 
         schemas: List[Dict[str, Any]] = []
 

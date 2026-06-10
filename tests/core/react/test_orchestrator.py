@@ -1,11 +1,20 @@
 """Comprehensive tests for ReAct orchestrator execution flow."""
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from dataclasses import dataclass
 from typing import List, Optional
 
-from miiflow_agent import LLMClient, Agent, AgentType, RunContext, Message, tool, ToolRegistry
+from miiflow_agent import (
+    LLMClient,
+    Agent,
+    AgentType,
+    RunContext,
+    Message,
+    tool,
+    ToolRegistry,
+)
 from miiflow_agent.core.react.orchestrator import (
     ExecutionState,
     ReActOrchestrator,
@@ -18,11 +27,13 @@ from miiflow_agent.core.react.events import EventBus
 from miiflow_agent.core.react.safety import RepeatedToolErrorCondition, SafetyManager
 from miiflow_agent.core.react.tool_executor import AgentToolExecutor
 from miiflow_agent.core.message import MessageRole
+from miiflow_agent.core.tools.schemas import ToolResult
 
 
 @dataclass
 class MockDeps:
     """Mock dependencies for testing."""
+
     user_id: str = "test_user"
 
 
@@ -92,8 +103,7 @@ class TestReActOrchestratorSetup:
     def test_context_setup_with_existing_user_message(self, orchestrator):
         """Test that empty query is allowed if user message already exists."""
         context = RunContext(
-            deps=None,
-            messages=[Message(role=MessageRole.USER, content="Hello")]
+            deps=None, messages=[Message(role=MessageRole.USER, content="Hello")]
         )
         # Should not raise
         orchestrator._setup_context("", context)
@@ -107,6 +117,110 @@ class TestReActOrchestratorSetup:
         assert len(context.messages) >= 2
         system_msgs = [m for m in context.messages if m.role == MessageRole.SYSTEM]
         assert len(system_msgs) >= 1
+
+
+class TestReActTurnClassification:
+    @pytest.mark.asyncio
+    async def test_text_before_tool_call_is_not_final_answer_chunk(self):
+        """A provider text preamble followed by tool_use is thinking, not answer."""
+
+        class FakeExecutor:
+            agent = SimpleNamespace(temperature=0, max_tokens=1024)
+
+            def _build_native_tool_schemas(self):
+                return [{"name": "lookup"}]
+
+            async def stream_with_tools(self, messages):
+                yield SimpleNamespace(
+                    delta="I'll check that. ",
+                    thinking_delta=None,
+                    tool_calls=None,
+                    usage=None,
+                    cost=0,
+                    finish_reason=None,
+                )
+                yield SimpleNamespace(
+                    delta="",
+                    thinking_delta=None,
+                    tool_calls=[
+                        {
+                            "id": "tc_1",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": {"query": "x"},
+                            },
+                        }
+                    ],
+                    usage=None,
+                    cost=0,
+                    finish_reason="tool_calls",
+                )
+
+            def get_tool_schema(self, name):
+                return {"parameters": {"required": []}}
+
+            def has_tool(self, name):
+                return name == "lookup"
+
+            async def execute_tool(self, name, inputs, context=None):
+                return ToolResult(name=name, input=inputs, output="ok", success=True)
+
+        orch = ReActOrchestrator.__new__(ReActOrchestrator)
+        orch.tool_executor = FakeExecutor()
+        orch.event_bus = EventBus()
+        orch.context_compressor = None
+        orch.safety_manager = SafetyManager(max_steps=5)
+
+        context = RunContext(deps={}, messages=[Message.user("do it")])
+        state = ExecutionState()
+        state.current_step = 1
+
+        await ReActOrchestrator._execute_reasoning_step_native(orch, context, state)
+
+        event_types = [e.event_type for e in orch.event_bus.event_buffer]
+        assert ReActEventType.FINAL_ANSWER_CHUNK not in event_types
+        assert ReActEventType.THINKING_CHUNK in event_types
+        assert ReActEventType.ACTION_PLANNED in event_types
+
+    @pytest.mark.asyncio
+    async def test_truncated_answer_text_is_non_final_thinking_chunk(self):
+        """A length-truncated answer is surfaced, but never as committed final text."""
+
+        class FakeExecutor:
+            agent = SimpleNamespace(temperature=0, max_tokens=8)
+
+            def _build_native_tool_schemas(self):
+                return []
+
+            async def stream_with_tools(self, messages):
+                yield SimpleNamespace(
+                    delta="This answer was cut off mid",
+                    thinking_delta=None,
+                    tool_calls=None,
+                    usage=None,
+                    cost=0,
+                    finish_reason="length",
+                )
+
+        orch = ReActOrchestrator.__new__(ReActOrchestrator)
+        orch.tool_executor = FakeExecutor()
+        orch.event_bus = EventBus()
+        orch.context_compressor = None
+        orch.safety_manager = SafetyManager(max_steps=5)
+
+        context = RunContext(deps={}, messages=[Message.user("answer")])
+        state = ExecutionState()
+        state.current_step = 1
+
+        step = await ReActOrchestrator._execute_reasoning_step_native(
+            orch, context, state
+        )
+
+        event_types = [e.event_type for e in orch.event_bus.event_buffer]
+        assert ReActEventType.THINKING_CHUNK in event_types
+        assert ReActEventType.FINAL_ANSWER_CHUNK not in event_types
+        assert step.answer is None
 
 
 class TestReActOrchestratorSafetyConditions:
@@ -339,9 +453,9 @@ class TestRepeatedToolErrorCondition:
             )
             for i in range(1, 5)  # 4 successful parallel dispatches
         ]
-        assert cond.should_stop(steps, current_step=4) is False, (
-            "successful dispatches with 'error': None must not be classified as errors"
-        )
+        assert (
+            cond.should_stop(steps, current_step=4) is False
+        ), "successful dispatches with 'error': None must not be classified as errors"
 
     def test_ignores_observations_with_error_null_json(self):
         """Same regression in JSON-quoted form: ``\"error\": null``
@@ -391,9 +505,23 @@ class TestReActResult:
     def test_result_statistics(self):
         """Test result calculates correct statistics."""
         steps = [
-            ReActStep(step_number=1, thought="Think", action="tool1", execution_time=0.5, tokens_used=100),
-            ReActStep(step_number=2, thought="Think more", execution_time=0.3, tokens_used=50),
-            ReActStep(step_number=3, thought="Final", answer="Done", execution_time=0.2, tokens_used=30),
+            ReActStep(
+                step_number=1,
+                thought="Think",
+                action="tool1",
+                execution_time=0.5,
+                tokens_used=100,
+            ),
+            ReActStep(
+                step_number=2, thought="Think more", execution_time=0.3, tokens_used=50
+            ),
+            ReActStep(
+                step_number=3,
+                thought="Final",
+                answer="Done",
+                execution_time=0.2,
+                tokens_used=30,
+            ),
         ]
 
         result = ReActResult(
@@ -423,7 +551,7 @@ class TestReActResult:
         )
 
         # 2 out of 3 steps succeeded
-        assert result.success_rate == pytest.approx(2/3)
+        assert result.success_rate == pytest.approx(2 / 3)
 
     def test_result_tools_used(self):
         """Test tools used extraction."""
@@ -504,7 +632,9 @@ class TestNativeToolCallingMode:
 
         mock_model_client = MagicMock()
         mock_model_client.provider_name = "openai"
-        mock_model_client.convert_schema_to_provider_format = MagicMock(side_effect=lambda x: x)
+        mock_model_client.convert_schema_to_provider_format = MagicMock(
+            side_effect=lambda x: x
+        )
 
         response_list = list(responses)
         response_index = [0]
@@ -517,9 +647,9 @@ class TestNativeToolCallingMode:
             # Stream content in chunks
             chunk_size = 50
             for i in range(0, len(content), chunk_size):
-                chunk_text = content[i:i + chunk_size]
+                chunk_text = content[i : i + chunk_size]
                 chunk = StreamChunk(
-                    content=content[:i + chunk_size],
+                    content=content[: i + chunk_size],
                     delta=chunk_text,
                     finish_reason=None,
                     usage=None,
@@ -532,7 +662,9 @@ class TestNativeToolCallingMode:
                 content=content,
                 delta="",
                 finish_reason=response_data.get("finish_reason", "stop"),
-                usage=MagicMock(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+                usage=MagicMock(
+                    prompt_tokens=10, completion_tokens=20, total_tokens=30
+                ),
                 tool_calls=tool_calls,
             )
             yield final_chunk
@@ -567,7 +699,7 @@ class TestNativeToolCallingMode:
         response = {
             "content": "The answer is 42.",
             "tool_calls": None,
-            "finish_reason": "stop"
+            "finish_reason": "stop",
         }
 
         mock_agent = self._create_mock_agent_with_native_tools([response])
@@ -590,25 +722,29 @@ class TestNativeToolCallingMode:
         # First response: tool call only (no preamble, per prompt invariant)
         first_response = {
             "content": "",
-            "tool_calls": [{
-                "id": "call_123",
-                "type": "function",
-                "function": {
-                    "name": "calculator",
-                    "arguments": '{"expression": "2+2"}'
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {
+                        "name": "calculator",
+                        "arguments": '{"expression": "2+2"}',
+                    },
                 }
-            }],
-            "finish_reason": "tool_calls"
+            ],
+            "finish_reason": "tool_calls",
         }
 
         # Second response: final answer (plain text, no XML)
         second_response = {
             "content": "2 + 2 equals 4.",
             "tool_calls": None,
-            "finish_reason": "stop"
+            "finish_reason": "stop",
         }
 
-        mock_agent = self._create_mock_agent_with_native_tools([first_response, second_response])
+        mock_agent = self._create_mock_agent_with_native_tools(
+            [first_response, second_response]
+        )
 
         @tool("calculator", "Calculate an expression")
         def calculator(expression: str) -> str:
@@ -641,20 +777,22 @@ class TestNativeToolCallingMode:
 
         first_response = {
             "content": preamble,
-            "tool_calls": [{
-                "id": "call_1",
-                "type": "function",
-                "function": {
-                    "name": "fetch_metrics",
-                    "arguments": '{"platform": "meta"}'
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "fetch_metrics",
+                        "arguments": '{"platform": "meta"}',
+                    },
                 }
-            }],
-            "finish_reason": "tool_calls"
+            ],
+            "finish_reason": "tool_calls",
         }
         second_response = {
             "content": real_answer,
             "tool_calls": None,
-            "finish_reason": "stop"
+            "finish_reason": "stop",
         }
 
         mock_agent = self._create_mock_agent_with_native_tools(
@@ -673,6 +811,7 @@ class TestNativeToolCallingMode:
         )
 
         import logging
+
         with caplog.at_level(logging.INFO):
             context = RunContext(deps=None, messages=[])
             result = await orchestrator.execute("What is my ROAS?", context)
@@ -680,9 +819,8 @@ class TestNativeToolCallingMode:
         assert isinstance(result, ReActResult)
         assert result.final_answer == real_answer
         # The tool-call preamble must have been logged for observability.
-        assert any(
-            "Tool-call preamble" in rec.message for rec in caplog.records
-        )
+        assert any("Tool-call preamble" in rec.message for rec in caplog.records)
+
 
 class TestToolFuzzyMatching:
     """Test tool name fuzzy matching for LLM hallucinations."""
@@ -787,7 +925,13 @@ class TestResultBuilding:
         """Test building result when final answer is present."""
         state = ExecutionState()
         state.steps = [
-            ReActStep(step_number=1, thought="Thinking", answer="The answer", cost=0.01, tokens_used=100)
+            ReActStep(
+                step_number=1,
+                thought="Thinking",
+                answer="The answer",
+                cost=0.01,
+                tokens_used=100,
+            )
         ]
         state.final_answer = "The answer"
 
@@ -810,7 +954,8 @@ class TestResultBuilding:
         result = await orchestrator._build_result(state)
 
         assert result.stop_reason == StopReason.FORCED_STOP
-        assert "Some observation" in result.final_answer
+        assert "Some observation" not in result.final_answer
+        assert "complete answer" in result.final_answer
 
     def test_build_error_result(self, orchestrator):
         """Test building error result."""
@@ -824,21 +969,23 @@ class TestResultBuilding:
         assert "Something went wrong" in result.final_answer
         assert result.steps_count == 1
 
-    def test_generate_fallback_answer_with_observation(self, orchestrator):
-        """Test fallback answer uses observation."""
+    def test_generate_fallback_answer_does_not_leak_observation(self, orchestrator):
+        """Fallback answer must not expose transient tool observations."""
         steps = [ReActStep(step_number=1, thought="T", observation="The data shows X")]
 
         fallback = orchestrator._generate_fallback_answer(steps)
 
-        assert "The data shows X" in fallback
+        assert "The data shows X" not in fallback
+        assert "complete answer" in fallback
 
-    def test_generate_fallback_answer_with_thought_only(self, orchestrator):
-        """Test fallback answer uses thought when no observation."""
+    def test_generate_fallback_answer_does_not_leak_thought(self, orchestrator):
+        """Fallback answer must not expose internal reasoning as final text."""
         steps = [ReActStep(step_number=1, thought="My analysis is complete")]
 
         fallback = orchestrator._generate_fallback_answer(steps)
 
-        assert "My analysis is complete" in fallback
+        assert "My analysis is complete" not in fallback
+        assert "complete answer" in fallback
 
     def test_generate_fallback_answer_empty_steps(self, orchestrator):
         """Test fallback answer for empty steps."""
@@ -858,9 +1005,7 @@ class TestResultBuilding:
             "['ad_account_id', 'breakdowns', 'date_from', 'date_to', 'level']"
         )
         steps = [
-            ReActStep(
-                step_number=i, thought="", observation=raw_error, error=raw_error
-            )
+            ReActStep(step_number=i, thought="", observation=raw_error, error=raw_error)
             for i in range(1, 4)
         ]
 
@@ -892,7 +1037,10 @@ class TestExtractFailureMetadata:
                 tool_invocations=[
                     ToolInvocation(
                         name="google_ads_query",
-                        inputs={"customer_id": "1", "query": "SELECT campaign.id FROM campaign WHERE segments.date BETWEEN ..."},
+                        inputs={
+                            "customer_id": "1",
+                            "query": "SELECT campaign.id FROM campaign WHERE segments.date BETWEEN ...",
+                        },
                         observation=observation,
                     )
                 ],
@@ -916,7 +1064,9 @@ class TestExtractFailureMetadata:
         """A failing query body can be thousands of chars — the failure
         payload must stay bounded so the parent's tool observation
         doesn't blow up."""
-        long_query = "SELECT campaign.id, " + ("metrics.cost_micros, " * 200) + "FROM campaign"
+        long_query = (
+            "SELECT campaign.id, " + ("metrics.cost_micros, " * 200) + "FROM campaign"
+        )
         long_error = "Tool execution failed: " + ("x" * 5000)
         steps = [
             ReActStep(

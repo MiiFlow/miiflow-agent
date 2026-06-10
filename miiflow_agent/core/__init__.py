@@ -34,6 +34,30 @@ from .tools import (
 )
 from .schema_normalizer import normalize_json_schema, SchemaMode
 from .data_reference import put_render_data, get_render_data
+from .checkpoint import (
+    CHECKPOINT_VERSION,
+    AgentFrame,
+    Checkpoint,
+    DispatchLedgerEntry,
+    EstablishedFact,
+    PendingApprovedAction,
+    PendingInterrupt,
+    ResumeCommand,
+    stable_json_hash,
+)
+from .interrupt import (
+    ClarificationDecision,
+    GraphInterrupt,
+    INTERRUPT_KIND_CLARIFICATION,
+    INTERRUPT_KIND_PLAN_APPROVAL,
+    INTERRUPT_KIND_TOOL_APPROVAL,
+    MAX_CLARIFICATION_INTERRUPTS_PER_TURN,
+    decide_clarification,
+    mint_interrupt_id,
+    partition_questions_by_facts,
+    question_key,
+    render_established_facts_block,
+)
 from .agent import (
     # Core agent architecture - Stateless framework
     Agent,
@@ -145,6 +169,30 @@ __all__ = [
     # Data-reference cache for render tools
     "put_render_data",
     "get_render_data",
+
+    # Durable run checkpoint (pause/resume + multi-agent context spine)
+    "Checkpoint",
+    "CHECKPOINT_VERSION",
+    "EstablishedFact",
+    "PendingInterrupt",
+    "PendingApprovedAction",
+    "DispatchLedgerEntry",
+    "AgentFrame",
+    "ResumeCommand",
+    "stable_json_hash",
+
+    # Unified interrupt primitive + established-facts logic
+    "GraphInterrupt",
+    "INTERRUPT_KIND_CLARIFICATION",
+    "INTERRUPT_KIND_TOOL_APPROVAL",
+    "INTERRUPT_KIND_PLAN_APPROVAL",
+    "MAX_CLARIFICATION_INTERRUPTS_PER_TURN",
+    "mint_interrupt_id",
+    "question_key",
+    "partition_questions_by_facts",
+    "decide_clarification",
+    "ClarificationDecision",
+    "render_established_facts_block",
 
     # Observability (optional)
     "ObservabilityConfig",

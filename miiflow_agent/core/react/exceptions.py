@@ -36,6 +36,21 @@ class ToolApprovalRequired(Exception):
         )
 
 
+class ToolInputValidationRejected(Exception):
+    """Raised by the PRE_TOOL_USE emit when a callback set
+    ``event.validation_error``: the call's inputs can't succeed (e.g. they'd
+    bounce off the platform API), so instead of pausing for user approval the
+    executor returns a FAILED ToolResult carrying ``reason`` — the model fixes
+    the inputs and retries without a wasted approval modal.
+    """
+
+    def __init__(self, tool_name: str, tool_inputs: dict, reason: str = None):
+        self.tool_name = tool_name
+        self.tool_inputs = tool_inputs
+        self.reason = reason or "Tool inputs failed validation"
+        super().__init__(f"Tool '{tool_name}' inputs rejected: {self.reason}")
+
+
 class PlanApprovalRequired(Exception):
     """Raised by the ``exit_plan_mode`` tool to pause the run for user
     approval of the proposed plan.

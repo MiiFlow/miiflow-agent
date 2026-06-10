@@ -113,6 +113,13 @@ class CallbackEvent:
     blocked: bool = False
     block_reason: Optional[str] = None
 
+    # PRE_TOOL_USE: set to reject the call's INPUTS as invalid. Unlike
+    # ``blocked`` (which raises ToolApprovalRequired → a user approval modal),
+    # a validation error returns a FAILED ToolResult so the model fixes the
+    # inputs and retries — the human is never asked to approve a call that
+    # would bounce off the API anyway.
+    validation_error: Optional[str] = None
+
     # PRE_TOOL_USE: set this in callback to REPLACE the tool inputs before
     # execution (e.g. a user approved a tool but edited its arguments). The
     # executor reads ``inputs_override`` back after emitting the PRE event and

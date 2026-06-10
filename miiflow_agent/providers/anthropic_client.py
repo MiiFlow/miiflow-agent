@@ -474,24 +474,38 @@ class AnthropicClient(ModelClient):
             demoted_names,
         )
 
-    @staticmethod
-    def _apply_prompt_caching(request_params: Dict[str, Any]) -> None:
-        """Add an Anthropic prompt-cache breakpoint to `request_params` in place.
+    # Block types that accept a cache_control marker. Notably absent:
+    # thinking / redacted_thinking — marking those is a 400.
+    _CACHEABLE_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result", "document"})
 
-        Why: on a multi-turn thread the system prompt + tool definitions are
-        identical every turn. Without an explicit cache_control marker the
-        provider re-tokenizes and re-charges the whole prefix on every request.
-        With a marker on the last tool (or last system block when no tools),
-        the entire `system + tools` prefix reads from cache on subsequent turns
-        — full price drops to ~10% and TTFT drops materially. Cached prefix
-        TTL is 5 min, which lines up with active conversation cadence.
+    @classmethod
+    def _apply_prompt_caching(cls, request_params: Dict[str, Any]) -> None:
+        """Add Anthropic prompt-cache breakpoints to `request_params` in place.
 
-        We mark the last tool when tools are present (Anthropic caches
-        everything before the marker, which transparently includes `system`).
-        Falls back to marking the system block when there are no tools.
-        Mid-conversation message-history caching is intentionally left out
-        of this pass — extending it requires touching message content shapes
-        and is a separate, more invasive change.
+        Anthropic renders the prompt as ``tools → system → messages`` and a
+        cache_control marker covers everything *before* it, so each
+        breakpoint caches its own prefix tier:
+
+        - last tool          → tool definitions
+        - last system block  → tools + system prompt
+        - last message block → tools + system + conversation so far
+
+        The message breakpoint is what makes multi-turn agent loops cheap:
+        every round re-sends the whole transcript, and without it each round
+        re-bills the entire history at the full input rate. With it, round N
+        reads round N-1's prefix from cache and only the newest turn is
+        uncached. The tool marker is kept even though the system marker
+        subsumes its prefix — tools and system are separate cache tiers, so
+        a system-prompt change still leaves the tools tier hittable.
+
+        Anthropic allows 4 breakpoints per request; we place at most 3.
+        TTL stays at the 5-minute default: agent rounds are seconds apart,
+        and the 1h TTL's 2x write premium buys nothing at that cadence.
+
+        Known limit: a breakpoint only looks back 20 content blocks for the
+        previous cache entry, so a single turn that adds more than 20 blocks
+        (e.g. a very wide parallel tool batch) re-writes the prefix once
+        instead of reading it. The tools/system tiers still hit.
         """
         tools = request_params.get("tools")
         if tools:
@@ -502,13 +516,9 @@ class AnthropicClient(ModelClient):
                 last_copy["cache_control"] = {"type": "ephemeral"}
                 new_tools[-1] = last_copy
                 request_params["tools"] = new_tools
-            return
 
         system = request_params.get("system")
-        if not system:
-            return
-
-        if isinstance(system, str):
+        if isinstance(system, str) and system:
             request_params["system"] = [
                 {
                     "type": "text",
@@ -524,6 +534,54 @@ class AnthropicClient(ModelClient):
                 last_copy["cache_control"] = {"type": "ephemeral"}
                 new_system[-1] = last_copy
                 request_params["system"] = new_system
+
+        cls._mark_final_message_block(request_params)
+
+    @classmethod
+    def _mark_final_message_block(cls, request_params: Dict[str, Any]) -> None:
+        """Mark the last cacheable content block of the final message."""
+        messages = request_params.get("messages")
+        if not messages:
+            return
+        last_msg = messages[-1]
+        if not isinstance(last_msg, dict):
+            return
+
+        content = last_msg.get("content")
+        if isinstance(content, str):
+            if not content:
+                return
+            new_content: List[Any] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        elif isinstance(content, list) and content:
+            idx = next(
+                (
+                    i
+                    for i in range(len(content) - 1, -1, -1)
+                    if isinstance(content[i], dict)
+                    and content[i].get("type") in cls._CACHEABLE_BLOCK_TYPES
+                ),
+                None,
+            )
+            if idx is None:
+                return
+            new_content = list(content)
+            block_copy = dict(new_content[idx])
+            block_copy["cache_control"] = {"type": "ephemeral"}
+            new_content[idx] = block_copy
+        else:
+            return
+
+        new_messages = list(messages)
+        new_msg = dict(last_msg)
+        new_msg["content"] = new_content
+        new_messages[-1] = new_msg
+        request_params["messages"] = new_messages
 
     @retry(
         stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10), reraise=True

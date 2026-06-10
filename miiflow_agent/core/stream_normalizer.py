@@ -36,6 +36,9 @@ class StreamState:
     # Content block tracking to prevent interleaving of different block types
     current_block_index: int = -1
     current_block_type: Optional[str] = None  # "text", "thinking", "tool_use", etc.
+    # Anthropic: input-side token total (input + prompt-cache buckets) captured
+    # from message_start, since later message_delta events may omit it.
+    input_tokens_total: int = 0
 
 
 class BaseStreamNormalizer(ABC):
@@ -430,11 +433,43 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             }
 
     def _extract_usage(self, chunk: Any) -> Optional[TokenCount]:
-        """Extract usage information from chunk."""
+        """Extract usage information from chunk.
+
+        With prompt caching active, Anthropic splits input tokens into
+        `input_tokens` (uncached), `cache_creation_input_tokens` (~1.25x)
+        and `cache_read_input_tokens` (~0.1x). Sum them so `prompt_tokens`
+        keeps meaning "all input tokens this turn" — otherwise billing
+        telemetry under-reports as soon as cache hits land (mirrors the
+        non-streaming path in AnthropicClient.achat).
+
+        The authoritative input-side counts arrive on message_start at
+        `chunk.message.usage`; message_delta events may carry only
+        `output_tokens`. Remember the message_start total and merge it
+        into later deltas.
+        """
+
+        def _as_int(val: Any) -> int:
+            # Handle None values from Bedrock which may have usage object
+            # but None fields; reject MagicMock attributes in tests too.
+            return val if isinstance(val, int) else 0
+
+        def _input_total(usage_obj: Any) -> int:
+            return (
+                _as_int(getattr(usage_obj, "input_tokens", None))
+                + _as_int(getattr(usage_obj, "cache_creation_input_tokens", None))
+                + _as_int(getattr(usage_obj, "cache_read_input_tokens", None))
+            )
+
+        message = getattr(chunk, "message", None)
+        start_usage = getattr(message, "usage", None) if message is not None else None
+        if start_usage is not None:
+            self._state.input_tokens_total = max(
+                self._state.input_tokens_total, _input_total(start_usage)
+            )
+
         if hasattr(chunk, "usage") and chunk.usage is not None:
-            # Handle None values from Bedrock which may have usage object but None fields
-            input_tokens = getattr(chunk.usage, "input_tokens", None) or 0
-            output_tokens = getattr(chunk.usage, "output_tokens", None) or 0
+            input_tokens = max(_input_total(chunk.usage), self._state.input_tokens_total)
+            output_tokens = _as_int(getattr(chunk.usage, "output_tokens", None))
             return TokenCount(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,

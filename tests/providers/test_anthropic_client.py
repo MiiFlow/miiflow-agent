@@ -307,6 +307,22 @@ class TestAnthropicClient:
         assert converted[0]["content"][0]["content"].strip() != ""
 
     @pytest.mark.asyncio
+    async def test_prompt_caching_with_tools(self, client, sample_messages, mock_anthropic_response):
+        """With tools present, all three cache tiers get a breakpoint."""
+        tools = [{"name": "lookup", "description": "d", "input_schema": {"type": "object"}}]
+
+        with patch.object(client.client.messages, 'create', new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = mock_anthropic_response
+
+            await client.achat(sample_messages, tools=tools)
+
+            kwargs = mock_create.call_args.kwargs
+            assert kwargs['tools'][-1]['cache_control'] == {"type": "ephemeral"}
+            assert kwargs['system'][-1]['cache_control'] == {"type": "ephemeral"}
+            last_content = kwargs['messages'][-1]['content']
+            assert last_content[-1]['cache_control'] == {"type": "ephemeral"}
+
+    @pytest.mark.asyncio
     async def test_assistant_with_tool_calls_and_whitespace_content(self, client):
         """Test assistant message with tool calls and whitespace-only content."""
         # Create an assistant message with tool calls and whitespace content
@@ -331,3 +347,132 @@ class TestAnthropicClient:
         content_types = [b["type"] for b in converted[0]["content"]]
         assert "tool_use" in content_types
         assert "text" not in content_types  # Whitespace text should be filtered
+
+
+class TestApplyPromptCaching:
+    """Unit tests for AnthropicClient._apply_prompt_caching breakpoint placement.
+
+    Anthropic renders tools -> system -> messages; a marker covers only what
+    precedes it, so all three tiers need their own breakpoint. See the method
+    docstring for the tiering rationale.
+    """
+
+    def _params(self):
+        return {
+            "model": "claude-sonnet-4-6",
+            "system": [{"type": "text", "text": "system prompt"}],
+            "tools": [
+                {"name": "a", "input_schema": {"type": "object"}},
+                {"name": "b", "input_schema": {"type": "object"}},
+            ],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "a", "input": {}}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                    ],
+                },
+            ],
+        }
+
+    @staticmethod
+    def _count_breakpoints(params):
+        count = 0
+        for tool in params.get("tools") or []:
+            count += "cache_control" in tool
+        system = params.get("system")
+        if isinstance(system, list):
+            count += sum("cache_control" in b for b in system)
+        for msg in params.get("messages") or []:
+            content = msg.get("content")
+            if isinstance(content, list):
+                count += sum(
+                    "cache_control" in b for b in content if isinstance(b, dict)
+                )
+        return count
+
+    def test_marks_all_three_tiers(self):
+        params = self._params()
+        AnthropicClient._apply_prompt_caching(params)
+
+        assert params["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in params["tools"][0]
+        assert params["system"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert params["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+        # Only the final message is marked — earlier turns stay untouched.
+        assert "cache_control" not in params["messages"][0]["content"][0]
+        # Anthropic allows at most 4 breakpoints per request.
+        assert self._count_breakpoints(params) == 3
+
+    def test_does_not_mutate_caller_structures(self):
+        params = self._params()
+        original_tools = params["tools"]
+        original_messages = params["messages"]
+        original_last_block = original_messages[-1]["content"][-1]
+
+        AnthropicClient._apply_prompt_caching(params)
+
+        assert "cache_control" not in original_tools[-1]
+        assert "cache_control" not in original_last_block
+
+    def test_string_system_and_string_content(self):
+        params = self._params()
+        params["system"] = "plain system prompt"
+        params["messages"] = [{"role": "user", "content": "plain question"}]
+
+        AnthropicClient._apply_prompt_caching(params)
+
+        assert params["system"] == [
+            {
+                "type": "text",
+                "text": "plain system prompt",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        assert params["messages"][-1]["content"] == [
+            {
+                "type": "text",
+                "text": "plain question",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+    def test_skips_thinking_blocks(self):
+        # cache_control on a thinking block is a 400 — the marker must land
+        # on the last block that accepts it.
+        params = self._params()
+        params["messages"][-1] = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "answer"},
+                {"type": "thinking", "thinking": "...", "signature": "sig"},
+            ],
+        }
+
+        AnthropicClient._apply_prompt_caching(params)
+
+        blocks = params["messages"][-1]["content"]
+        assert "cache_control" not in blocks[-1]
+        assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_all_thinking_final_message_is_left_alone(self):
+        params = self._params()
+        params["messages"][-1] = {
+            "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "...", "signature": "sig"}],
+        }
+
+        AnthropicClient._apply_prompt_caching(params)
+
+        assert "cache_control" not in params["messages"][-1]["content"][0]
+
+    def test_no_tools_no_messages(self):
+        params = {"model": "claude-sonnet-4-6", "system": "sys", "messages": []}
+        AnthropicClient._apply_prompt_caching(params)
+        assert params["system"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert params["messages"] == []

@@ -201,7 +201,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "o4-mini": ModelConfig(
         model_identifier="o4-mini",
         name="o4-mini",
-        description="Legacy — succeeded by GPT-5.4 Mini. Compact reasoning model with strong coding and visual task performance. 200K context window. Released April 2025.",
+        description="Legacy — succeeded by GPT-5.4 Mini. Compact reasoning model with strong coding and visual task performance. 200K context window. Retired from ChatGPT Feb 2026; API access ends October 23, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,

@@ -238,3 +238,102 @@ def test_count_optional_properties_handles_array_items():
     }
     # `items` is required at top, but `y` inside array items is optional.
     assert AnthropicClient._count_optional_properties(schema) == 1
+
+
+# ---- union-type param cap (Phase 3) ----
+
+
+def _make_union_tool(name: str, n_union: int, strict: bool = True):
+    """A strict tool whose schema has `n_union` union-typed (nullable) params."""
+    props = {
+        f"u{i}": {"type": ["string", "null"], "description": "union"} for i in range(n_union)
+    }
+    base = {
+        "name": name,
+        "description": f"tool {name}",
+        "input_schema": {
+            "type": "object",
+            "properties": props,
+            "required": [],
+            "additionalProperties": False if strict else True,
+        },
+    }
+    if strict:
+        base["strict"] = True
+    return base
+
+
+def test_count_union_type_params_counts_nullable_and_anyof():
+    from miiflow_agent.providers.anthropic_client import AnthropicClient
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "a": {"type": ["string", "null"]},  # union (nullable)
+            "b": {"anyOf": [{"type": "string"}, {"type": "integer"}]},  # union
+            "c": {"type": "string"},  # not a union
+            "nested": {
+                "type": "object",
+                "properties": {"d": {"type": ["number", "null"]}},  # union, nested
+            },
+        },
+    }
+    assert AnthropicClient._count_union_type_params(schema) == 3
+
+
+def test_apply_strict_tool_cap_demotes_for_union_param_cap():
+    """Under the 20-tool and 24-optional caps but over the 16-union cap → demote tail."""
+    from miiflow_agent.providers.anthropic_client import AnthropicClient
+
+    # 3 strict tools, 6 union params each = 18 union params (>16), but only 3
+    # tools and the union params are required (0 optional) — so phases 1 and 2
+    # are no-ops and only the union cap triggers.
+    tools = [_make_union_tool(f"t{i}", n_union=6) for i in range(3)]
+    request_params = {"tools": tools}
+    AnthropicClient._apply_strict_tool_cap(request_params)
+    strict_after = [t for t in request_params["tools"] if t.get("strict")]
+    union_total = sum(
+        AnthropicClient._count_union_type_params(t["input_schema"]) for t in strict_after
+    )
+    assert union_total <= 16
+    assert len(strict_after) < 3  # at least one demoted
+
+
+# ---- schema-too-complex reactive fallback (grammar-compilation 400) ----
+
+
+def test_is_schema_too_complex_error_matches_message():
+    from miiflow_agent.providers.anthropic_client import AnthropicClient
+
+    class _Err(Exception):
+        message = (
+            "Error code: 400 - {'error': {'message': 'Schema is too complex for "
+            "compilation. Try reducing the number of tools or simplifying tool schemas.'}}"
+        )
+
+    assert AnthropicClient._is_schema_too_complex_error(_Err()) is True
+    assert AnthropicClient._is_schema_too_complex_error(Exception("rate limit")) is False
+
+
+def test_demote_all_strict_tools_demotes_every_strict_tool():
+    from miiflow_agent.providers.anthropic_client import AnthropicClient
+
+    a = _make_tool("a", strict=True)
+    b = _make_tool("b", strict=False)
+    c = _make_tool("c", strict=True)
+    request_params = {"tools": [a, b, c]}
+    changed = AnthropicClient._demote_all_strict_tools(request_params)
+    assert changed is True
+    assert all("strict" not in t for t in request_params["tools"])
+    assert all(t["input_schema"]["additionalProperties"] is True for t in request_params["tools"])
+    # originals not mutated
+    assert a.get("strict") is True and c.get("strict") is True
+
+
+def test_demote_all_strict_tools_no_op_when_none_strict():
+    from miiflow_agent.providers.anthropic_client import AnthropicClient
+
+    request_params = {"tools": [_make_tool("a", strict=False)]}
+    assert AnthropicClient._demote_all_strict_tools(request_params) is False
+    assert AnthropicClient._demote_all_strict_tools({}) is False
+    assert AnthropicClient._demote_all_strict_tools({"tools": []}) is False

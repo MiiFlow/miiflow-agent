@@ -387,6 +387,43 @@ class AnthropicClient(ModelClient):
         return count
 
     @staticmethod
+    def _count_union_type_params(schema: Any) -> int:
+        """Count union-typed properties recursively in a JSON schema.
+
+        Anthropic's strict-mode grammar compiler caps union-typed parameters
+        across all strict schemas in a request at 16, and documents them as
+        *the* most expensive feature ("union types ... create exponential
+        compilation cost"). A property is union-typed when it uses
+        `anyOf`/`oneOf`, or declares `type` as a list of >1 concrete type
+        (e.g. `["string", "null"]` — the shape an Optional/nullable field
+        usually compiles to). We count these the same way as optional
+        properties so the cap can keep the request under the 16 limit, which
+        ``_count_optional_properties`` does not measure.
+        """
+        if not isinstance(schema, dict):
+            return 0
+        count = 0
+        type_val = schema.get("type")
+        # A multi-entry `type` list is a union — including the common nullable
+        # form `["string", "null"]`, which Anthropic's docs explicitly count
+        # toward the 16-union-param limit.
+        if isinstance(type_val, list) and len(type_val) > 1:
+            count += 1
+        if isinstance(schema.get("anyOf"), list) or isinstance(schema.get("oneOf"), list):
+            count += 1
+        if isinstance(schema.get("properties"), dict):
+            for prop_schema in schema["properties"].values():
+                count += AnthropicClient._count_union_type_params(prop_schema)
+        if isinstance(schema.get("items"), dict):
+            count += AnthropicClient._count_union_type_params(schema["items"])
+        for combinator in ("allOf", "anyOf", "oneOf"):
+            branches = schema.get(combinator)
+            if isinstance(branches, list):
+                for branch in branches:
+                    count += AnthropicClient._count_union_type_params(branch)
+        return count
+
+    @staticmethod
     def _demote_strict_tool(tool: Dict[str, Any]) -> Dict[str, Any]:
         """Return a copy of `tool` with the strict flag removed and schema loosened."""
         demoted = dict(tool)
@@ -405,21 +442,28 @@ class AnthropicClient(ModelClient):
     def _apply_strict_tool_cap(request_params: Dict[str, Any]) -> None:
         """Demote excess strict tools to non-strict to fit Anthropic's per-request caps.
 
-        Anthropic enforces two caps on strict-mode tool schemas per request:
-        (1) at most 20 tools may carry `strict: true`, and (2) the *total*
-        number of optional (non-required) properties across all strict
-        schemas must not exceed 24, or grammar compilation fails with a
-        400 ("Schemas contains too many optional parameters"). With
-        strict-by-default tools, both caps are easy to exceed when an agent
-        loads multiple tagged tool sets. We demote the tail (the last N
-        strict tools) so the prefix — typically the most important /
-        always-loaded tools — keeps strict semantics, and emit a WARNING
-        listing every tool we touched so the operator can either raise the
-        cap by removing tools or refine which tools opt out at definition
-        time.
+        Anthropic compiles strict-mode tool schemas into a constrained-decoding
+        grammar (regular non-strict tools are *not* compiled) and enforces three
+        hard caps on the *combined total across all strict schemas in one
+        request*: (1) ≤20 tools with `strict: true`, (2) ≤24 optional
+        (non-required) properties, and (3) ≤16 union-typed parameters
+        (`anyOf`/`oneOf` or `["x","null"]`) — union types being the most
+        expensive feature ("exponential compilation cost"). Exceeding any of
+        them, or producing a grammar that's simply too large, yields a 400
+        ("Schemas contains too many optional parameters" / "Schema is too
+        complex for compilation"). These caps are easy to blow when an agent
+        auto-loads tool bundles (e.g. the always-on ad_platform set) on top of
+        its configured tools — the combined set, not any single tool, is what
+        overflows. We demote the tail (the last N strict tools) so the prefix —
+        typically the most important / always-loaded tools — keeps strict
+        semantics, and emit a WARNING so the operator can reduce the tool set or
+        opt specific tools out at definition time. The reactive
+        `_demote_all_strict_tools` retry in astream_chat/chat is the backstop
+        for the residual "grammar too large" case these counts don't capture.
         """
         tool_cap = 20
         optional_param_cap = 24
+        union_param_cap = 16
         tools = request_params.get("tools")
         if not tools:
             return
@@ -456,23 +500,79 @@ class AnthropicClient(ModelClient):
             new_tools[idx] = AnthropicClient._demote_strict_tool(new_tools[idx])
             demoted_names.append(new_tools[idx].get("name", f"<idx={idx}>"))
 
+        # Phase 3: enforce the 16-union-type-param cap the same way. Union types
+        # are the most expensive grammar feature, so this is often the limit a
+        # request actually trips even when tool count and optional params look
+        # fine.
+        def total_union_params() -> int:
+            return sum(
+                AnthropicClient._count_union_type_params(
+                    new_tools[i].get("input_schema", {}) if isinstance(new_tools[i], dict) else {}
+                )
+                for i in strict_indices
+            )
+
+        original_union_total = total_union_params()
+        while strict_indices and total_union_params() > union_param_cap:
+            idx = strict_indices.pop()
+            new_tools[idx] = AnthropicClient._demote_strict_tool(new_tools[idx])
+            demoted_names.append(new_tools[idx].get("name", f"<idx={idx}>"))
+
         if not demoted_names:
             return
 
         request_params["tools"] = new_tools
         logger.warning(
-            "[STRICT_TOOL_CAP] strict tools=%d optional_params=%d exceeded "
-            "Anthropic caps (tools=%d, optional_params=%d) — demoted %d "
-            "tool(s) to non-strict: %s. To restore strictness, opt specific "
-            "tools out at definition (strict=False) or reduce the tool set "
+            "[STRICT_TOOL_CAP] strict tools=%d optional_params=%d union_params=%d "
+            "exceeded Anthropic caps (tools=%d, optional_params=%d, union_params=%d) "
+            "— demoted %d tool(s) to non-strict: %s. To restore strictness, opt "
+            "specific tools out at definition (strict=False) or reduce the tool set "
             "passed to this agent.",
             original_strict_count,
             original_optional_total,
+            original_union_total,
             tool_cap,
             optional_param_cap,
+            union_param_cap,
             len(demoted_names),
             demoted_names,
         )
+
+    @classmethod
+    def _demote_all_strict_tools(cls, request_params: Dict[str, Any]) -> bool:
+        """Demote every strict tool in the request to non-strict. Returns True if any changed.
+
+        This is the documented, guaranteed remedy for ``400 "Schema is too
+        complex for compilation"``: grammar compilation runs *only* for strict
+        tools (and structured outputs), so removing `strict` from all tools
+        means there is no grammar left to compile, regardless of which
+        combination of tool count / optional params / union types blew the
+        budget. It's the reactive backstop for the residual case
+        ``_apply_strict_tool_cap`` can't pre-empt (e.g. a grammar that's simply
+        too large rather than over a counted limit). Strict's only benefit is
+        disambiguating cognitively-similar tools; trading that for a working
+        request is the right call on a hard rejection. Originals are not
+        mutated — modified tools are replaced with copies, preserving
+        ``cache_control`` and every other wrapper field.
+        """
+        tools = request_params.get("tools")
+        if not tools:
+            return False
+        new_tools = list(tools)
+        changed = False
+        for i, tool in enumerate(new_tools):
+            if isinstance(tool, dict) and tool.get("strict"):
+                new_tools[i] = cls._demote_strict_tool(tool)
+                changed = True
+        if changed:
+            request_params["tools"] = new_tools
+        return changed
+
+    @staticmethod
+    def _is_schema_too_complex_error(error: Exception) -> bool:
+        """True if `error` is Anthropic's tool-schema grammar-compilation 400."""
+        text = str(getattr(error, "message", None) or error).lower()
+        return "too complex for compilation" in text or "schema is too complex" in text
 
     # Block types that accept a cache_control marker. Notably absent:
     # thinking / redacted_thinking — marking those is a 400.
@@ -743,14 +843,34 @@ class AnthropicClient(ModelClient):
 
             # Use beta client for structured outputs or native MCP
             use_beta_client = use_native_structured_output or use_native_mcp
-            if use_beta_client:
+            create_fn = (
+                self.client.beta.messages.create
+                if use_beta_client
+                else self.client.messages.create
+            )
+            try:
                 response = await asyncio.wait_for(
-                    self.client.beta.messages.create(**request_params), timeout=self.timeout
+                    create_fn(**request_params), timeout=self.timeout
                 )
-            else:
-                response = await asyncio.wait_for(
-                    self.client.messages.create(**request_params), timeout=self.timeout
-                )
+            except anthropic.BadRequestError as e:
+                # See astream_chat: retry once with simplified tool schemas when
+                # Anthropic rejects the combined schemas as too complex to compile.
+                if self._is_schema_too_complex_error(
+                    e
+                ) and self._demote_all_strict_tools(request_params):
+                    logger.warning(
+                        "[SCHEMA_TOO_COMPLEX] Anthropic rejected tool schemas as too "
+                        "complex to compile (model=%s, tools=%d); retrying with "
+                        "simplified schemas. If this recurs, reduce the tool set "
+                        "for this agent.",
+                        self.model,
+                        len(request_params.get("tools") or []),
+                    )
+                    response = await asyncio.wait_for(
+                        create_fn(**request_params), timeout=self.timeout
+                    )
+                else:
+                    raise
 
             # Extract content and tool calls from response
             content = ""
@@ -1076,14 +1196,36 @@ class AnthropicClient(ModelClient):
             # Determine which client to use
             # Use beta client for structured outputs or native MCP
             use_beta_client = use_native_structured_output or use_native_mcp
-            if use_beta_client:
+            create_fn = (
+                self.client.beta.messages.create
+                if use_beta_client
+                else self.client.messages.create
+            )
+            try:
                 stream = await asyncio.wait_for(
-                    self.client.beta.messages.create(**request_params), timeout=self.timeout
+                    create_fn(**request_params), timeout=self.timeout
                 )
-            else:
-                stream = await asyncio.wait_for(
-                    self.client.messages.create(**request_params), timeout=self.timeout
-                )
+            except anthropic.BadRequestError as e:
+                # Anthropic compiles a constraint grammar from the combined tool
+                # schemas; past a complexity budget it rejects the request with
+                # "Schema is too complex for compilation." Retry once with the
+                # tool schemas simplified rather than hard-failing the turn.
+                if self._is_schema_too_complex_error(
+                    e
+                ) and self._demote_all_strict_tools(request_params):
+                    logger.warning(
+                        "[SCHEMA_TOO_COMPLEX] Anthropic rejected tool schemas as too "
+                        "complex to compile (model=%s, tools=%d); retrying with "
+                        "simplified schemas. If this recurs, reduce the tool set "
+                        "for this agent.",
+                        self.model,
+                        len(request_params.get("tools") or []),
+                    )
+                    stream = await asyncio.wait_for(
+                        create_fn(**request_params), timeout=self.timeout
+                    )
+                else:
+                    raise
 
             # Create a NEW normalizer instance for each streaming session
             # This prevents race conditions when multiple streams run in parallel

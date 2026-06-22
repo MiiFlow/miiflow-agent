@@ -7,7 +7,6 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # Models that use max_completion_tokens instead of max_tokens
 _REASONING_MODELS = {
     "o3",
-    "o4-mini",
 }
 
 _GPT5_MODELS = {
@@ -132,7 +131,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1": ModelConfig(
         model_identifier="gpt-4.1",
         name="gpt-4.1",
-        description="Legacy — succeeded by GPT-5.4. General-purpose model with 1M token context. API cutoff October 14, 2026.",
+        description="Legacy — succeeded by GPT-5.4. General-purpose model with 1M token context. Retired from ChatGPT Feb 13, 2026; still available via the API.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -184,7 +183,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "o3": ModelConfig(
         model_identifier="o3",
         name="o3",
-        description="Legacy — succeeded by GPT-5.x series. Reasoning model with strong math, science, and coding performance.",
+        description="Deprecated — succeeded by the GPT-5.x series. Reasoning model with strong math, science, and coding performance. Deprecated June 11, 2026; API access ends December 11, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -197,23 +196,6 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=2.00,
         output_cost_hint=8.00,
-    ),
-    "o4-mini": ModelConfig(
-        model_identifier="o4-mini",
-        name="o4-mini",
-        description="Legacy — succeeded by GPT-5.4 Mini. Compact reasoning model with strong coding and visual task performance. 200K context window. Retired from ChatGPT Feb 2026; API access ends October 23, 2026.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        reasoning=True,
-        maximum_context_tokens=200000,
-        maximum_output_tokens=100000,
-        token_param_name="max_completion_tokens",
-        supports_temperature=False,
-        input_cost_hint=1.10,
-        output_cost_hint=4.40,
     ),
 }
 
@@ -258,7 +240,6 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
             "gpt-5.4-mini": 128000,
             "gpt-5.4-nano": 128000,
             "o3": 100000,
-            "o4-mini": 100000,
             "default": 100000,
         },
         supported_models=list(_NO_TEMPERATURE_MODELS),

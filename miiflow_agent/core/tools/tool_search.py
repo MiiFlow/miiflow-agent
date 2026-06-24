@@ -235,9 +235,36 @@ _TOOL_SEARCH_DESCRIPTION = (
     "not currently visible. Use this when none of the tools in your current toolset can "
     "accomplish the user's request. Pass a short natural-language query describing what "
     "you need (e.g. 'send email', 'read database', 'resize image'). Returns up to "
-    "max_results tools with their names, descriptions, and parameter schemas; those "
-    "tools become callable on subsequent turns."
+    "max_results matches with their names, descriptions, and parameter names. Their full "
+    "parameter schemas load automatically — the matched tools become directly callable on "
+    "your next turn."
 )
+
+
+def _compact_match(match: Dict[str, Any]) -> Dict[str, Any]:
+    """Project a registry search result down to what the model needs to DECIDE
+    to call a tool: its name, description, and parameter names.
+
+    The full JSON-Schema ``parameters`` block is deliberately dropped. It is
+    redundant in this observation — the registry re-emits the complete schema of
+    every enabled tool on the next turn (``get_filtered_schemas``), which is what
+    actually lets the model call it. Echoing the full schemas here only inflated
+    the tool_result (a handful of heavyweight tools reached ~36KB in prod), and
+    that observation lands in the cached message history, so trimming it is a
+    direct token/latency win on the search turn with no loss of capability.
+    """
+    compact: Dict[str, Any] = {
+        "name": match.get("name"),
+        "description": match.get("description", ""),
+    }
+    params = match.get("parameters")
+    props = params.get("properties") if isinstance(params, dict) else None
+    if isinstance(props, dict) and props:
+        compact["params"] = sorted(props.keys())
+        required = params.get("required")
+        if required:
+            compact["required"] = list(required)
+    return compact
 
 
 def build_tool_search_tool(registry: "ToolRegistry"):
@@ -264,7 +291,7 @@ def build_tool_search_tool(registry: "ToolRegistry"):
         mark_tools_enabled([m["name"] for m in matches])
         return {
             "query": query,
-            "results": matches,
+            "results": [_compact_match(m) for m in matches],
             "message": (
                 f"{len(matches)} tool(s) are now available to call directly on your next turn."
             ),

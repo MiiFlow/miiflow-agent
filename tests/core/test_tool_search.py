@@ -313,3 +313,164 @@ def test_size_cap_inactive_for_small_schemas():
     non_meta = [n for n in _names(schemas) if n != TOOL_SEARCH_TOOL_NAME]
     # Bound by count budget (threshold-1 = 7), not size.
     assert len(non_meta) == 7
+
+
+# ── Agent-level pre-load threshold override ──────────────────────────────────
+# Adapters (e.g. the Django layer) can force a modest, stable tool surface to be
+# pre-loaded in full instead of deferred behind tool_search, by passing
+# `tool_search_threshold=` to Agent(...). Pre-loading keeps the native tools
+# array byte-identical across ReAct iterations so Anthropic's prompt-cache
+# breakpoints keep hitting. The override must win over provider calibration and
+# must NOT leak across constructions that share a cached client/registry.
+
+
+def _agent(provider: str, **kwargs):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from miiflow_agent.core.agent import Agent, AgentType
+    from miiflow_agent.core.client import LLMClient
+
+    provider_client = MagicMock()
+    provider_client.provider_name = provider
+    provider_client.achat = AsyncMock()
+    provider_client.convert_schema_to_provider_format = MagicMock(side_effect=lambda s: s)
+    return Agent(LLMClient(provider_client), agent_type=AgentType.REACT, **kwargs)
+
+
+def test_agent_calibrates_threshold_to_provider_by_default():
+    # Anthropic's strict grammar compiler trips early → low ceiling.
+    assert _agent("anthropic").tool_registry.tool_search_threshold == 12
+    assert _agent("openai").tool_registry.tool_search_threshold == 25
+
+
+def test_agent_tool_search_threshold_override_wins_over_calibration():
+    agent = _agent("anthropic", tool_search_threshold=100)
+    assert agent.tool_registry.tool_search_threshold == 100
+
+
+def test_agent_threshold_override_does_not_leak_across_shared_registry():
+    # Same client/registry reused (LlmRegistry may cache clients). An override
+    # on one construction must not stick to the next non-override construction.
+    from unittest.mock import AsyncMock, MagicMock
+
+    from miiflow_agent.core.agent import Agent, AgentType
+    from miiflow_agent.core.client import LLMClient
+
+    provider_client = MagicMock()
+    provider_client.provider_name = "anthropic"
+    provider_client.achat = AsyncMock()
+    provider_client.convert_schema_to_provider_format = MagicMock(side_effect=lambda s: s)
+    shared = LLMClient(provider_client)
+
+    overridden = Agent(shared, agent_type=AgentType.REACT, tool_search_threshold=100)
+    assert overridden.tool_registry.tool_search_threshold == 100
+
+    plain = Agent(shared, agent_type=AgentType.REACT)
+    assert plain.tool_registry.tool_search_threshold == 12
+
+
+def test_tool_search_result_is_compact_no_full_schema():
+    """The tool_search observation returns only name/description/param-names —
+    NOT the full JSON-Schema. Full schemas are re-emitted next turn by
+    get_filtered_schemas, so echoing them here is redundant and inflates the
+    cached tool_result (the ~36KB prod regression)."""
+    import json
+
+    reg = _make_registry(50)
+
+    async def go():
+        with tool_search_session():
+            meta = reg.get_tool_search_tool()
+            result = await meta.acall(query="dummy 3", max_results=2)
+            assert result.success, result.error
+            out = result.output
+            assert out["results"], "expected matches"
+            for entry in out["results"]:
+                # Compact shape: name + description + param NAMES only.
+                assert set(entry) <= {"name", "description", "params", "required"}
+                assert "parameters" not in entry  # no full schema
+                if "params" in entry:
+                    assert all(isinstance(p, str) for p in entry["params"])
+                    assert entry["params"] == ["x"]  # the dummy tool's only param
+            # Sanity on size: a 2-match result must stay tiny.
+            assert len(json.dumps(out)) < 800
+
+    asyncio.run(go())
+
+
+# ── Native Anthropic server-side tool search (defer_loading) ─────────────────
+# When the registry warrants deferral AND the provider is first-party Anthropic,
+# _build_native_tool_schemas sends the FULL tool list with defer_loading on the
+# non-core tools and appends Anthropic's server search tool — replacing the
+# in-process meta-tool. The API strips deferred tools from the prompt, so the
+# tools cache prefix stays stable. (Live-API behavior verified separately.)
+
+def _executor(provider: str, n_tools: int, threshold: int, always_load_idx=()):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from miiflow_agent.core.agent import Agent, AgentType
+    from miiflow_agent.core.client import LLMClient
+    from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+    from miiflow_agent.core.tools.decorators import get_tool_from_function
+
+    provider_client = MagicMock()
+    provider_client.provider_name = provider
+    provider_client.achat = AsyncMock()
+    # Passthrough conversion: return a minimal provider dict carrying the name.
+    provider_client.convert_schema_to_provider_format = MagicMock(
+        side_effect=lambda s: {"name": s["name"], "description": s.get("description", ""),
+                               "input_schema": s.get("parameters", {})}
+    )
+    tools = []
+    for i in range(n_tools):
+        def _fn(x: int = 0, _i=i):
+            return x + _i
+        _fn.__name__ = f"nt_{i}"
+        tools.append(get_tool_from_function(
+            tool(name=f"nt_{i}", description=f"tool {i}", always_load=(i in always_load_idx))(_fn)
+        ))
+    agent = Agent(client=LLMClient(provider_client), agent_type=AgentType.REACT,
+                  tools=tools, tool_search_threshold=threshold)
+    return AgentToolExecutor(agent)
+
+
+def _native_names(schemas):
+    return [s.get("name") for s in schemas if isinstance(s, dict) and "name" in s]
+
+
+def test_native_tool_search_anthropic_defers_and_appends_search_tool():
+    from miiflow_agent.core.react.tool_executor import NATIVE_TOOL_SEARCH_TOOL
+
+    ex = _executor("anthropic", n_tools=5, threshold=2, always_load_idx={0})
+    schemas = ex._build_native_tool_schemas()
+    # Server search tool is appended LAST and is never deferred.
+    assert schemas[-1] == NATIVE_TOOL_SEARCH_TOOL
+    assert "defer_loading" not in schemas[-1]
+    # All 5 regular tools are still sent (full list), not hidden.
+    assert {f"nt_{i}" for i in range(5)} <= set(_native_names(schemas))
+    # always_load tool (nt_0) is NOT deferred; the rest ARE.
+    by_name = {s["name"]: s for s in schemas if "name" in s}
+    assert "defer_loading" not in by_name["nt_0"]
+    assert all(by_name[f"nt_{i}"].get("defer_loading") is True for i in range(1, 5))
+    # The in-process meta-tool is NOT emitted on the native path.
+    assert "tool_search" not in _native_names(schemas)
+    # cache_control never co-exists with defer_loading (would 400).
+    assert not any(s.get("defer_loading") and "cache_control" in s for s in schemas)
+
+
+def test_native_tool_search_only_for_anthropic():
+    # Non-Anthropic provider keeps the in-process meta-tool path: no defer_loading,
+    # and the native server search tool is absent.
+    ex = _executor("openai", n_tools=5, threshold=2)
+    schemas = ex._build_native_tool_schemas()
+    assert not any(isinstance(s, dict) and s.get("defer_loading") for s in schemas)
+    assert not any(isinstance(s, dict) and s.get("type", "").startswith("tool_search_tool") for s in schemas)
+
+
+def test_native_tool_search_off_below_threshold():
+    # Corpus at/below threshold → no deferral at all (pre-load everything),
+    # even on Anthropic. No defer flags, no server search tool.
+    ex = _executor("anthropic", n_tools=3, threshold=10)
+    schemas = ex._build_native_tool_schemas()
+    assert not any(isinstance(s, dict) and s.get("defer_loading") for s in schemas)
+    assert not any(isinstance(s, dict) and s.get("type", "").startswith("tool_search_tool") for s in schemas)

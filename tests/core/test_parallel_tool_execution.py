@@ -493,3 +493,71 @@ def test_orchestrator_all_failed_mixed_kinds_stays_all_failed():
             step.metadata["failure_kind"] = "all_failed"
 
     assert step.metadata["failure_kind"] == "all_failed"
+
+
+def test_execute_parallel_bounds_concurrency_with_semaphore():
+    """_execute_parallel must cap in-flight execution at _max_parallel_tools.
+    A wide batch (one dispatch per platform, each a full sub-agent) should not
+    stampede the loop — excess branches queue and start as slots free, but the
+    whole batch still completes in input order."""
+    import asyncio
+
+    from miiflow_agent.core.react.tool_executor import ToolCall
+    from miiflow_agent.core.tools import ToolResult
+
+    executor = _make_executor_with_tools({})
+    executor._max_parallel_tools = 2
+
+    inflight = 0
+    peak = 0
+
+    async def fake_execute_tool(name, inputs, context=None):
+        nonlocal inflight, peak
+        inflight += 1
+        peak = max(peak, inflight)
+        try:
+            await asyncio.sleep(0.01)  # hold the slot so overlap is observable
+            return ToolResult(name=name, input=inputs, output=name, success=True)
+        finally:
+            inflight -= 1
+
+    executor.execute_tool = fake_execute_tool
+
+    batch = [ToolCall(tool_call_id=str(i), name=f"t{i}", inputs={}) for i in range(6)]
+    results = asyncio.run(executor._execute_parallel(batch, context=None))
+
+    assert peak <= 2, f"concurrency exceeded cap: peak={peak}"
+    assert peak == 2, "expected the cap to actually be saturated"
+    # Results preserved, in input order, one per call.
+    assert [r.output for r in results] == [f"t{i}" for i in range(6)]
+
+
+def test_execute_parallel_unbounded_relative_to_small_batch():
+    """When the batch is within the cap, all branches run at once (no needless
+    serialization)."""
+    import asyncio
+
+    from miiflow_agent.core.react.tool_executor import ToolCall
+    from miiflow_agent.core.tools import ToolResult
+
+    executor = _make_executor_with_tools({})
+    executor._max_parallel_tools = 8
+
+    inflight = 0
+    peak = 0
+
+    async def fake_execute_tool(name, inputs, context=None):
+        nonlocal inflight, peak
+        inflight += 1
+        peak = max(peak, inflight)
+        try:
+            await asyncio.sleep(0.01)
+            return ToolResult(name=name, input=inputs, output=name, success=True)
+        finally:
+            inflight -= 1
+
+    executor.execute_tool = fake_execute_tool
+
+    batch = [ToolCall(tool_call_id=str(i), name=f"t{i}", inputs={}) for i in range(3)]
+    asyncio.run(executor._execute_parallel(batch, context=None))
+    assert peak == 3  # all three ran concurrently

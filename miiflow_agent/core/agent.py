@@ -253,6 +253,7 @@ class Agent(Generic[Deps, Result]):
         context_compression: bool = True,
         max_context_tokens: Optional[int] = None,
         enable_plan_mode: bool = False,
+        tool_search_threshold: Optional[int] = None,
     ):
         # Two construction modes:
         #   1) ``Agent(config=AgentConfig(...))`` — canonical, used by Stage 2+
@@ -268,7 +269,7 @@ class Agent(Generic[Deps, Result]):
                 )
             if any(
                 v is not None
-                for v in (system_prompt, tools, sub_agents, json_schema, max_tokens, max_context_tokens)
+                for v in (system_prompt, tools, sub_agents, json_schema, max_tokens, max_context_tokens, tool_search_threshold)
             ) or enable_plan_mode:
                 raise ValueError(
                     "When passing `config=`, supply all knobs via the "
@@ -337,6 +338,19 @@ class Agent(Generic[Deps, Result]):
         self.tool_registry.calibrate_for_provider(
             getattr(_provider_client, "provider_name", None)
         )
+        # Adapter-supplied override: pre-load a modest, stable tool surface
+        # rather than defer it behind tool_search. Keeping the native tools
+        # array byte-identical across ReAct iterations lets Anthropic's
+        # prompt-cache breakpoints (tools/system/history) keep hitting — a
+        # mid-loop tool_search grows the tools array and busts all three tiers
+        # (render order is tools→system→messages). Applied AFTER calibration
+        # so it wins, and re-applied on every construction so a shared/cached
+        # registry can't leak one assistant's threshold to another. Grammar-
+        # compilation safety for the larger set falls to AnthropicClient's
+        # strict-tool cap + reactive demote-all-strict retry, so the low
+        # provider ceiling is not needed here.
+        if tool_search_threshold is not None:
+            self.tool_registry.tool_search_threshold = tool_search_threshold
         self._tools: List[FunctionTool] = []
         self._sub_agents: List["SubAgent"] = []
 

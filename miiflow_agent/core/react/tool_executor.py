@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -11,6 +12,40 @@ from ..callback_context import get_callback_context
 from ..tools import ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+def _env_max_parallel_tools(default: int = 8) -> int:
+    """Read the in-flight cap for a parallel tool batch from the environment."""
+    try:
+        return max(1, int(os.environ.get("MIIFLOW_MAX_PARALLEL_TOOLS", default)))
+    except (TypeError, ValueError):
+        return default
+
+
+#: Anthropic's server-side tool-search tool. When a registry is large enough to
+#: warrant deferral AND the provider is first-party Anthropic, we send the FULL
+#: tool list every turn with ``defer_loading: true`` on the non-core tools and
+#: append this server tool. The API strips deferred tools from the prompt — so
+#: the tools cache prefix stays byte-identical across turns (no cache bust) — and
+#: the model discovers hidden tools through this tool (results arrive as
+#: ``tool_search_tool_result`` blocks). Replaces the in-process meta-tool +
+#: enabled-set bookkeeping for Anthropic. (Bedrock is intentionally excluded: the
+#: tool is InvokeModel-only there, incompatible with this Converse-shaped client.)
+NATIVE_TOOL_SEARCH_TOOL: Dict[str, str] = {
+    "type": "tool_search_tool_regex_20251119",
+    "name": "tool_search_tool_regex",
+}
+
+
+#: Upper bound on tools run CONCURRENTLY within a single parallel batch.
+#: ``execute_many`` can receive an arbitrarily wide batch — e.g. the model emits
+#: one ``dispatch_assistant`` per connected platform plus a few reads — and each
+#: parallel branch may itself spawn a full sub-agent run. Launching all of them
+#: at once stampedes the event loop, the LLM provider's rate limits, and the
+#: downstream ad-platform APIs. The cap bounds in-flight execution; excess calls
+#: queue and start as slots free, so the batch still completes — just not all at
+#: once. Override with ``MIIFLOW_MAX_PARALLEL_TOOLS``.
+DEFAULT_MAX_PARALLEL_TOOLS = _env_max_parallel_tools()
 
 
 @dataclass
@@ -36,6 +71,10 @@ class AgentToolExecutor:
         self._tool_registry = agent.tool_registry
         self._client = agent.client
         self.tool_filter = tool_filter  # Optional ToolFilter for narrowing available tools
+        # Max tools run concurrently in one parallel batch (see
+        # DEFAULT_MAX_PARALLEL_TOOLS). Instance attribute so tests / callers can
+        # override without touching the module constant.
+        self._max_parallel_tools = DEFAULT_MAX_PARALLEL_TOOLS
 
     async def execute_tool(self, tool_name: str, inputs: dict, context=None) -> ToolResult:
         """Execute tool with context injection if context is provided.
@@ -203,10 +242,24 @@ class AgentToolExecutor:
         isolation. See the dispatch_assistant flow (Django
         ``AssistantInvoker``) for the parent-most consumer of this
         invariant.
+
+        Concurrency is bounded by ``self._max_parallel_tools``: a shared
+        semaphore is acquired INSIDE each task (so the per-branch Context copy
+        from ``create_task`` is preserved) and only N branches run at once.
+        Excess branches queue and start as slots free — the batch still
+        completes in input order; it just doesn't stampede the loop / provider
+        rate limits / downstream APIs when the model emits a very wide batch
+        (e.g. one ``dispatch_assistant`` per platform, each a full sub-agent).
         """
+        semaphore = asyncio.Semaphore(self._max_parallel_tools)
+
+        async def _run(tc: ToolCall) -> ToolResult:
+            async with semaphore:
+                return await self.execute_tool(tc.name, tc.inputs, context=context)
+
         tasks = [
             asyncio.create_task(
-                self.execute_tool(tc.name, tc.inputs, context=context),
+                _run(tc),
                 name=f"tool:{tc.name}:{tc.tool_call_id}",
             )
             for tc in tool_calls
@@ -477,13 +530,40 @@ class AgentToolExecutor:
         every registered function tool is included (legacy behaviour).
         """
         from ..tools import FunctionTool
-        from ..tools.tool_search import get_enabled_tool_names, is_session_active
-
-        # Determine which tools to expose this turn.
-        use_tool_search = (
-            is_session_active() and self._tool_registry.should_use_tool_search()
+        from ..tools.tool_search import (
+            get_enabled_tool_names,
+            get_pinned_tool_names,
+            is_session_active,
         )
-        if use_tool_search:
+
+        provider_name = getattr(self._client.client, "provider_name", None)
+        wants_search = self._tool_registry.should_use_tool_search()
+
+        # Native server-side tool search (Anthropic first-party only). Send the
+        # FULL tool list every turn with ``defer_loading`` on everything outside
+        # the always-load/pinned core; the API strips deferred tools from the
+        # prompt so the cache prefix is stable, and the model surfaces them via
+        # NATIVE_TOOL_SEARCH_TOOL. This supersedes the in-process meta-tool for
+        # Anthropic — no enabled-set hiding, hence no mid-loop tools-array growth.
+        native_search = wants_search and provider_name == "anthropic"
+        # In-process meta-tool path (non-Anthropic providers): hide undiscovered
+        # tools and expose the meta-tool so the model can enable them by name.
+        use_tool_search = (
+            not native_search and is_session_active() and wants_search
+        )
+
+        keep_loaded: set = set()
+        if native_search:
+            # Stable core that is never deferred (so it can't accidentally be the
+            # cache_control target — deferred tools reject cache_control — and so
+            # discovery isn't needed for the always-on tools). The server search
+            # tool itself satisfies Anthropic's "≥1 non-deferred tool" rule, so an
+            # empty core is fine.
+            keep_loaded = set(self._tool_registry.get_always_load_names()) | set(
+                get_pinned_tool_names()
+            )
+            tool_names = self.list_tools()
+        elif use_tool_search:
             visible = set(self._tool_registry.get_always_load_names())
             enabled = get_enabled_tool_names()
             if enabled:
@@ -519,10 +599,20 @@ class AgentToolExecutor:
 
             # Convert to provider-specific format
             provider_schema = self._client.client.convert_schema_to_provider_format(filtered_schema)
+
+            # Native deferral: flag non-core tools so the API strips them from
+            # the prompt until the model discovers them via the server search
+            # tool. defer_loading is mutually exclusive with cache_control, but
+            # _apply_prompt_caching only ever marks the LAST tool and we append
+            # the (non-deferred) search tool last, so a deferred tool is never
+            # the breakpoint target.
+            if native_search and tool_name not in keep_loaded:
+                provider_schema["defer_loading"] = True
+
             native_schemas.append(provider_schema)
 
-        # Append the tool_search meta-tool when ToolSearch is active so the
-        # model can discover hidden tools by name/keyword.
+        # Append the tool_search meta-tool when in-process ToolSearch is active so
+        # the model can discover hidden tools by name/keyword.
         if use_tool_search:
             meta_tool = self._tool_registry.get_tool_search_tool()
             meta_universal = meta_tool.schema.to_universal_schema()
@@ -535,9 +625,19 @@ class AgentToolExecutor:
         if self.tool_filter:
             native_schemas = self.tool_filter.filter_schemas(native_schemas)
 
+        # Append Anthropic's server-side search tool AFTER the filter (so it is
+        # never dropped) and LAST (so _apply_prompt_caching's final-tool
+        # cache_control lands on it — valid on the search tool, rejected on any
+        # defer_loading tool). Discovery results stream back as
+        # tool_search_tool_result blocks, which the stream normalizer ignores;
+        # the discovered tool_use executes through the registry like any other.
+        if native_search:
+            native_schemas.append(dict(NATIVE_TOOL_SEARCH_TOOL))
+
         logger.debug(
             f"Built {len(native_schemas)} native tool schemas for provider "
-            f"{self._client.client.provider_name} (tool_search={use_tool_search})"
+            f"{provider_name} (native_search={native_search}, "
+            f"meta_tool_search={use_tool_search})"
         )
 
         # Debug: Log the actual schemas being sent

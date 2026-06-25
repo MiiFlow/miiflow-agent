@@ -570,9 +570,26 @@ class AnthropicClient(ModelClient):
 
     @staticmethod
     def _is_schema_too_complex_error(error: Exception) -> bool:
-        """True if `error` is Anthropic's tool-schema grammar-compilation 400."""
+        """True if `error` is Anthropic's tool-schema grammar-compilation 400.
+
+        Anthropic returns this rejection under at least two distinct wordings,
+        both meaning the strict-tool grammar can't be compiled cheaply and both
+        remedied by demoting strict tools:
+        - "Schema is too complex for compilation" — a single schema or the
+          combined optional/union counts exceed a hard cap.
+        - "The compiled grammar is too large, which would cause performance
+          issues. Simplify your tool schemas or reduce the number of strict
+          tools." — the residual "grammar simply too large" case with no fixed
+          count, which the proactive `_apply_strict_tool_cap` can't pre-empt.
+        Match either so the `_demote_all_strict_tools` backstop fires for both.
+        """
         text = str(getattr(error, "message", None) or error).lower()
-        return "too complex for compilation" in text or "schema is too complex" in text
+        return (
+            "too complex for compilation" in text
+            or "schema is too complex" in text
+            or "compiled grammar is too large" in text
+            or "reduce the number of strict tools" in text
+        )
 
     # Block types that accept a cache_control marker. Notably absent:
     # thinking / redacted_thinking — marking those is a 400.

@@ -315,6 +315,21 @@ def test_is_schema_too_complex_error_matches_message():
     assert AnthropicClient._is_schema_too_complex_error(Exception("rate limit")) is False
 
 
+def test_is_schema_too_complex_error_matches_grammar_too_large_message():
+    """Anthropic's alternate wording for the same grammar-compilation 400."""
+    from miiflow_agent.providers.anthropic_client import AnthropicClient
+
+    class _Err(Exception):
+        message = (
+            "Error code: 400 - {'type': 'error', 'error': {'type': "
+            "'invalid_request_error', 'message': 'The compiled grammar is too "
+            "large, which would cause performance issues. Simplify your tool "
+            "schemas or reduce the number of strict tools.'}}"
+        )
+
+    assert AnthropicClient._is_schema_too_complex_error(_Err()) is True
+
+
 def test_demote_all_strict_tools_demotes_every_strict_tool():
     from miiflow_agent.providers.anthropic_client import AnthropicClient
 

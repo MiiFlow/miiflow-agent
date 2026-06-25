@@ -21,7 +21,7 @@ def tool(
     tags: Optional[List[str]] = None,
     parameters: Optional[Dict[str, ParameterSchema]] = None,
     return_schema: Optional[Dict[str, Any]] = None,
-    strict: bool = True,
+    strict: bool = False,
     require_approval: bool = False,
     parallelizable: bool = False,
     always_load: bool = False,
@@ -38,12 +38,20 @@ def tool(
         parameters: Explicit parameter schemas (overrides reflection)
         return_schema: Explicit return type schema
         strict: Enable strict mode for type-safe function calling (for supported
-            models). Default True — sets additionalProperties=false on object
-            schemas, blocking the model from passing fields belonging to a
-            different tool (e.g. Google Ads `customer_id` to a Meta Ads tool).
-            Opt out with strict=False if your tool has bare `items={"type":
-            "object"}` arrays without nested property schemas; strict mode
-            would forbid all object content there.
+            models). Default False — OPT-IN. When True it sets
+            additionalProperties=false on object schemas, blocking the model from
+            passing fields belonging to a different tool (e.g. Google Ads
+            `customer_id` to a Meta Ads tool). Anthropic compiles every strict
+            tool into one constrained-decoding grammar and caps the *combined*
+            strict set per request (≤20 tools / ≤24 optional / ≤16 union params,
+            plus a residual "grammar too large"), so strict must stay opt-in:
+            defaulting it on made every pre-loaded tool set overflow the grammar
+            and 400. Set strict=True ONLY for a small read/query tool with
+            cognitively-similar siblings whose param shapes the model confuses
+            (e.g. `google_ads_query`, `meta_ads_insights`). Never set it on
+            union/optional-heavy schemas (the `*_mutate` tools) — they are the
+            fastest to blow the grammar budget, and their executors validate
+            args server-side regardless.
         require_approval: If True, tool requires user approval before execution (default: False)
         parallelizable: If True, the orchestrator may run this tool concurrently
             with other parallelizable tools the model emits in the same

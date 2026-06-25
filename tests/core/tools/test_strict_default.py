@@ -1,11 +1,14 @@
-"""Tests for strict-by-default tool registration and the per-request cap.
+"""Tests for strict-mode tool registration (opt-in) and the per-request cap.
 
 Strict mode (`additionalProperties: false` + Anthropic's structured-outputs
 flag) prevents the model from passing the wrong tool's parameter shape to
-the wrong tool — the exact failure mode CRITICAL RULE 7 in the Adlyse
-prompt warns about. We default it on so every new tool gets the
-protection without an explicit opt-in. Tools that need the looser shape
-(e.g. bare `items={"type":"object"}` arrays) opt out with strict=False.
+the wrong tool. But Anthropic compiles every strict tool into one
+constrained-decoding grammar and caps the combined strict set per request
+(≤20 tools / ≤24 optional / ≤16 union params, plus a residual "grammar too
+large"). Defaulting strict ON made every pre-loaded tool set overflow that
+grammar and 400, so strict is now OPT-IN: only the handful of read/query
+tools with confusable siblings set strict=True. Everything else (incl. the
+union-heavy `*_mutate` schemas) stays loose.
 """
 
 import pytest
@@ -13,12 +16,14 @@ import pytest
 from miiflow_agent.core.tools.decorators import tool
 
 
-def test_tool_default_is_strict():
+def test_tool_default_is_non_strict():
     @tool(name="t_default")
     def f(ctx, x: str) -> str:
         return x
 
-    assert f._tool_schema.metadata.get("strict") is True
+    # strict is opt-in: the default must NOT set the metadata flag, so
+    # provider adapters fall through to the LOOSE schema mode.
+    assert "strict" not in f._tool_schema.metadata
 
 
 def test_explicit_strict_false_survives():

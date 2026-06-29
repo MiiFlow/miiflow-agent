@@ -2,6 +2,34 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.10.0] - 2026-06-29
+
+### Added
+- **Durable pause/resume with intent-scoped approvals** (`core/checkpoint.py`, `core/interrupt.py`, `core/react/orchestrator.py`): New typed `EstablishedFact` and `PendingInterrupt` models (exported from the package root) make clarification and approval state deterministic — questions are keyed by a stable slug so a re-asked question short-circuits to its known answer instead of pausing again. A single `GraphInterrupt` primitive unifies clarification, tool-approval, and plan-approval flows; the orchestrator catches it, checkpoints the typed interrupt, and surfaces it through one path.
+- **Multi-choice clarification questions** (`core/tools/clarification.py`): The clarification tool now carries multiple `ClarificationQuestion` entries per pause, each optionally multi-select, so agents can present structured choices in one round-trip instead of open-ended text prompts.
+- **Native Anthropic server-side tool search** (`core/react/tool_executor.py`, `core/tools/tool_search.py`): When the registry is large enough to warrant tool search on an Anthropic model, the full tool list is sent every turn with non-core tools flagged `defer_loading: true`; the API strips deferred tools from the prompt (preserving the cache prefix) and the model discovers them via the server-side regex, replacing the in-process meta-tool on that path.
+- **Bounded parallel tool execution** (`core/react/tool_executor.py`): Parallel tool batches are now gated by a semaphore (`MIIFLOW_MAX_PARALLEL_TOOLS`, default 8) — excess calls queue and start as slots free, preventing event-loop, provider-rate-limit, and downstream-API stampedes when the model emits very wide batches.
+- **Claude Fable 5** (`models/anthropic.py`): Added Anthropic's newest flagship for demanding reasoning and long-horizon agentic work.
+
+### Changed
+- **Model roster refresh** (`models/anthropic.py`, `models/openai.py`, `models/google.py`): Added Claude Fable 5; promoted Gemini 3.1 Pro to GA (`gemini-3.1-pro`, dropping the `-preview` suffix). See **Removed** for retired entries.
+- **Anthropic prompt-cache breakpoints** (`providers/anthropic_client.py`, `core/stream_normalizer.py`): Cache-control markers are now placed correctly across multi-turn conversations, plus suggestion-run cost linkage and structured log correlation for observability.
+- **Strict tool-schema caps** (`providers/anthropic_client.py`): Union-typed parameters (`anyOf`/`oneOf` or multi-entry `type`) are now counted and bounded to 16 per request alongside the existing 20-tool / 24-optional-param caps; exceeding any cap demotes excess tools to non-strict in precedence order, and a residual "schema too complex" 400 triggers an automatic full demotion fallback.
+- **MCP tool registration safety** (`core/tools/registry.py`): An empty allowlist passed to `register_mcp_manager()` now registers all discovered tools (rather than silently hiding them); restriction requires a non-empty set, and a loud warning fires if a manager advertised tools but none registered. MCP/HTTP tools are also now visible to schema lookup, context-injection checks, and `has_tool` queries.
+
+### Fixed
+- **Agent and video-fetch reliability** (`providers/anthropic_client.py`, `core/tools/decorators.py`): Corrected strict-default handling and tool-decorator behavior so subscription webhook events and video creative displays surface reliably.
+- **Soft-deleted rows double-counted in ad metrics** (`core/react/tool_executor.py`): Pacing and creative-timeseries metrics no longer double-count soft-deleted rows during parallel evaluation.
+- **Multi-agent campaign creation/update** (`core/tools/clarification.py`, `core/react/events/bus.py`): Reserved kwargs are scoped to avoid collisions when agents share a tool, and clarification serialization handles both the legacy single-question and new multi-question shapes.
+
+### Removed
+- **Retired model entries** **(breaking for callers pinning these IDs)**: Removed Claude `claude-opus-4.5`, `claude-sonnet-4.5`, and `claude-opus-4.1` (`models/anthropic.py`); OpenAI `o4-mini`, `o3-mini`, `o3-pro`, and `gpt-4o-mini` (`models/openai.py`); and Google `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, plus the preview aliases `gemini-3.1-pro-preview` and `gemini-3-flash-preview` (`models/google.py`).
+
+  #### Migration notes
+  - Anthropic: move to `claude-fable-5` or `claude-opus-4.8`.
+  - OpenAI: move to the GPT-5.x series (or `o3` where a reasoning model is required).
+  - Google: move to `gemini-3.5-flash` or `gemini-3.1-pro` (the GA replacement for `gemini-3.1-pro-preview`).
+
 ## [1.9.0] - 2026-05-28
 
 ### Added

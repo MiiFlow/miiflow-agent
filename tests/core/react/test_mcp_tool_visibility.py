@@ -37,10 +37,17 @@ def _make_stub_mcp_tool(server_name: str, tool_name: str, description: str) -> M
     return MCPTool(mcp_definition, connection, server_name)
 
 
-def _make_mock_agent_with_registry(registry: ToolRegistry):
-    """Mirror the pattern in test_orchestrator.TestNativeToolCallingMode."""
+def _make_mock_agent_with_registry(registry: ToolRegistry, provider_name: str = "openai"):
+    """Mirror the pattern in test_orchestrator.TestNativeToolCallingMode.
+
+    Defaults to a non-Anthropic provider so the in-process meta-tool gating
+    path is exercised (undiscovered tools are omitted from the schema list).
+    Anthropic uses first-party server-side tool search, which sends the full
+    list with ``defer_loading`` instead of hiding — covered separately by
+    ``test_unenabled_mcp_tool_deferred_under_native_search``.
+    """
     mock_model_client = MagicMock()
-    mock_model_client.provider_name = "anthropic"
+    mock_model_client.provider_name = provider_name
     # Identity formatter — keeps the universal schema shape so assertions
     # can read top-level "name" directly.
     mock_model_client.convert_schema_to_provider_format = MagicMock(
@@ -124,4 +131,40 @@ def test_unenabled_mcp_tool_stays_hidden_under_tool_search():
     assert mcp_tool.name not in surfaced_names, (
         "MCP tool should stay hidden until tool_search surfaces it; got "
         f"{surfaced_names}"
+    )
+
+
+def test_unenabled_mcp_tool_deferred_under_native_search():
+    """Anthropic native search hides tools via ``defer_loading``, not omission.
+
+    Unlike the in-process meta-tool path, the first-party server-side search
+    (``provider_name == "anthropic"``) sends the FULL tool list every turn so
+    the cache prefix stays stable, marking undiscovered tools ``defer_loading``
+    so the API strips them from the prompt. The MCP tool must therefore be
+    present in the schema list but flagged deferred until surfaced.
+    """
+    registry = ToolRegistry(tool_search_enabled=True, tool_search_threshold=0)
+    mcp_tool = _make_stub_mcp_tool(
+        server_name="Supabase",
+        tool_name="execute_sql",
+        description="Executes raw SQL in the Postgres database.",
+    )
+    registry.register_mcp_tool(mcp_tool)
+
+    agent = _make_mock_agent_with_registry(registry, provider_name="anthropic")
+    executor = AgentToolExecutor(agent)
+
+    with tool_search_session():
+        schemas = executor._build_native_tool_schemas()
+
+    mcp_schema = next(
+        (s for s in schemas if s.get("name") == mcp_tool.name), None
+    )
+    assert mcp_schema is not None, (
+        "Native search must keep the MCP tool in the schema list (deferred), "
+        f"not drop it; got {[s.get('name') for s in schemas]}"
+    )
+    assert mcp_schema.get("defer_loading") is True, (
+        "Undiscovered MCP tool must be marked defer_loading under native "
+        f"search; got {mcp_schema!r}"
     )

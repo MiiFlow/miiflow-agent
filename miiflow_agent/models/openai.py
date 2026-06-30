@@ -4,10 +4,10 @@ from typing import Dict
 
 from .base import ModelConfig, ParameterConfig, ParameterType
 
-# Models that use max_completion_tokens instead of max_tokens
-_REASONING_MODELS = {
-    "o3",
-}
+# O-series reasoning models that use max_completion_tokens instead of max_tokens.
+# Currently empty: o3 was retired after its June 2026 deprecation; the GPT-5.x
+# reasoning models are tracked separately in _GPT5_MODELS below.
+_REASONING_MODELS: set[str] = set()
 
 _GPT5_MODELS = {
     "gpt-5.5",
@@ -179,24 +179,6 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=0.10,
         output_cost_hint=0.40,
     ),
-    # O-series reasoning models (use max_completion_tokens)
-    "o3": ModelConfig(
-        model_identifier="o3",
-        name="o3",
-        description="Deprecated — succeeded by the GPT-5.x series. Reasoning model with strong math, science, and coding performance. Deprecated June 11, 2026; API access ends December 11, 2026.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        reasoning=True,
-        maximum_context_tokens=200000,
-        maximum_output_tokens=100000,
-        token_param_name="max_completion_tokens",
-        supports_temperature=False,
-        input_cost_hint=2.00,
-        output_cost_hint=8.00,
-    ),
 }
 
 
@@ -239,7 +221,6 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
             "gpt-5.4-pro": 128000,
             "gpt-5.4-mini": 128000,
             "gpt-5.4-nano": 128000,
-            "o3": 100000,
             "default": 100000,
         },
         supported_models=list(_NO_TEMPERATURE_MODELS),

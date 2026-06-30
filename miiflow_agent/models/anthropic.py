@@ -8,7 +8,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-fable-5": ModelConfig(
         model_identifier="claude-fable-5",
         name="claude-fable-5",
-        description="Anthropic's most capable model (released June 9, 2026). Built for demanding reasoning and long-horizon agentic work. Features adaptive thinking, structured outputs, and 1M context window.",
+        description="Anthropic's most capable model (released June 9, 2026). NOTE: API access has been suspended since June 12, 2026 to comply with a US export-control directive and calls currently error out; Anthropic has stated it expects to restore access. Built for demanding reasoning and long-horizon agentic work, with adaptive thinking, structured outputs, and a 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -77,10 +77,28 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=5.0,
         output_cost_hint=25.0,
     ),
+    "claude-sonnet-5": ModelConfig(
+        model_identifier="claude-sonnet-5",
+        name="claude-sonnet-5",
+        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. 1M context window. Introductory pricing of $2/$10 per 1M input/output tokens applies through August 31, 2026, reverting to $3/$15 on September 1, 2026.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=1000000,
+        maximum_output_tokens=128000,
+        token_param_name="max_tokens",
+        supports_temperature=False,
+        input_cost_hint=2.0,
+        output_cost_hint=10.0,
+    ),
     "claude-sonnet-4.6": ModelConfig(
         model_identifier="claude-sonnet-4-6",
         name="claude-sonnet-4.6",
-        description="High-performance model with excellent balance of intelligence, speed, and cost. Features extended thinking, adaptive thinking, and structured outputs. 1M context window.",
+        description="Legacy — succeeded by Claude Sonnet 5 (June 2026). High-performance model with excellent balance of intelligence, speed, and cost. Features extended thinking, adaptive thinking, and structured outputs. 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -139,6 +157,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
             "claude-opus-4.8": 128000,
             "claude-opus-4.7": 128000,
             "claude-opus-4.6": 128000,
+            "claude-sonnet-5": 128000,
             "claude-sonnet-4.6": 64000,
             "claude-haiku-4.5": 64000,
             "default": 8192,
@@ -148,7 +167,12 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
 ]
 
 
-_NO_EXTENDED_THINKING = {"claude-fable-5", "claude-opus-4.8", "claude-opus-4.7"}
+_NO_EXTENDED_THINKING = {
+    "claude-fable-5",
+    "claude-opus-4.8",
+    "claude-opus-4.7",
+    "claude-sonnet-5",
+}
 
 
 def _get_thinking_models() -> list[str]:

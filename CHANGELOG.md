@@ -2,6 +2,24 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [Unreleased]
+
+### Added
+- **Claude Sonnet 5** (`models/anthropic.py`): Added Anthropic's most agentic Sonnet model (released June 30, 2026, model id `claude-sonnet-5`), succeeding Sonnet 4.6. Adaptive thinking is on by default — manual extended thinking and non-default sampling params (temperature/top_p/top_k) are rejected — so it is registered with `supports_temperature=False` and in `_NO_EXTENDED_THINKING`. 1M context, 128K max output, structured outputs. Introductory pricing $2/$10 per 1M tokens through Aug 31, 2026, reverting to $3/$15. Also added the matching Bedrock entry (`core/llms/bedrock.py`).
+
+### Changed
+- **Claude Sonnet 4.6 → legacy** (`models/anthropic.py`, `core/llms/bedrock.py`): Marked as succeeded by Claude Sonnet 5.
+- **Claude Fable 5 availability note** (`models/anthropic.py`): Updated the description to flag that API access has been suspended since June 12, 2026 to comply with a US export-control directive (calls currently error out); Anthropic has stated it expects to restore access. The entry is retained so it reactivates automatically once access returns.
+
+### Removed
+- **Retired OpenAI `o3`** **(breaking for callers pinning this ID)** (`models/openai.py`): Removed the deprecated `o3` reasoning model (deprecated June 11, 2026, API shutdown December 11, 2026) along with its parameter-map and `_REASONING_MODELS` entries.
+
+  #### Migration notes
+  - OpenAI: move to the GPT-5.x series (e.g. `gpt-5.5` / `gpt-5.4`) for reasoning workloads.
+
+### Notes
+- Reviewed the full roster against current provider data (June 30, 2026): pricing, context windows, and "flagship" labels remain accurate. GPT-5.6 (Sol/Terra/Luna) and Gemini 3.5 Pro were **not** added — both are limited-preview/unreleased and would error for general API keys.
+
 ## [1.10.0] - 2026-06-29
 
 ### Added

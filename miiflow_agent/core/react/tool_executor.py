@@ -568,6 +568,11 @@ class AgentToolExecutor:
             enabled = get_enabled_tool_names()
             if enabled:
                 visible.update(enabled)
+            # Pinned continuation tools (the session's `initial` seed — e.g. a
+            # just-approved tool the model must call again on resume) are
+            # always visible and never evicted, matching the native_search
+            # branch above and the tool_search contract.
+            visible.update(get_pinned_tool_names())
             # The meta-tool itself is always exposed under tool_search.
             tool_names = [name for name in self.list_tools() if name in visible]
         else:

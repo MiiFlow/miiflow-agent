@@ -168,3 +168,42 @@ def test_unenabled_mcp_tool_deferred_under_native_search():
         "Undiscovered MCP tool must be marked defer_loading under native "
         f"search; got {mcp_schema!r}"
     )
+
+
+def test_pinned_mcp_tool_visible_under_tool_search():
+    """A pinned continuation tool must survive the in-process meta-tool gate.
+
+    ``tool_search_session(initial={...})`` seeds the PINNED set — the tools
+    the conversation was already using (e.g. a just-approved tool the model
+    must call again on resume). Pinned tools are "always visible and never
+    evicted" per the tool_search contract; the ``native_search`` branch and
+    the server-side ``search_filter`` already honor this. Pre-fix bug: the
+    non-Anthropic ``use_tool_search`` branch built its visible set from
+    always_load | enabled only, so a pinned tool with an empty discovered
+    set was dropped from the schemas sent to the LLM.
+    """
+    registry = ToolRegistry(tool_search_enabled=True, tool_search_threshold=0)
+    mcp_tool = _make_stub_mcp_tool(
+        server_name="Supabase",
+        tool_name="execute_sql",
+        description="Executes raw SQL in the Postgres database.",
+    )
+    registry.register_mcp_tool(mcp_tool)
+    namespaced = mcp_tool.name  # "Supabase__execute_sql"
+
+    agent = _make_mock_agent_with_registry(registry)
+    executor = AgentToolExecutor(agent)
+
+    # Pinned via `initial`; the discovered/enabled set stays EMPTY — the
+    # exact resume scenario.
+    with tool_search_session(initial={namespaced}):
+        schemas = executor._build_native_tool_schemas()
+
+    surfaced_names = {
+        s.get("name") or (s.get("function") or {}).get("name")
+        for s in schemas
+    }
+    assert namespaced in surfaced_names, (
+        f"Pinned tool '{namespaced}' must stay visible under tool_search "
+        f"(continuation contract). Surfaced: {surfaced_names}"
+    )

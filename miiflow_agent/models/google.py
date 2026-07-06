@@ -29,7 +29,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.1-pro": ModelConfig(
         model_identifier="models/gemini-3.1-pro",
         name="gemini-3.1-pro",
-        description="Google's most capable Pro model with strong reasoning. GA since February 2026. 1M token context window.",
+        description="Google's most capable Pro model with strong reasoning and an industry-leading 2M token context window (GA since May 2026). Tiered pricing: $2/$12 per 1M input/output tokens for prompts up to 200K tokens, rising to $4/$18 above 200K.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -37,7 +37,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         supports_tool_call=True,
         supports_structured_outputs=False,
         reasoning=True,
-        maximum_context_tokens=1048576,
+        maximum_context_tokens=2097152,
         maximum_output_tokens=65536,
         token_param_name="max_output_tokens",
         supports_temperature=True,

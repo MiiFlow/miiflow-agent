@@ -9,6 +9,14 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # reasoning models are tracked separately in _GPT5_MODELS below.
 _REASONING_MODELS: set[str] = set()
 
+# NOTE: The GPT-5.6 series (Sol / Terra / Luna, previewed June 26, 2026) is
+# intentionally NOT listed here yet. It is a limited preview available only to
+# approved partners with an OpenAI account representative, and OpenAI states the
+# canonical API model identifiers are not final and "can change." Adding it as a
+# selectable model would surface hard "no access"/"model not found" errors for
+# the general users who bring their own OpenAI keys. Add Sol/Terra/Luna once they
+# reach general availability with confirmed model-id strings (expected pricing:
+# Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per 1M input/output tokens).
 _GPT5_MODELS = {
     "gpt-5.5",
     "gpt-5.5-pro",
@@ -23,11 +31,12 @@ _NO_TEMPERATURE_MODELS = _REASONING_MODELS | _GPT5_MODELS
 
 
 OPENAI_MODELS: Dict[str, ModelConfig] = {
-    # GPT-5.5 series (released April 23, 2026) — current flagship line
+    # GPT-5.5 series (released April 23, 2026) — flagship generally-available line
+    # (the GPT-5.6 Sol/Terra/Luna series is in limited preview; see note above).
     "gpt-5.5": ModelConfig(
         model_identifier="gpt-5.5",
         name="gpt-5.5",
-        description="GPT-5.5 is OpenAI's flagship model (released April 23, 2026), a 'new class of intelligence' with stronger coding and agentic capabilities. 82.7% on Terminal-Bench 2.0, 58.6% on SWE-Bench Pro. 1M context window. Priced at 2x GPT-5.4.",
+        description="GPT-5.5 is OpenAI's flagship generally-available model (released April 23, 2026), a 'new class of intelligence' with stronger coding and agentic capabilities. 82.7% on Terminal-Bench 2.0, 58.6% on SWE-Bench Pro. 1M context window. Priced at 2x GPT-5.4. The GPT-5.6 Sol/Terra/Luna series is in limited preview as of June 2026 and will supersede this line once generally available.",
         support_images=True,
         support_files=True,
         support_streaming=True,

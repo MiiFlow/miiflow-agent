@@ -2587,6 +2587,12 @@ class ReActOrchestrator:
         for i, inv in enumerate(invocations):
             if inv.tool_call_id in pre_exec_errors or not inv.name:
                 continue
+            if isinstance(inv.inputs, dict):
+                inv.inputs = self._resolve_media_refs(
+                    inv.inputs,
+                    state,
+                    tool_name=inv.name,
+                )
             runnable.append(
                 ToolCall(
                     tool_call_id=inv.tool_call_id, name=inv.name, inputs=inv.inputs
@@ -3447,10 +3453,16 @@ class ReActOrchestrator:
                     f"Tool '{step.action}' expects dict input but got: {step.action_input}"
                 )
 
-        # Resolve media_ref:<id> references in tool inputs to actual URLs
-        # This enables image editing tools to reference previously generated images
+        # Resolve media_ref:<id> references in tool inputs to actual URLs.
+        # Some tools intentionally accept symbolic refs because they need to
+        # resolve them against media_store themselves, for example to recover
+        # the backing FileAsset before saving into a workspace.
         if isinstance(step.action_input, dict) and state:
-            step.action_input = self._resolve_media_refs(step.action_input, state)
+            step.action_input = self._resolve_media_refs(
+                step.action_input,
+                state,
+                tool_name=step.action,
+            )
 
         # Expose media_store + event_bus + step_number to tools so they can:
         #   - resolve media_ref IDs without re-implementing resolution logic
@@ -3482,7 +3494,20 @@ class ReActOrchestrator:
             step.action, step.action_input, context=context if needs_context else None
         )
 
-    def _resolve_media_refs(self, inputs: dict, state: "ExecutionState") -> dict:
+    _MEDIA_REF_PASSTHROUGH_PARAMS = {
+        "generate_ad_image": {"reference_media_ref"},
+        "save_generated_creative": {"image_media_ref"},
+        "save_file": {"source"},
+        "view_media": {"media_refs"},
+        "analyze_creative": {"media_refs"},
+    }
+
+    def _resolve_media_refs(
+        self,
+        inputs: dict,
+        state: "ExecutionState",
+        tool_name: str | None = None,
+    ) -> dict:
         """Resolve media references in tool inputs to actual URLs.
 
         Handles multiple reference formats:
@@ -3492,7 +3517,8 @@ class ReActOrchestrator:
 
         When image generation tools produce media results, the URLs are stored
         in execution state's media_store. This method resolves those references
-        to the actual image URLs before tool execution.
+        to the actual image URLs before tool execution unless the destination
+        tool parameter is defined to consume the symbolic ref directly.
         """
         import re
 
@@ -3501,6 +3527,9 @@ class ReActOrchestrator:
             return inputs
 
         resolved = {}
+        passthrough_params = self._MEDIA_REF_PASSTHROUGH_PARAMS.get(
+            tool_name or "", set()
+        )
         media_ref_pattern = re.compile(r"^media_ref:(.+)$")
         # Match UUIDs in hallucinated file paths like /mnt/data/<uuid>.png
         uuid_pattern = re.compile(
@@ -3509,6 +3538,10 @@ class ReActOrchestrator:
         )
 
         for key, value in inputs.items():
+            if key in passthrough_params:
+                resolved[key] = value
+                continue
+
             if isinstance(value, str):
                 stripped = value.strip()
 

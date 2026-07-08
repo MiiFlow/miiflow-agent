@@ -93,6 +93,41 @@ class TestReActOrchestratorSetup:
         assert orchestrator.event_bus is not None
         assert orchestrator.safety_manager is not None
 
+    def test_media_refs_resolve_for_url_consuming_tools(self, orchestrator):
+        """Legacy tools that expect URLs still receive resolved media URLs."""
+        state = ExecutionState()
+        state.media_store = {"gen_1": "https://cdn.example.com/generated.png"}
+
+        resolved = orchestrator._resolve_media_refs(
+            {"image": "media_ref:gen_1"},
+            state,
+            tool_name="legacy_image_tool",
+        )
+
+        assert resolved["image"] == "https://cdn.example.com/generated.png"
+
+    def test_media_refs_preserved_for_ref_consuming_tools(self, orchestrator):
+        """Workspace and Creative Studio tools need symbolic refs to find assets."""
+        state = ExecutionState()
+        state.media_store = {"gen_1": "https://cdn.example.com/generated.png"}
+
+        cases = [
+            ("save_file", "source", "media_ref:gen_1"),
+            ("generate_ad_image", "reference_media_ref", "media_ref:gen_1"),
+            ("save_generated_creative", "image_media_ref", "media_ref:gen_1"),
+            ("view_media", "media_refs", '["media_ref:gen_1"]'),
+            ("analyze_creative", "media_refs", '["media_ref:gen_1"]'),
+        ]
+
+        for tool_name, param, value in cases:
+            resolved = orchestrator._resolve_media_refs(
+                {param: value, "prompt": "look at this"},
+                state,
+                tool_name=tool_name,
+            )
+            assert resolved[param] == value
+            assert resolved["prompt"] == "look at this"
+
     def test_context_setup_with_empty_query(self, orchestrator):
         """Test that empty query raises error when no user message exists."""
         context = RunContext(deps=None, messages=[])

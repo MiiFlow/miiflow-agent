@@ -98,22 +98,33 @@ class DispatchCounter:
     total: int = 0
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
-    async def reserve(self, handle: str) -> None:
+    async def reserve(
+        self, handle: str, *, per_handle_limit: Optional[int] = None
+    ) -> None:
         """Reserve one dispatch slot for `handle`, raising if over budget.
+
+        ``per_handle_limit`` lets the adapter pass a TIGHTER per-edge cap
+        (AssistantHandoff.max_calls_per_turn); the effective limit is the
+        min of it and the counter's global per-handle cap, checked and
+        incremented under the same lock — dispatch_assistant is
+        parallelizable, so any check outside this lock is racy.
 
         On success, the per-handle and total counters are both
         incremented before returning. On failure, the counters are
         unchanged. Either way, the lock is released before raising.
         """
+        effective_limit = self.max_per_handle
+        if per_handle_limit is not None:
+            effective_limit = min(effective_limit, int(per_handle_limit))
         async with self._lock:
             per_handle = self.counts.get(handle, 0)
-            if per_handle >= self.max_per_handle:
+            if per_handle >= effective_limit:
                 raise DispatchGuardrailError(
                     "per_handle_budget_exceeded",
                     (
                         f"Already dispatched to '{handle}' "
                         f"{per_handle} times this turn "
-                        f"(limit: {self.max_per_handle})."
+                        f"(limit: {effective_limit})."
                     ),
                 )
             if self.total >= self.max_total:
@@ -339,7 +350,9 @@ async def forward_subagent_events(
         elif et == ReActEventType.OBSERVATION:
             # OBSERVATION carries the tool result. The FE pushes an
             # observation chunk AND marks the matching tool chunk
-            # completed in one branch.
+            # completed in one branch. `observation_ref` points at the
+            # canonically stored observation row so parent traces can keep
+            # a ref + bounded excerpt instead of the raw payload.
             await parent_event_bus.publish(
                 EventFactory.subagent_dispatch(
                     parent_step_number,
@@ -350,6 +363,7 @@ async def forward_subagent_events(
                         "tool_name": data.get("action"),
                         "chunk": data.get("observation") or "",
                         "success": data.get("success", True),
+                        "observation_ref": data.get("observation_ref"),
                     },
                 )
             )
@@ -379,6 +393,7 @@ async def dispatch_subagent(
     counter: DispatchCounter,
     max_depth: int = MAX_NESTING_DEPTH,
     surface_interrupts: bool = False,
+    per_handle_limit: Optional[int] = None,
 ) -> "SubAgentResult":
     """Run one parent → child dispatch under the framework's lifecycle.
 
@@ -411,7 +426,7 @@ async def dispatch_subagent(
         depth=handoff.depth,
         max_depth=max_depth,
     )
-    await counter.reserve(handle)
+    await counter.reserve(handle, per_handle_limit=per_handle_limit)
 
     # Phase 2: subagent_id + lifecycle start.
     subagent_id = f"sub_{uuid.uuid4().hex[:12]}"
@@ -892,16 +907,30 @@ def make_subagent_dispatcher_tool(
             "error": result.error,
             "duration_ms": result.duration_ms,
         }
-        checkpoint = getattr(ctx, "checkpoint", None)
+        # Ledger entry targets the root checkpoint (shared blackboard for the
+        # dispatch tree) and stays bounded: digest only — the full dispatch
+        # observation is recorded by the parent's observation seam.
+        deps = getattr(ctx, "deps", None)
+        checkpoint = deps.get("root_checkpoint") if isinstance(deps, dict) else None
+        if checkpoint is None:
+            checkpoint = getattr(ctx, "checkpoint", None)
         if checkpoint is not None and hasattr(checkpoint, "merge_ledger"):
-            from ..checkpoint import DispatchLedgerEntry, stable_json_hash
+            import time as _time
+
+            from ..checkpoint import (
+                DispatchLedgerEntry,
+                make_ledger_digest,
+                stable_json_hash,
+            )
 
             checkpoint.merge_ledger(
                 [
                     DispatchLedgerEntry(
                         kind="dispatch",
                         success=result.status == "completed",
-                        observation=str(observation),
+                        digest=make_ledger_digest(str(result.answer or result.error or "")),
+                        produced_at=_time.time(),
+                        turn_index=getattr(checkpoint, "turn_index", 0),
                         handle=handle,
                         task_hash=stable_json_hash(
                             {

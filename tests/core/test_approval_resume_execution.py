@@ -56,6 +56,9 @@ def _orch(executor):
             orch, SimpleNamespace
         )
     )
+    orch._record_tool_observation = (
+        ReActOrchestrator._record_tool_observation.__get__(orch, SimpleNamespace)
+    )
     return orch
 
 

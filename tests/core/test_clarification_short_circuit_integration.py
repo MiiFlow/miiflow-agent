@@ -33,7 +33,7 @@ def _standin_orch(execute_tool):
     )
     for helper in (
         "_handle_tool_approval_marker_result",
-        "_record_tool_ledger_entry",
+        "_record_tool_observation",
         "_record_interrupt",
     ):
         setattr(

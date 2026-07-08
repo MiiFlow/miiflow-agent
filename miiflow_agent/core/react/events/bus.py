@@ -357,18 +357,30 @@ class EventFactory:
         )
 
     @staticmethod
-    def observation(step_number: int, observation: str, action: str, success: bool = True, tool_call_id: str = None) -> ReActEvent:
+    def observation(step_number: int, observation: str, action: str, success: bool = True, tool_call_id: str = None, observation_ref: str = None, served_from_ledger: bool = False) -> ReActEvent:
         """Create observation event.
 
         ``tool_call_id`` pairs the observation with the action_planned/executing
         event that has the same id. Without it, a consumer that tracks a single
         "current tool" pointer misattributes observations when tools run in a
         parallel batch (all plans emitted first, then all observations).
+
+        ``observation_ref`` points at the canonically stored observation row
+        (ObservationSink); downstream surfaces persist the ref plus a bounded
+        excerpt instead of the full payload. ``served_from_ledger`` marks a
+        result served from the dedupe gate without re-executing the tool.
         """
         return ReActEvent(
             event_type=ReActEventType.OBSERVATION,
             step_number=step_number,
-            data={"observation": observation, "action": action, "success": success, "tool_call_id": tool_call_id}
+            data={
+                "observation": observation,
+                "action": action,
+                "success": success,
+                "tool_call_id": tool_call_id,
+                "observation_ref": observation_ref,
+                "served_from_ledger": served_from_ledger,
+            }
         )
     
     @staticmethod

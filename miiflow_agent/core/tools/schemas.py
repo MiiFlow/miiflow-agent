@@ -115,6 +115,25 @@ class ToolSchema:
     # synthesizes a "blocked — call exit_plan_mode first" tool result.
     is_read_only: bool = False
 
+    # ── Read-through dedupe serve contract ────────────────────────────────
+    # Default: NOT servable. A tool opts in by declaring an idempotency
+    # class; the ledger dedupe gate (core/react/dedupe.py) may then serve a
+    # stored observation for an identical call instead of re-executing.
+    # `is_read_only` is NOT sufficient — many reads are time-relative
+    # (LAST_30_DAYS) or carry run-scoped artifacts (_data_id render refs)
+    # that must never be served across contexts. TTLs are per-class
+    # constants owned by code, not per-tool knobs:
+    #   "none"             — never served (default).
+    #   "discovery"        — structural facts (account lists, campaign
+    #                        catalogs); hours-stable.
+    #   "performance_read" — metrics reads; served within one turn only.
+    idempotency_class: str = "none"
+    # Extra deps keys folded into the dedupe key for scope-sensitive tools
+    # (org scoping is implicit — the ledger lives on one org's thread and
+    # serving is org-guarded at the observation store). E.g. ["assistant_id"]
+    # for tools whose result depends on which agent asks.
+    dedupe_scope_dims: List[str] = field(default_factory=list)
+
     # Add metadata for arbitrary data
     metadata: Dict[str, Any] = field(default_factory=dict)
     

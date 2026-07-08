@@ -6,8 +6,14 @@ import time
 from typing import Any, Dict, List, Optional
 
 from ..agent import RunContext
-from ..checkpoint import DispatchLedgerEntry, PendingInterrupt, stable_json_hash
+from ..checkpoint import (
+    DispatchLedgerEntry,
+    PendingInterrupt,
+    make_ledger_digest,
+    stable_json_hash,
+)
 from ..interrupt import mint_interrupt_id
+from ..observation import ObservationRecord, get_observation_sink
 from ..message import Message, MessageRole
 from .enums import ReActEventType, StopReason
 from .exceptions import PlanApprovalRequired, ToolApprovalRequired
@@ -1087,20 +1093,19 @@ class ReActOrchestrator:
                         tool_call_id,
                         raised_by_path,
                     )
-                    if checkpoint is not None and hasattr(checkpoint, "merge_ledger"):
-                        checkpoint.merge_ledger(
-                            [
-                                DispatchLedgerEntry(
-                                    kind="tool_call",
-                                    success=success,
-                                    observation=observation,
-                                    turn=state.current_step,
-                                    tool_name=tool_name,
-                                    inputs_hash=stable_json_hash(inputs or {}),
-                                    produced_by_path=raised_by_path or ["root"],
-                                )
-                            ]
-                        )
+                    child_observation_ref = await self._record_tool_observation(
+                        context,
+                        state,
+                        tool_name=tool_name,
+                        inputs=inputs,
+                        observation=observation,
+                        success=success,
+                        tool_call_id=tool_call_id,
+                        raw_output=raw_output,
+                        error=str(raw_error) if raw_error else None,
+                        produced_by_path=raised_by_path or ["root"],
+                        source="resume",
+                    )
                     for msg in reversed(context.messages):
                         if (
                             getattr(msg, "role", None) == MessageRole.TOOL
@@ -1124,6 +1129,7 @@ class ReActOrchestrator:
                                 tool_name,
                                 success,
                                 tool_call_id=tool_call_id,
+                                observation_ref=child_observation_ref,
                             )
                         )
                     except Exception as evt_err:  # noqa: BLE001
@@ -1241,14 +1247,17 @@ class ReActOrchestrator:
             success,
             tool_call_id,
         )
-        ReActOrchestrator._record_tool_ledger_entry(
-            self,
+        approved_observation_ref = await self._record_tool_observation(
             context,
             state,
             tool_name=tool_name,
             inputs=inputs,
             observation=observation,
             success=success,
+            tool_call_id=tool_call_id,
+            raw_output=raw_output,
+            error=str(raw_error) if raw_error else None,
+            source="resume",
         )
 
         # Pair the result with the approved tool_use: replace the reconstructed
@@ -1281,6 +1290,7 @@ class ReActOrchestrator:
                     tool_name,
                     success,
                     tool_call_id=tool_call_id,
+                    observation_ref=approved_observation_ref,
                 )
             )
         except Exception as evt_err:  # noqa: BLE001
@@ -1601,7 +1611,7 @@ class ReActOrchestrator:
         )
         return True
 
-    def _record_tool_ledger_entry(
+    async def _record_tool_observation(
         self,
         context: RunContext,
         state: "ExecutionState",
@@ -1610,26 +1620,96 @@ class ReActOrchestrator:
         inputs: Optional[Dict[str, Any]],
         observation: Optional[str],
         success: bool,
-    ) -> None:
-        """Reduce a completed tool call into the checkpoint ledger."""
+        tool_call_id: Optional[str] = None,
+        raw_output: Any = None,
+        error: Optional[str] = None,
+        execution_time_ms: Optional[int] = None,
+        produced_by_path: Optional[List[str]] = None,
+        source: str = "react",
+    ) -> Optional[str]:
+        """Single seam for a finalized tool call: persist the canonical
+        observation via the adapter sink (awaited inline — see
+        core/observation.py for why never fire-and-forget), then reduce it
+        into the checkpoint ledger. Returns the observation ref (or None
+        when no sink is wired / the write failed)."""
         if not tool_name:
-            return
-        checkpoint = getattr(context, "checkpoint", None)
-        if checkpoint is None or not hasattr(checkpoint, "merge_ledger"):
-            return
-        checkpoint.merge_ledger(
-            [
-                DispatchLedgerEntry(
-                    kind="tool_call",
-                    success=bool(success),
-                    observation=observation or "",
-                    turn=state.current_step,
-                    tool_name=tool_name,
-                    inputs_hash=stable_json_hash(inputs or {}),
-                    produced_by_path=["root"],
+            return None
+
+        # Default producer address: the per-run stamp the adapter set
+        # (["root"] for the root run, ["child", <thread_id>] for a
+        # dispatched child) — lets a session continuation exclude the
+        # child's own prior entries from its worklog. Explicit
+        # produced_by_path (resume paths) wins.
+        if not produced_by_path:
+            run_deps = getattr(context, "deps", None)
+            if isinstance(run_deps, dict):
+                produced_by_path = run_deps.get("ledger_producer_path")
+
+        ref: Optional[str] = None
+        sink = get_observation_sink(context)
+        if sink is not None:
+            try:
+                ref = await sink.record(
+                    ObservationRecord(
+                        tool_name=tool_name,
+                        tool_call_id=tool_call_id,
+                        inputs=inputs or {},
+                        observation_text=observation or "",
+                        raw_output=raw_output,
+                        success=bool(success),
+                        error=error,
+                        execution_time_ms=execution_time_ms,
+                        step_number=state.current_step,
+                        produced_by_path=list(produced_by_path or ["root"]),
+                        source=source,
+                    )
                 )
-            ]
-        )
+            except Exception as sink_err:  # noqa: BLE001 — never fail the run
+                logger.debug("Observation sink record failed: %s", sink_err)
+                ref = None
+
+        # Ledger writes target the ROOT thread's checkpoint when this run is a
+        # dispatched child (deps["root_checkpoint"], shared by reference
+        # in-process) — the root checkpoint is the single durable blackboard
+        # for the whole dispatch tree. Falls back to this run's own checkpoint.
+        deps = getattr(context, "deps", None)
+        checkpoint = None
+        if isinstance(deps, dict):
+            checkpoint = deps.get("root_checkpoint")
+        if checkpoint is None:
+            checkpoint = getattr(context, "checkpoint", None)
+        if checkpoint is not None and hasattr(checkpoint, "merge_ledger"):
+            # Identity MUST match the dedupe gate's read-side computation
+            # (same exclusions + scope dims), or the gate never hits.
+            from .dedupe import dedupe_identity
+
+            schema = None
+            try:
+                schema = self.tool_executor._get_tool_schema_obj(tool_name)
+            except Exception:  # noqa: BLE001
+                schema = None
+            inputs_hash = dedupe_identity(
+                tool_name,
+                inputs,
+                scope_dims=getattr(schema, "dedupe_scope_dims", None),
+                deps=deps if isinstance(deps, dict) else None,
+            )
+            checkpoint.merge_ledger(
+                [
+                    DispatchLedgerEntry(
+                        kind="tool_call",
+                        success=bool(success),
+                        digest=make_ledger_digest(observation or ""),
+                        observation_ref=ref,
+                        produced_at=time.time(),
+                        turn_index=getattr(checkpoint, "turn_index", 0),
+                        tool_name=tool_name,
+                        inputs_hash=inputs_hash,
+                        produced_by_path=list(produced_by_path or ["root"]),
+                    )
+                ]
+            )
+        return ref
 
     async def _execute_reasoning_step_native(
         self, context: RunContext, state: "ExecutionState"
@@ -2710,15 +2790,25 @@ class ReActOrchestrator:
             ):
                 inv.observation = "Tool execution paused - waiting for user approval."
 
-            # Per-invocation observation event for downstream consumers.
-            self._record_tool_ledger_entry(
-                context,
-                state,
-                tool_name=inv.name,
-                inputs=inv.inputs,
-                observation=inv.observation,
-                success=inv.error is None,
-            )
+            # Per-invocation canonical record + observation event. Served
+            # results reuse their existing ref (no new row, no TTL refresh).
+            _result_meta = getattr(result, "metadata", None) or {}
+            _served = bool(_result_meta.get("served_from_ledger"))
+            if _served:
+                observation_ref = _result_meta.get("observation_ref")
+            else:
+                observation_ref = await self._record_tool_observation(
+                    context,
+                    state,
+                    tool_name=inv.name,
+                    inputs=inv.inputs,
+                    observation=inv.observation,
+                    success=inv.error is None,
+                    tool_call_id=inv.tool_call_id,
+                    raw_output=getattr(result, "output", None),
+                    error=str(inv.error) if inv.error else None,
+                    execution_time_ms=int((getattr(result, "execution_time", 0) or 0) * 1000),
+                )
             try:
                 await self.event_bus.publish(
                     EventFactory.observation(
@@ -2727,6 +2817,8 @@ class ReActOrchestrator:
                         inv.name,
                         inv.error is None,
                         tool_call_id=inv.tool_call_id,
+                        observation_ref=observation_ref,
+                        served_from_ledger=_served,
                     )
                 )
             except Exception as evt_err:
@@ -3116,15 +3208,31 @@ class ReActOrchestrator:
             step.cost += getattr(result, "cost", 0.0)
             step.execution_time += result.execution_time
 
-            # Publish observation event
-            self._record_tool_ledger_entry(
-                context,
-                state,
-                tool_name=step.action,
-                inputs=step.action_input,
-                observation=step.observation,
-                success=result.success,
-            )
+            # Persist canonical observation + reduce into the ledger, then
+            # publish the observation event carrying the storage ref. A
+            # result served from the dedupe gate reuses its existing ref —
+            # no new row, no ledger freshness refresh (TTL measures the
+            # DATA's age, not the last time someone asked).
+            _result_meta = getattr(result, "metadata", None) or {}
+            _served = bool(_result_meta.get("served_from_ledger"))
+            if _served:
+                observation_ref = _result_meta.get("observation_ref")
+            else:
+                _result_error = getattr(result, "error", None)
+                observation_ref = await self._record_tool_observation(
+                    context,
+                    state,
+                    tool_name=step.action,
+                    inputs=step.action_input,
+                    observation=step.observation,
+                    success=getattr(result, "success", True),
+                    tool_call_id=tool_call_id,
+                    raw_output=getattr(result, "output", None),
+                    error=str(_result_error) if _result_error else None,
+                    execution_time_ms=int(
+                        (getattr(result, "execution_time", 0) or 0) * 1000
+                    ),
+                )
             await self.event_bus.publish(
                 EventFactory.observation(
                     state.current_step,
@@ -3132,6 +3240,8 @@ class ReActOrchestrator:
                     step.action,
                     result.success,
                     tool_call_id=tool_call_id,
+                    observation_ref=observation_ref,
+                    served_from_ledger=_served,
                 )
             )
 

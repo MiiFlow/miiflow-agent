@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass, replace
 from typing import Any, Dict, List, Optional
 
 from ..callbacks import CallbackEvent, CallbackEventType, get_global_registry
@@ -120,6 +120,61 @@ class AgentToolExecutor:
                 success=False,
             )
 
+        # ── Read-through dedupe gate ────────────────────────────────────
+        # Placed AFTER the PRE_TOOL_USE callback so approved-with-edits
+        # input overrides hash into the identity. Only tools that DECLARED
+        # a serve contract participate; everything else passes straight
+        # through. Single-flight coalesces concurrent identical reads
+        # (parallel siblings) onto one execution.
+        from .dedupe import get_dedupe_gate
+
+        gate = get_dedupe_gate(context)
+        gate_schema = self._get_tool_schema_obj(tool_name) if gate else None
+        gate_deps = getattr(context, "deps", None) if context is not None else None
+        inflight_key = (
+            gate.inflight_key(tool_name, inputs, gate_schema, deps=gate_deps)
+            if gate and gate_schema is not None
+            else None
+        )
+
+        if inflight_key is not None:
+            leader_future = gate.claim(inflight_key)
+            if leader_future is not None:
+                # A concurrent identical call is already executing — share
+                # its result (including failures: the model retries next
+                # step; bounded and observable, never a duplicate read).
+                shared = await leader_future
+                return replace(shared) if is_dataclass(shared) else shared
+            try:
+                served = await gate.try_serve(
+                    tool_name, inputs, gate_schema, deps=gate_deps
+                )
+                if served is not None:
+                    result = ToolResult(
+                        name=tool_name,
+                        input=inputs,
+                        output=served["output"],
+                        success=True,
+                        metadata={
+                            "served_from_ledger": True,
+                            "observation_ref": served["observation_ref"],
+                        },
+                    )
+                    gate.resolve(inflight_key, result)
+                    return result
+                result = await self._execute_tool_inner(tool_name, inputs, context)
+                gate.resolve(inflight_key, result)
+                return result
+            except BaseException as exc:
+                gate.resolve_error(inflight_key, exc)
+                raise
+
+        return await self._execute_tool_inner(tool_name, inputs, context)
+
+    async def _execute_tool_inner(
+        self, tool_name: str, inputs: dict, context=None
+    ) -> ToolResult:
+        """The actual execution leg of ``execute_tool`` (post-gate)."""
         start_time = time.time()
 
         # Respect per-tool needs_context: even if the caller passes a

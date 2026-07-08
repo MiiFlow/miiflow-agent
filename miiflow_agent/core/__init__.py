@@ -58,6 +58,13 @@ from .interrupt import (
     question_key,
     render_established_facts_block,
 )
+from .observation import (
+    OBSERVATION_SINK_DEPS_KEY,
+    ObservationRecord,
+    ObservationSink,
+    StoredObservation,
+    get_observation_sink,
+)
 from .agent import (
     # Core agent architecture - Stateless framework
     Agent,
@@ -193,6 +200,13 @@ __all__ = [
     "decide_clarification",
     "ClarificationDecision",
     "render_established_facts_block",
+
+    # Canonical observation store port
+    "OBSERVATION_SINK_DEPS_KEY",
+    "ObservationRecord",
+    "ObservationSink",
+    "StoredObservation",
+    "get_observation_sink",
 
     # Observability (optional)
     "ObservabilityConfig",

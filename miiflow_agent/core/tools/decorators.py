@@ -26,6 +26,8 @@ def tool(
     parallelizable: bool = False,
     always_load: bool = False,
     search_keywords: Optional[List[str]] = None,
+    idempotency_class: str = "none",
+    dedupe_scope_dims: Optional[List[str]] = None,
 ) -> Callable[[F], F]:
     """
     Decorator to mark a function as a tool with optional explicit schema.
@@ -145,6 +147,10 @@ def tool(
             parameters=param_schemas,
             require_approval=require_approval,
             parallelizable=parallelizable,
+            # Read-through dedupe serve contract (see ToolSchema). Default
+            # "none" — the gate never serves a tool that didn't opt in.
+            idempotency_class=idempotency_class,
+            dedupe_scope_dims=list(dedupe_scope_dims or []),
         )
 
         # Add return schema if provided

@@ -27,11 +27,6 @@ from miiflow_agent.core.message import Message, MessageRole
 def _full_checkpoint() -> Checkpoint:
     cp = Checkpoint(
         thread_id="thread_abc",
-        transcript=[
-            Message.user("create a campaign"),
-            Message.assistant("on it"),
-            Message.tool("paused", tool_call_id="tc_1"),
-        ],
         established_facts=[
             EstablishedFact(
                 key="daily_budget",
@@ -65,7 +60,10 @@ def _full_checkpoint() -> Checkpoint:
                 kind="tool_call",
                 tool_name="search_memory",
                 inputs_hash="h1",
-                observation="brand voice = bold",
+                digest="brand voice = bold",
+                observation_ref="agent_obs_h1",
+                produced_at=1234.5,
+                turn_index=1,
                 produced_by_path=["root", "tc_a"],
             )
         ],
@@ -93,12 +91,11 @@ def test_checkpoint_round_trips_through_json():
 
     assert restored.version == CHECKPOINT_VERSION
     assert restored.thread_id == "thread_abc"
-    assert [m.role for m in restored.transcript] == [
-        MessageRole.USER,
-        MessageRole.ASSISTANT,
-        MessageRole.TOOL,
-    ]
-    assert restored.transcript[2].tool_call_id == "tc_1"
+    # Legacy blobs may still carry a "transcript" key (the field never had a
+    # writer and was removed); it must be silently dropped, not preserved.
+    legacy = json.loads(blob)
+    legacy["transcript"] = [{"role": "user", "content": "old"}]
+    assert "transcript" not in Checkpoint.from_dict(legacy).extra
 
     fact = restored.fact("daily_budget")
     assert fact is not None and fact.answer == "$50/day"
@@ -152,13 +149,13 @@ def test_dispatch_ledger_reducer_dedupes_by_key():
         [
             DispatchLedgerEntry(
                 kind="tool_call", tool_name="search_memory", inputs_hash="h1",
-                success=True, observation="found",
+                success=True, digest="found",
             )
         ]
     )
     tool_entries = [e for e in cp.dispatch_ledger if e.kind == "tool_call"]
     assert len(tool_entries) == 1
-    assert tool_entries[0].success is True and tool_entries[0].observation == "found"
+    assert tool_entries[0].success is True and tool_entries[0].digest == "found"
     assert len(cp.dispatch_ledger) == 2  # the dispatch entry is untouched
 
 
@@ -183,3 +180,47 @@ def test_canonical_interrupt_helpers_keep_legacy_mirror():
     restored.clear_active_interrupt()
     assert restored.active_interrupt() is None
     assert restored.pending_interrupt is None
+
+
+def test_fact_precedence_user_beats_tool():
+    """The precedence lattice: a tool-promoted fact never overwrites a user answer."""
+    cp = Checkpoint()
+    cp.upsert_fact(
+        EstablishedFact(key="k", answer="user said A", question_text="q", source="user")
+    )
+    cp.upsert_fact(
+        EstablishedFact(key="k", answer="tool derived B", question_text="q", source="tool")
+    )
+    assert cp.fact("k").answer == "user said A"
+
+    # Tool facts refresh freely among themselves…
+    cp.upsert_fact(
+        EstablishedFact(key="tool:x", answer="v1", source="tool")
+    )
+    cp.upsert_fact(
+        EstablishedFact(key="tool:x", answer="v2", source="tool")
+    )
+    assert cp.fact("tool:x").answer == "v2"
+
+    # …and a user answer replaces a tool fact for the same key.
+    cp.upsert_fact(EstablishedFact(key="tool:x", answer="user override", source="user"))
+    assert cp.fact("tool:x").answer == "user override"
+
+
+def test_facts_cap_drops_tool_facts_first():
+    cp = Checkpoint()
+    cp.upsert_fact(EstablishedFact(key="user:0", answer="keep", source="user"))
+    for i in range(Checkpoint.FACTS_MAX + 10):
+        cp.upsert_fact(EstablishedFact(key=f"tool:{i}", answer=str(i), source="tool"))
+    assert len(cp.established_facts) <= Checkpoint.FACTS_MAX
+    assert cp.fact("user:0") is not None  # user answers survive
+
+
+def test_fact_source_round_trips():
+    fact = EstablishedFact(key="tool:a", answer="x", source="tool")
+    assert EstablishedFact.from_dict(fact.to_dict()).source == "tool"
+    # Legacy dicts (no source) default to "user" — old clarification answers
+    # keep their protected status.
+    legacy = fact.to_dict()
+    del legacy["source"]
+    assert EstablishedFact.from_dict(legacy).source == "user"

@@ -2,23 +2,33 @@
 
 All notable changes to miiflow-agent will be documented here.
 
-## [Unreleased]
+## [1.11.0] - 2026-07-07
 
 ### Added
-- **Claude Sonnet 5** (`models/anthropic.py`): Added Anthropic's most agentic Sonnet model (released June 30, 2026, model id `claude-sonnet-5`), succeeding Sonnet 4.6. Adaptive thinking is on by default — manual extended thinking and non-default sampling params (temperature/top_p/top_k) are rejected — so it is registered with `supports_temperature=False` and in `_NO_EXTENDED_THINKING`. 1M context, 128K max output, structured outputs. Introductory pricing $2/$10 per 1M tokens through Aug 31, 2026, reverting to $3/$15. Also added the matching Bedrock entry (`core/llms/bedrock.py`).
+- **Durable multi-agent handoff foundation**: A coordinated set of changes that moves dispatch-tree state out of the model's hands and into durable, code-owned storage (durable-execution model, cf. LangGraph checkpoints), so what one agent learns and does reliably reaches the agents that come after it.
+  - **Canonical observation store** (`core/observation.py`, `core/__init__.py`): every ReAct tool execution now persists exactly one full observation record through a new `ObservationSink` port, awaited inline at the orchestrator's observation seams. Every other surface — execution-timeline items, SSE frames, sub-agent traces — carries a policy-bounded excerpt plus the record's ref instead of duplicating multi-hundred-KB payloads, and a new universal `read_observation` tool fetches full depth on demand. New package-root exports: `ObservationSink`, `ObservationRecord`, `StoredObservation`, `get_observation_sink`, `OBSERVATION_SINK_DEPS_KEY`.
+  - **Tree-wide durable checkpoint + blackboard** (`core/checkpoint.py`): the root thread's checkpoint becomes the single durable store for the whole dispatch tree. Compare-and-set writes with a commutative merge (bounded ledger reducer + keyed fact upsert) replace the full-blob rewrite that silently dropped a concurrent turn's state under parallel dispatch; the ledger is bounded to short digests + observation refs (no raw payloads) and pruned on every persist.
+  - **Read-through dedupe gate** (`core/react/dedupe.py`, `core/tools/schemas.py`, `core/tools/decorators.py`): opt-in serve contracts on `ToolSchema` (`idempotency_class` + `dedupe_scope_dims`) let identical reads be served from the ledger by code rather than prompt guidance, with a validity predicate that never serves business-error payloads and single-flight coalescing that closes the parallel-sibling duplicate-read race.
+  - **Tool-derived fact promotion with precedence** (`core/checkpoint.py`): `EstablishedFact` gains a `source` precedence lattice enforced in `upsert_fact` — user answers are never overwritten by tool-promoted facts — so structural knowledge one agent discovers (e.g. connected ad accounts: platform, id, name, currency) surfaces to every later agent and every prompt.
+  - **Ledger-backed handoff worklog** (`core/checkpoint.py`): `Checkpoint.render_worklog_block()` gives a dispatched child a bounded `[work_already_done]` digest spanning both tool calls and dispatches, both successes and failures (so children stop repeating a sibling's failed call), each entry carrying its observation ref for `read_observation` expansion and a producer address so a continued session excludes its own prior entries — replacing the racy by-reference contextvar scratchpad.
+  - **Conversational continuity for specialists** (`core/checkpoint.py`): `Checkpoint.child_sessions` lets a re-dispatch to a specialist you already talked to continue one session child thread (bounded, recycled after 20 uses) instead of re-discovering context in a fresh thread; concurrent dispatches to the same handle deterministically fall back to isolation.
+- **Claude Sonnet 5** (`models/anthropic.py`, `core/llms/bedrock.py`): Anthropic's most agentic Sonnet model (released June 30, 2026, model id `claude-sonnet-5`), succeeding Sonnet 4.6. Adaptive thinking is on by default — manual extended thinking and non-default sampling params (temperature/top_p/top_k) are rejected — so it is registered with `supports_temperature=False` and in `_NO_EXTENDED_THINKING`. 1M context, 128K max output, structured outputs. Introductory pricing $2/$10 per 1M tokens through Aug 31, 2026, reverting to $3/$15. Matching Bedrock entry added.
 
 ### Changed
+- **Model roster metadata refresh** (`models/anthropic.py`, `models/google.py`, `models/openai.py`): Claude Fable 5 marked generally available again — the June 12 US export-control suspension was lifted July 1, 2026 and calls succeed once more; Gemini 3.1 Pro corrected to a 2M-token context window with tiered pricing ($2/$12 per 1M input/output up to 200K, $4/$18 above); Claude Sonnet 4.6 max output corrected to 128K. The GPT-5.6 (Sol/Terra/Luna) series is intentionally still not registered — it remains a limited preview whose API identifiers are not final and would surface "no access"/"model not found" errors for bring-your-own-key users.
 - **Claude Sonnet 4.6 → legacy** (`models/anthropic.py`, `core/llms/bedrock.py`): Marked as succeeded by Claude Sonnet 5.
-- **Claude Fable 5 availability note** (`models/anthropic.py`): Updated the description to flag that API access has been suspended since June 12, 2026 to comply with a US export-control directive (calls currently error out); Anthropic has stated it expects to restore access. The entry is retained so it reactivates automatically once access returns.
+- **Default sub-agent model rolled to Sonnet 5** (`core/react/configured_subagent.py`, `examples/subagents.py`): the configured sub-agent default moves from `claude-sonnet-4.6` to `claude-sonnet-5`.
+- **Atomic per-edge dispatch cap** (`core/react/dispatch.py`): `DispatchCounter.reserve` now takes a `per_handle_limit` checked under the counter's lock (min'd with the global cap), replacing a racy pre-check in the dispatch tool that assumed serial dispatch while the schema is actually parallelizable.
+
+### Fixed
+- **Pinned tools survive the in-process tool_search gate** (`core/react/tool_executor.py`): explicitly pinned tools are no longer hidden when the registry is large enough to trigger tool search, so an agent that depends on a pinned tool always sees it.
 
 ### Removed
 - **Retired OpenAI `o3`** **(breaking for callers pinning this ID)** (`models/openai.py`): Removed the deprecated `o3` reasoning model (deprecated June 11, 2026, API shutdown December 11, 2026) along with its parameter-map and `_REASONING_MODELS` entries.
+- **Dead `Checkpoint.transcript` field** (`core/checkpoint.py`): removed a checkpoint field that never had a writer (it always serialized `[]`); `from_dict` now drops the key from old blobs. The conversation record lives in message rows with per-message excerpt/ref timelines.
 
   #### Migration notes
   - OpenAI: move to the GPT-5.x series (e.g. `gpt-5.5` / `gpt-5.4`) for reasoning workloads.
-
-### Notes
-- Reviewed the full roster against current provider data (June 30, 2026): pricing, context windows, and "flagship" labels remain accurate. GPT-5.6 (Sol/Terra/Luna) and Gemini 3.5 Pro were **not** added — both are limited-preview/unreleased and would error for general API keys.
 
 ## [1.10.0] - 2026-06-29
 

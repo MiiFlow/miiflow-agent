@@ -9,15 +9,15 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # reasoning models are tracked separately in _GPT5_MODELS below.
 _REASONING_MODELS: set[str] = set()
 
-# NOTE: The GPT-5.6 series (Sol / Terra / Luna, previewed June 26, 2026) is
-# intentionally NOT listed here yet. It is a limited preview available only to
-# approved partners with an OpenAI account representative, and OpenAI states the
-# canonical API model identifiers are not final and "can change." Adding it as a
-# selectable model would surface hard "no access"/"model not found" errors for
-# the general users who bring their own OpenAI keys. Add Sol/Terra/Luna once they
-# reach general availability with confirmed model-id strings (expected pricing:
-# Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per 1M input/output tokens).
+# GPT-5.x reasoning models (use max_completion_tokens, no temperature). The
+# GPT-5.6 Sol / Terra / Luna family reached general availability on July 9, 2026
+# with confirmed API model ids; Sol is the current flagship. Sol Pro is Sol
+# served with reasoning.mode=pro at the same per-token price.
 _GPT5_MODELS = {
+    "gpt-5.6-sol",
+    "gpt-5.6-sol-pro",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
     "gpt-5.5-pro",
     "gpt-5.4",
@@ -31,12 +31,81 @@ _NO_TEMPERATURE_MODELS = _REASONING_MODELS | _GPT5_MODELS
 
 
 OPENAI_MODELS: Dict[str, ModelConfig] = {
-    # GPT-5.5 series (released April 23, 2026) — flagship generally-available line
-    # (the GPT-5.6 Sol/Terra/Luna series is in limited preview; see note above).
+    # GPT-5.6 series (Sol / Terra / Luna) — generally available July 9, 2026.
+    # Sol is the current flagship; gpt-5.6 is an API alias for gpt-5.6-sol.
+    "gpt-5.6-sol": ModelConfig(
+        model_identifier="gpt-5.6-sol",
+        name="gpt-5.6-sol",
+        description="GPT-5.6 Sol is OpenAI's flagship model (generally available July 9, 2026) and the highest-intelligence tier of the GPT-5.6 family, built for complex coding, reasoning, and long-horizon agentic work. 1M context window. Available in the API as gpt-5.6-sol (alias: gpt-5.6).",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        reasoning=True,
+        maximum_context_tokens=1050000,
+        maximum_output_tokens=128000,
+        token_param_name="max_completion_tokens",
+        supports_temperature=False,
+        input_cost_hint=5.0,
+        output_cost_hint=30.0,
+    ),
+    "gpt-5.6-sol-pro": ModelConfig(
+        model_identifier="gpt-5.6-sol-pro",
+        name="gpt-5.6-sol-pro",
+        description="GPT-5.6 Sol Pro is GPT-5.6 Sol served with reasoning.mode=pro for maximum accuracy on the hardest agentic and reasoning tasks (July 9, 2026). Same per-token price as Sol, with higher latency and reasoning-token usage. 1M context window.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        reasoning=True,
+        maximum_context_tokens=1050000,
+        maximum_output_tokens=128000,
+        token_param_name="max_completion_tokens",
+        supports_temperature=False,
+        input_cost_hint=5.0,
+        output_cost_hint=30.0,
+    ),
+    "gpt-5.6-terra": ModelConfig(
+        model_identifier="gpt-5.6-terra",
+        name="gpt-5.6-terra",
+        description="GPT-5.6 Terra is the balanced mid-tier of the GPT-5.6 family (July 9, 2026), delivering strong reasoning and agentic performance at roughly half the cost of Sol. 1M context window.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        reasoning=True,
+        maximum_context_tokens=1050000,
+        maximum_output_tokens=128000,
+        token_param_name="max_completion_tokens",
+        supports_temperature=False,
+        input_cost_hint=2.50,
+        output_cost_hint=15.0,
+    ),
+    "gpt-5.6-luna": ModelConfig(
+        model_identifier="gpt-5.6-luna",
+        name="gpt-5.6-luna",
+        description="GPT-5.6 Luna is the fastest and most cost-efficient tier of the GPT-5.6 family (July 9, 2026), optimized for high-throughput, latency-sensitive workloads. 1M context window.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        reasoning=True,
+        maximum_context_tokens=1050000,
+        maximum_output_tokens=128000,
+        token_param_name="max_completion_tokens",
+        supports_temperature=False,
+        input_cost_hint=1.0,
+        output_cost_hint=6.0,
+    ),
+    # GPT-5.5 series (released April 23, 2026) — succeeded by the GPT-5.6 family
     "gpt-5.5": ModelConfig(
         model_identifier="gpt-5.5",
         name="gpt-5.5",
-        description="GPT-5.5 is OpenAI's flagship generally-available model (released April 23, 2026), a 'new class of intelligence' with stronger coding and agentic capabilities. 82.7% on Terminal-Bench 2.0, 58.6% on SWE-Bench Pro. 1M context window. Priced at 2x GPT-5.4. The GPT-5.6 Sol/Terra/Luna series is in limited preview as of June 2026 and will supersede this line once generally available.",
+        description="GPT-5.5 (released April 23, 2026) — previous flagship, succeeded by GPT-5.6 Sol. Strong coding and agentic model (82.7% on Terminal-Bench 2.0, 58.6% on SWE-Bench Pro) with a 1M context window, still available as a lower-cost alternative to the GPT-5.6 line.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -53,7 +122,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.5-pro": ModelConfig(
         model_identifier="gpt-5.5-pro",
         name="gpt-5.5-pro",
-        description="GPT-5.5 Pro is OpenAI's highest-accuracy model for mission-critical agentic and reasoning tasks (April 23, 2026). 1M context window.",
+        description="GPT-5.5 Pro (April 23, 2026) — high-accuracy model for mission-critical agentic and reasoning tasks; succeeded by GPT-5.6 Sol Pro. 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -67,11 +136,11 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=30.0,
         output_cost_hint=180.0,
     ),
-    # GPT-5.4 series (released March 2026) — succeeded by GPT-5.5, still available at lower cost
+    # GPT-5.4 series (released March 2026) — two generations old, superseded by the GPT-5.6 family
     "gpt-5.4": ModelConfig(
         model_identifier="gpt-5.4",
         name="gpt-5.4",
-        description="GPT-5.4 (March 2026) — succeeded by GPT-5.5 as flagship. Still available as a lower-cost option with 1M context window, built-in computer use, and improved deep research.",
+        description="GPT-5.4 (March 2026) — two generations old, superseded by the GPT-5.6 family. Still available as a lower-cost option with 1M context window, built-in computer use, and improved deep research.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -88,7 +157,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.4-pro": ModelConfig(
         model_identifier="gpt-5.4-pro",
         name="gpt-5.4-pro",
-        description="GPT-5.4 Pro — succeeded by GPT-5.5 Pro (April 2026). High-accuracy model for mission-critical agentic tasks. 1M context window with built-in computer use.",
+        description="GPT-5.4 Pro (March 2026) — superseded by GPT-5.6 Sol Pro. High-accuracy model for mission-critical agentic tasks. 1M context window with built-in computer use.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -224,6 +293,10 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         parameter_type=ParameterType.NUMBER,
         min_value=1,
         max_value={
+            "gpt-5.6-sol": 128000,
+            "gpt-5.6-sol-pro": 128000,
+            "gpt-5.6-terra": 128000,
+            "gpt-5.6-luna": 128000,
             "gpt-5.5": 128000,
             "gpt-5.5-pro": 128000,
             "gpt-5.4": 128000,

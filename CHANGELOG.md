@@ -2,6 +2,11 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.11.1] - 2026-07-08
+
+### Fixed
+- **Symbolic `media_ref` passthrough in the orchestrator** (`core/react/orchestrator.py`): `ReActOrchestrator` no longer eagerly resolves `media_ref:<id>` inputs to URLs for tool parameters that are declared to consume the symbolic reference directly. Some tools must recover the backing asset from `media_store` themselves — for example before saving a generated image into a workspace — and URL substitution broke that path. URL resolution is unchanged for every other parameter, and media-ref resolution now runs consistently across both single-step and batched (parallel) tool invocations.
+
 ## [1.11.0] - 2026-07-07
 
 ### Added

@@ -65,10 +65,15 @@ def format_artifact_observation(artifact_data: Dict[str, Any]) -> str:
     """Build the tool_result observation string for a produced artifact.
 
     Replaces the raw ArtifactResult (which contains the full HTML source) with
-    a compact marker. The guidance here is explicit about parameter handling
-    on revision — an earlier version said "you already have the data you need
-    in this conversation," which the model interpreted as permission to omit
-    required parameters and call the tool with empty args. Never again.
+    a compact marker. The revision guidance points at get_artifact/edit_artifact
+    — actions the model can actually take — rather than telling it to "re-supply
+    the full html", which it cannot do once the source has been compacted out of
+    context. An earlier version said "you already have the data you need in this
+    conversation," which the model read as permission to call with empty args;
+    the version after that told it to re-supply from memory, which it couldn't,
+    so it echoed the compaction placeholder and rendered blank PDFs. The fix is
+    to make the current source retrievable (get_artifact) instead of relying on
+    the model to reproduce it.
 
     Kept here (instead of in each orchestrator) so server-side replay paths
     and the orchestrator produce identical strings.
@@ -79,11 +84,10 @@ def format_artifact_observation(artifact_data: Dict[str, Any]) -> str:
     title_suffix = f" titled {title!r}" if title else ""
     return (
         f"[ARTIFACT:{art_id}] {kind} artifact created{title_suffix}. "
-        f"If the user asks for changes, call the artifact tool again and "
-        f"supply ALL required parameters (kind, title, html, etc.) with the "
-        f"updated content. Parameters are not carried over between calls — "
-        f"you must re-supply the full updated html source, not an empty or "
-        f"partial object."
+        f'To revise it, first call get_artifact("{art_id}") to read its current '
+        f'HTML, then call edit_artifact("{art_id}", html=<complete updated HTML>). '
+        f"Do NOT rebuild the HTML from memory and do NOT pass a placeholder or "
+        f"partial body — always send the full document."
     )
 
 

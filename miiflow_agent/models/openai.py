@@ -400,6 +400,38 @@ def supports_temperature(model: str) -> bool:
     return True
 
 
+def supports_reasoning_effort(model: str) -> bool:
+    """Check if model accepts the ``reasoning_effort`` parameter.
+
+    Only the reasoning models (o-series) and the GPT-5 family expose this
+    control; sending it to a standard chat model (e.g. gpt-4.1) is a 400.
+
+    Note: even for supported models, OpenAI rejects ``reasoning_effort`` when
+    it is combined with function ``tools`` on the Chat Completions endpoint
+    ("Function tools with reasoning_effort are not supported ... in
+    /v1/chat/completions"). Callers must additionally gate on the absence of
+    tools — this helper only answers model-level support. See
+    ``OpenAIClient._apply_reasoning_effort``.
+
+    Args:
+        model: The model identifier
+
+    Returns:
+        True if the model supports reasoning_effort, False otherwise
+    """
+    model_lower = model.lower()
+
+    if model_lower in _NO_TEMPERATURE_MODELS:
+        return True
+
+    # Prefix match for versioned/unknown reasoning models.
+    for prefix in ("o1", "o3", "o4", "gpt-5"):
+        if model_lower.startswith(prefix):
+            return True
+
+    return False
+
+
 def supports_native_mcp(model: str) -> bool:
     """Check if model supports native MCP via the Responses API.
 

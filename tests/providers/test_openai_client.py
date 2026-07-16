@@ -206,8 +206,92 @@ class TestOpenAIClient:
         
         with patch.object(client.client.chat.completions, 'create', new_callable=AsyncMock) as mock_create:
             mock_create.return_value = error_generator()
-            
+
             with pytest.raises(ProviderError):
                 chunks = []
                 async for chunk in client.astream_chat(sample_messages):
                     chunks.append(chunk)
+
+
+class TestReasoningEffort:
+    """`reasoning_effort` forwarding + the function-tools guard.
+
+    OpenAI rejects reasoning_effort combined with function tools on
+    /v1/chat/completions for the GPT-5 family, so the client must drop it on
+    tool-calling turns while still forwarding it on plain completions.
+    """
+
+    _TOOLS = [
+        {
+            "type": "function",
+            "function": {"name": "get_weather", "description": "", "parameters": {}},
+        }
+    ]
+
+    def _client(self, model="gpt-5.6-terra"):
+        return OpenAIClient(model=model, api_key="test-key", timeout=30.0)
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_forwarded_without_tools(
+        self, sample_messages, mock_openai_response
+    ):
+        client = self._client()
+        with patch.object(
+            client.client.chat.completions, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.return_value = mock_openai_response
+            await client.achat(sample_messages, reasoning_effort="high")
+
+        assert mock_create.call_args.kwargs.get("reasoning_effort") == "high"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_dropped_with_tools(
+        self, sample_messages, mock_openai_response
+    ):
+        client = self._client()
+        with patch.object(
+            client.client.chat.completions, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.return_value = mock_openai_response
+            await client.achat(
+                sample_messages, tools=self._TOOLS, reasoning_effort="high"
+            )
+
+        # The guard prevents the "Function tools with reasoning_effort are not
+        # supported for gpt-5.6-terra in /v1/chat/completions" 400.
+        assert "reasoning_effort" not in mock_create.call_args.kwargs
+        assert mock_create.call_args.kwargs.get("tools") == self._TOOLS
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_dropped_for_unsupported_model(
+        self, sample_messages, mock_openai_response
+    ):
+        client = self._client(model="gpt-4.1-nano")
+        with patch.object(
+            client.client.chat.completions, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.return_value = mock_openai_response
+            await client.achat(sample_messages, reasoning_effort="high")
+
+        assert "reasoning_effort" not in mock_create.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_dropped_with_tools_streaming(
+        self, sample_messages, mock_openai_stream_chunks
+    ):
+        client = self._client()
+
+        async def _gen():
+            for chunk in mock_openai_stream_chunks:
+                yield chunk
+
+        with patch.object(
+            client.client.chat.completions, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.return_value = _gen()
+            async for _ in client.astream_chat(
+                sample_messages, tools=self._TOOLS, reasoning_effort="high"
+            ):
+                pass
+
+        assert "reasoning_effort" not in mock_create.call_args.kwargs

@@ -19,7 +19,12 @@ from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import OpenAIStreamNormalizer
 from ..core.streaming import StreamChunk
-from ..models.openai import get_token_param_name, supports_native_mcp, supports_temperature
+from ..models.openai import (
+    get_token_param_name,
+    supports_native_mcp,
+    supports_reasoning_effort,
+    supports_temperature,
+)
 
 if TYPE_CHECKING:
     from ..core.tools.mcp import NativeMCPServerConfig
@@ -51,6 +56,41 @@ class OpenAIClient(ModelClient):
     def _supports_native_mcp(self) -> bool:
         """Check if current model supports native MCP via Responses API."""
         return supports_native_mcp(self.model)
+
+    def _apply_reasoning_effort(
+        self,
+        request_params: Dict[str, Any],
+        kwargs: Dict[str, Any],
+        *,
+        has_tools: bool,
+    ) -> None:
+        """Forward a configured ``reasoning_effort`` onto the Chat Completions
+        request, honoring OpenAI's two constraints:
+
+        1. Only reasoning / GPT-5 models accept the parameter at all — sending
+           it to a standard model is a 400.
+        2. OpenAI rejects ``reasoning_effort`` when function ``tools`` are also
+           present on ``/v1/chat/completions`` ("Function tools with
+           reasoning_effort are not supported for <model> in
+           /v1/chat/completions"). On tool-calling turns we therefore drop it
+           and let the model fall back to its default effort rather than 400.
+        """
+        reasoning_effort = kwargs.get("reasoning_effort")
+        if not reasoning_effort:
+            return
+        if not supports_reasoning_effort(self.model):
+            return
+        if has_tools:
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "Dropping reasoning_effort=%s for %s: not supported alongside "
+                "function tools on /v1/chat/completions",
+                reasoning_effort,
+                self.model,
+            )
+            return
+        request_params["reasoning_effort"] = reasoning_effort
 
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to OpenAI format with name sanitization."""
@@ -257,6 +297,8 @@ class OpenAIClient(ModelClient):
                         "schema": normalized_schema,
                     },
                 }
+
+            self._apply_reasoning_effort(request_params, kwargs, has_tools=bool(tools))
 
             response = await asyncio.wait_for(
                 self.client.chat.completions.create(**request_params), timeout=self.timeout
@@ -600,6 +642,8 @@ class OpenAIClient(ModelClient):
                         "schema": normalized_schema,
                     },
                 }
+
+            self._apply_reasoning_effort(request_params, kwargs, has_tools=bool(tools))
 
             stream = await asyncio.wait_for(
                 self.client.chat.completions.create(**request_params), timeout=self.timeout

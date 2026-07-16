@@ -2,6 +2,15 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.12.0] - 2026-07-15
+
+### Added
+- **GPT-5.6 Sol / Terra / Luna models** (`models/openai.py`): Registered the generally-available GPT-5.6 family — `gpt-5.6-sol` (flagship), `gpt-5.6-sol-pro` (served with `reasoning.mode=pro`), `gpt-5.6-terra` (balanced mid-tier at ~half Sol's cost), and `gpt-5.6-luna` (fastest, most cost-efficient). Each carries a 1M-token context window, 128K max output, `max_completion_tokens` token accounting, full tool/image/file/streaming/JSON-mode support, and per-token pricing hints. GPT-5.6 is now the current flagship line; GPT-5.5 and GPT-5.4 descriptions were updated to reflect their legacy status.
+- **`reasoning_effort` is now forwarded to OpenAI** (`models/openai.py`, `providers/openai_client.py`): A configured `reasoning_effort` is actually sent on Chat Completions requests for the o-series and GPT-5 families — previously it was declared as a model parameter but silently dropped before reaching the API. A new `supports_reasoning_effort()` helper gates the parameter to models that accept it, so it is never sent to a standard chat model (which would 400).
+
+### Fixed
+- **`reasoning_effort` + function tools 400 on the GPT-5 family** (`providers/openai_client.py`): OpenAI rejects `reasoning_effort` when it is combined with function `tools` on `/v1/chat/completions` ("Function tools with reasoning_effort are not supported for gpt-5.6-terra in /v1/chat/completions"). The client now omits `reasoning_effort` on tool-calling turns — falling back to the model's default effort — instead of raising, on both the streaming and non-streaming paths.
+
 ## [1.11.1] - 2026-07-08
 
 ### Fixed

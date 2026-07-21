@@ -4,11 +4,11 @@ Manual test script for MCP (Model Context Protocol) integration.
 
 Prerequisites:
     1. Start the string-tools MCP server:
-       cd /Users/yzk/Desktop/miiflow-web/server
-       python -m workflow.services.mcp_servers.string_tools --port 8766
+       cd miiflow-web/server
+       python -m adlyse_mcp.string_tools --port 8766
 
     OR run Django which serves it at /mcp/string-tools/:
-       cd /Users/yzk/Desktop/miiflow-web/server
+       cd miiflow-web/server
        poetry run python manage.py runserver
 
 Usage:
@@ -354,8 +354,8 @@ async def main():
     except Exception as e:
         print(f"\nFATAL: Could not connect to MCP server: {e}")
         print("\nMake sure the MCP server is running:")
-        print("  cd /Users/yzk/Desktop/miiflow-web/server")
-        print("  python -m workflow.services.mcp_servers.string_tools --port 8766")
+        print("  cd miiflow-web/server")
+        print("  python -m adlyse_mcp.string_tools --port 8766")
         print("\nOr use Django:")
         print("  poetry run python manage.py runserver")
         print("  Then use: --mcp-url http://localhost:8000/mcp/string-tools/")

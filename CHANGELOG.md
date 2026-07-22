@@ -2,6 +2,11 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.13.0] - 2026-07-22
+
+### Added
+- **Caller-preseeded run media store (`core/react/orchestrator.py`)**: `execute()` now merges a `media_ref -> URL` map the caller pre-installs on `ctx.deps["media_store"]` (or `ctx.run_state.media_store`) into the run's `ExecutionState.media_store` at setup, and points both ctx surfaces at it — mirroring how `event_bus` / `dispatch_counter` are provisioned. This lets an adapter rehydrate media the model referenced in earlier turns so a `media_ref:<id>` from a prior turn still resolves, instead of failing with "Unknown media_ref … must come from a tool call earlier in this run" and forcing a fresh (non-identical) regeneration. Backward compatible: runs that don't preseed get the same empty store as before, and media generated during the run merges into the same dict.
+
 ## [1.12.0] - 2026-07-15
 
 ### Added

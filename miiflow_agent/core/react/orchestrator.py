@@ -609,6 +609,27 @@ class ReActOrchestrator:
                 # injection that the batch path was missing.
                 context.run_state.event_bus = self.event_bus
 
+                # Seed this run's media_ref -> URL store from a map the caller
+                # pre-installed on ctx (the Django adapter rebuilds it from the
+                # thread's prior media). Without this the store starts empty
+                # every run, so a media_ref the model saw in an EARLIER turn no
+                # longer resolves and "save the image you showed me last turn"
+                # is forced to regenerate a fresh, non-identical image. Merge
+                # (not replace): media generated THIS run writes into the same
+                # dict. Then point BOTH ctx surfaces at the run's store now — as
+                # with event_bus/dispatch_counter above — so the seed is visible
+                # to the very first tool, not only after the per-step refresh.
+                preseeded_media = (
+                    context.deps.get("media_store") if deps_is_dict else None
+                )
+                if not preseeded_media:
+                    preseeded_media = getattr(
+                        context.run_state, "media_store", None
+                    )
+                if isinstance(preseeded_media, dict) and preseeded_media:
+                    execution_state.media_store.update(preseeded_media)
+                context.run_state.media_store = execution_state.media_store
+
                 # Legacy dual-write to ctx.deps for callers that haven't
                 # migrated to ctx.run_state.* yet. Remove once every reader
                 # (the dispatch closures, batch_executor, memory_fs_tools)
@@ -618,6 +639,7 @@ class ReActOrchestrator:
                         context.run_state.dispatch_counter
                     )
                     context.deps["event_bus"] = self.event_bus
+                    context.deps["media_store"] = execution_state.media_store
 
             # Deterministic approval resume: if the user just approved a tool
             # call, EXECUTE it here (control flow owns continuation) rather than

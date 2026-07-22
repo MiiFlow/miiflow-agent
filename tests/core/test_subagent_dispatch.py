@@ -1113,3 +1113,80 @@ def test_orchestrator_does_not_clobber_existing_counter():
 
     asyncio.run(_run())
     assert ctx.deps["dispatch_counter"] is caller_counter
+
+
+def _short_circuit_execute(orchestrator, ctx):
+    """Run execute() far enough to exercise the setup/provisioning path, then
+    bail before the first LLM step. Mirrors the dispatch-counter tests above."""
+    from miiflow_agent.core.react.models import ReActStep
+
+    async def _stub_step(query, ctx_inner):
+        return ReActStep(step_number=1, thought="", final_answer="done")
+
+    orchestrator._execute_single_step = _stub_step  # type: ignore[attr-defined]
+
+    async def _run():
+        try:
+            await orchestrator.execute("hi", ctx)
+        except Exception:
+            pass
+
+    asyncio.run(_run())
+
+
+def test_orchestrator_seeds_media_store_from_deps():
+    """A media_ref -> URL map the caller pre-installs on ctx.deps (the Django
+    adapter rebuilds it from the thread's prior media) must survive into the
+    run's media_store so a ref the model saw in an EARLIER turn still resolves
+    — this is what stops "save the image you showed me last turn" from forcing
+    a regenerate. Both ctx surfaces must expose the same store."""
+    from miiflow_agent.core.agent import Agent, AgentType, RunContext
+    from miiflow_agent.core.react import ReActFactory
+
+    agent = Agent(_make_client(), agent_type=AgentType.REACT)
+    orchestrator = ReActFactory.create_orchestrator(agent=agent, max_steps=1)
+
+    seed = {"img_from_turn_1": "https://cdn.test/a.png"}
+    ctx = RunContext(deps={"media_store": dict(seed)}, messages=[])
+
+    _short_circuit_execute(orchestrator, ctx)
+
+    assert ctx.deps["media_store"]["img_from_turn_1"] == "https://cdn.test/a.png"
+    # Both surfaces point at the same live store (no drift).
+    assert ctx.run_state.media_store is ctx.deps["media_store"]
+
+
+def test_orchestrator_media_store_merges_generated_over_seed():
+    """Media generated THIS run must land in the SAME dict the seed populated,
+    so seeding never shadows fresh media (merge, not replace)."""
+    from miiflow_agent.core.agent import Agent, AgentType, RunContext
+    from miiflow_agent.core.react import ReActFactory
+
+    agent = Agent(_make_client(), agent_type=AgentType.REACT)
+    orchestrator = ReActFactory.create_orchestrator(agent=agent, max_steps=1)
+
+    ctx = RunContext(deps={"media_store": {"old": "https://cdn.test/old.png"}}, messages=[])
+    _short_circuit_execute(orchestrator, ctx)
+
+    # Simulate a per-step write of newly generated media into the live store.
+    ctx.run_state.media_store["new"] = "https://cdn.test/new.png"
+    assert ctx.deps["media_store"] == {
+        "old": "https://cdn.test/old.png",
+        "new": "https://cdn.test/new.png",
+    }
+
+
+def test_orchestrator_media_store_empty_when_unseeded():
+    """No caller seed → the run's media_store is simply empty (no crash), and
+    both surfaces still agree."""
+    from miiflow_agent.core.agent import Agent, AgentType, RunContext
+    from miiflow_agent.core.react import ReActFactory
+
+    agent = Agent(_make_client(), agent_type=AgentType.REACT)
+    orchestrator = ReActFactory.create_orchestrator(agent=agent, max_steps=1)
+
+    ctx = RunContext(deps={}, messages=[])
+    _short_circuit_execute(orchestrator, ctx)
+
+    assert ctx.deps["media_store"] == {}
+    assert ctx.run_state.media_store is ctx.deps["media_store"]

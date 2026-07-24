@@ -8,10 +8,28 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # and all current models support temperature
 
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
+    "gemini-3.6-flash": ModelConfig(
+        model_identifier="models/gemini-3.6-flash",
+        name="gemini-3.6-flash",
+        description="Google's most capable Flash model (released July 21, 2026). Beats Gemini 3.1 Pro on coding at roughly 25% lower cost, with native grounding and multimodal (text, image, video, audio, PDF) input. 1M token context window.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        supports_structured_outputs=False,
+        reasoning=True,
+        maximum_context_tokens=1048576,
+        maximum_output_tokens=65536,
+        token_param_name="max_output_tokens",
+        supports_temperature=True,
+        input_cost_hint=1.50,
+        output_cost_hint=7.50,
+    ),
     "gemini-3.5-flash": ModelConfig(
         model_identifier="models/gemini-3.5-flash",
         name="gemini-3.5-flash",
-        description="Google's most capable Flash model (released May 19, 2026). Outperforms Gemini 3.1 Pro on coding and agentic benchmarks at Flash-tier pricing. 1M token context window.",
+        description="Legacy — succeeded by Gemini 3.6 Flash (July 2026). Strong coding and agentic performance at Flash-tier pricing. 1M token context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -104,6 +122,7 @@ GOOGLE_PARAMETERS: list[ParameterConfig] = [
         default_value=4096,
         min_value=1,
         max_value={
+            "gemini-3.6-flash": 65536,
             "gemini-3.5-flash": 65536,
             "gemini-3.1-pro": 65536,
             "gemini-3.1-flash-lite": 65536,

@@ -2,6 +2,16 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.14.0] - 2026-07-24
+
+### Added
+- **Claude Opus 5** (`models/anthropic.py`, `core/llms/bedrock.py`): Registered Anthropic's newest Opus model (released July 23, 2026, model id `claude-opus-5`), which delivers near-Fable 5 performance at half the token price ($5/$25 per 1M input/output, same as Opus 4.8). Always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (2.5x faster at 2x price), structured outputs, and a safety fallback that routes to Opus 4.8. 1M context, 128K max output. Registered with `supports_temperature=False` and in `_NO_EXTENDED_THINKING` (adaptive thinking, no manual extended-thinking param), matching the other current flagship models. Matching Bedrock entry (`us.anthropic.claude-opus-5`) added.
+- **Gemini 3.6 Flash** (`models/google.py`): Registered Google's newest and most capable Flash model (released July 21, 2026, model id `models/gemini-3.6-flash`). It beats Gemini 3.1 Pro on coding at roughly 25% lower cost, with native grounding and multimodal (text, image, video, audio, PDF) input. 1M-token context window (1,048,576), 65,536 max output, `max_output_tokens` accounting, full tool/image/file/streaming/JSON-mode support, and per-token pricing hints of $1.50/$7.50 per 1M input/output tokens.
+
+### Changed
+- **Claude Opus 4.8 → legacy** (`models/anthropic.py`, `core/llms/bedrock.py`): Marked as succeeded by Claude Opus 5. It remains available (unchanged pricing/limits) and serves as Opus 5's safety fallback. The Adlyse orchestrator (`assistant/configs/platform_assistants.py`) and the whole-account structural strategist specialist (`assistant/configs/specialists.py`) — the two deepest-reasoning, once-per-run Opus roles — were rolled from `claude-opus-4.8` to `claude-opus-5` (same price, better reasoning).
+- **Gemini 3.5 Flash → legacy** (`models/google.py`): Marked as succeeded by Gemini 3.6 Flash. It is no longer the most capable Flash model; pricing/limits are unchanged and it remains available. Server-side runtime references that pinned `gemini-3.5-flash` for creative/video tagging and swipe-file inference were rolled to `gemini-3.6-flash` (a cheaper, better drop-in with the same multimodal surface).
+
 ## [1.13.0] - 2026-07-22
 
 ### Added

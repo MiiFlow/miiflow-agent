@@ -2445,6 +2445,38 @@ class ReActOrchestrator:
             self._handle_step_error(step, e, state)
 
         finally:
+            # TRANSFER: a dispatch_assistant call handed this turn to a
+            # sub-agent. The child's answer already streamed to the user as
+            # real FINAL_ANSWER_CHUNKs, so there is nothing left for this agent
+            # to say — mark the step final and let the main loop's existing
+            # `if step.is_final_step` branch end the run. That branch also
+            # publishes the closing FINAL_ANSWER; the SSE layer drops its
+            # content because the chunks already delivered it.
+            #
+            # Consumed here rather than inside each tool path so the
+            # single-call and parallel-batch paths share ONE implementation —
+            # and `pop` so a stale flag can never leak into a later step.
+            pending_transfer = None
+            if isinstance(getattr(context, "deps", None), dict):
+                pending_transfer = context.deps.pop("pending_transfer", None)
+            if pending_transfer and not step.error:
+                # `is_final_step` is derived (`answer is not None`, models.py:95)
+                # and has no setter — assigning it raises AttributeError, which
+                # is caught upstream and silently costs the whole answer.
+                # Setting `answer` IS how a step is marked final.
+                step.answer = pending_transfer.get("answer") or ""
+                step.metadata["transferred_to"] = pending_transfer.get("handle")
+                step.metadata["answered_by_assistant_id"] = pending_transfer.get(
+                    "child_assistant_id"
+                )
+                logger.info(
+                    "[ORCH] step=%d TRANSFER handle=%s — turn handed to sub-agent, "
+                    "ending run without a synthesis pass (answer=%s)",
+                    state.current_step,
+                    pending_transfer.get("handle"),
+                    _preview(step.answer, 200),
+                )
+
             step.execution_time = time.time() - step_start_time
             await self.event_bus.publish(
                 EventFactory.step_complete(state.current_step, step)
@@ -2665,6 +2697,12 @@ class ReActOrchestrator:
                     context.deps["media_store"] = state.media_store
                     context.deps["step_number"] = state.current_step
                     context.deps["event_bus"] = self.event_bus
+                    # How many tool calls the model emitted in this one
+                    # assistant message. dispatch_assistant reads it to refuse
+                    # a transfer that isn't the lone call in the turn — handing
+                    # the turn away while other tools are still running would
+                    # strand their results.
+                    context.deps["batch_size"] = len(invocations)
 
             # Provide context only if any tool needs it (single-tool path
             # checks per-tool; here we pass it always — execute_tool
@@ -3507,6 +3545,12 @@ class ReActOrchestrator:
                     context.deps["media_store"] = state.media_store
                     context.deps["step_number"] = state.current_step
                 context.deps["event_bus"] = self.event_bus
+                # This is the single-tool path, so the model emitted exactly
+                # one call. Must be written explicitly, not left to default:
+                # ctx.deps outlives the step, so a stale batch_size from an
+                # earlier parallel batch would make dispatch_assistant refuse a
+                # perfectly valid lone transfer.
+                context.deps["batch_size"] = 1
 
         # Determine if tool needs context injection
         needs_context = self.tool_executor.tool_needs_context(step.action)

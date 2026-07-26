@@ -197,6 +197,7 @@ async def forward_subagent_events(
     handle: Optional[str] = None,
     started_at_monotonic: Optional[float] = None,
     surface_interrupts: bool = False,
+    promote_to_final: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Consume the child's event stream and forward the relevant events
     to the parent's bus.
@@ -229,6 +230,25 @@ async def forward_subagent_events(
     Other event types stay in the child's run (STEP_START / STEP_COMPLETE /
     VISUALIZATION / MEDIA / ARTIFACT / etc. are private to the child).
 
+    ``promote_to_final`` switches this into TRANSFER mode: the child owns
+    the user-facing turn, so its answer is no longer a nested panel's
+    ``result`` but *the* answer. In that mode:
+
+      - FINAL_ANSWER_CHUNK is re-published as a real parent
+        FINAL_ANSWER_CHUNK, so it lands in the main message stream (and
+        therefore in the parent's persisted message body) instead of
+        subagent_dispatch/progress.
+      - VISUALIZATION / MEDIA / ARTIFACT are forwarded verbatim rather
+        than dropped — a transferred child renders its own output, so
+        those events have to reach the parent's stream.
+      - Everything else (thinking, tool calls, observations) still goes
+        out as subagent_dispatch, so the panel keeps showing the child's
+        work — just not a duplicate copy of the answer text.
+
+    Nested transfer composes without special handling: a grandchild's
+    promoted chunks arrive here as the child's own FINAL_ANSWER_CHUNKs
+    and get promoted again.
+
     This is a *consumer*: it iterates the entire generator before
     returning. The caller is responsible for calling
     `SubAgent.final_result()` afterward. Returns the captured interrupt data
@@ -242,6 +262,11 @@ async def forward_subagent_events(
     """
     first_chunk_logged = False
     captured_interrupt: Optional[Dict[str, Any]] = None
+    # Running accumulation of the promoted answer. EventFactory.final_answer_chunk
+    # carries both the delta and the content-so-far; only the delta is consumed
+    # downstream today, but we keep `content` honest rather than passing the
+    # delta twice.
+    promoted_answer = ""
     async for child_event in child_events:
         if not isinstance(child_event, ReActEvent):
             continue
@@ -289,17 +314,29 @@ async def forward_subagent_events(
                         now,
                     )
                     first_chunk_logged = True
-                await parent_event_bus.publish(
-                    EventFactory.subagent_dispatch(
-                        parent_step_number,
-                        "progress",
-                        {
-                            "subagent_id": subagent_id,
-                            "subagent_path": own_path,
-                            "chunk": chunk,
-                        },
+                if promote_to_final:
+                    # TRANSFER: the child owns the user-facing turn. Emit a real
+                    # FINAL_ANSWER_CHUNK so the chunk lands in the main message
+                    # stream (and therefore in the parent's persisted message
+                    # body) rather than in the nested panel's `result`.
+                    promoted_answer += chunk
+                    await parent_event_bus.publish(
+                        EventFactory.final_answer_chunk(
+                            parent_step_number, chunk, promoted_answer
+                        )
                     )
-                )
+                else:
+                    await parent_event_bus.publish(
+                        EventFactory.subagent_dispatch(
+                            parent_step_number,
+                            "progress",
+                            {
+                                "subagent_id": subagent_id,
+                                "subagent_path": own_path,
+                                "chunk": chunk,
+                            },
+                        )
+                    )
         elif et == ReActEventType.THINKING_CHUNK:
             # Stream the child's intermediate reasoning into a nested
             # thinking chunk on the parent's panel. The FE appends deltas
@@ -367,6 +404,23 @@ async def forward_subagent_events(
                     },
                 )
             )
+        elif promote_to_final and et in (
+            ReActEventType.VISUALIZATION,
+            ReActEventType.MEDIA,
+            ReActEventType.ARTIFACT,
+        ):
+            # Only reachable in TRANSFER mode. In report mode these stay
+            # private to the child because the child runs HEADLESS and the
+            # parent owns rendering; a transferred child runs on the parent's
+            # surface and renders its own output, so its render events have to
+            # reach the parent's stream or the chart silently disappears.
+            await parent_event_bus.publish(
+                ReActEvent(
+                    event_type=et,
+                    step_number=parent_step_number,
+                    data=dict(data),
+                )
+            )
         elif et == ReActEventType.SUBAGENT_DISPATCH:
             inner = dict(data)
             nested_path = list(inner.get("subagent_path") or [])
@@ -394,6 +448,7 @@ async def dispatch_subagent(
     max_depth: int = MAX_NESTING_DEPTH,
     surface_interrupts: bool = False,
     per_handle_limit: Optional[int] = None,
+    transfer: bool = False,
 ) -> "SubAgentResult":
     """Run one parent → child dispatch under the framework's lifecycle.
 
@@ -411,6 +466,15 @@ async def dispatch_subagent(
     events aren't emitted — the dispatch still runs and the result is
     returned. This matches today's `dispatch_assistant_tool` behavior
     when ctx.deps lacks an event_bus.
+
+    ``transfer`` selects TRANSFER mode: the child owns the user-facing turn
+    rather than reporting back. Its answer chunks are promoted into the
+    parent's own FINAL_ANSWER_CHUNK stream (see ``forward_subagent_events``),
+    the lifecycle `complete` event carries an empty ``result`` so the panel
+    doesn't render a duplicate copy of the answer, and
+    ``result.metadata["transferred"]`` is set so the caller can end the
+    parent's turn instead of looping back to the LLM. The dispatch itself is
+    otherwise identical — same guardrails, same counter, same budget.
     """
     # Late import to avoid the agent/config/subagent circular at module load.
     from ..subagent import SubAgentResult
@@ -486,6 +550,7 @@ async def dispatch_subagent(
                 handle=handle,
                 started_at_monotonic=started_at,
                 surface_interrupts=surface_interrupts,
+                promote_to_final=transfer,
             )
         else:
             # No bus — just drain the stream so the child completes.
@@ -526,12 +591,18 @@ async def dispatch_subagent(
                 {
                     "subagent_id": subagent_id,
                     "subagent_path": own_path,
-                    "result": result.answer or "",
+                    # In TRANSFER mode the answer already streamed into the
+                    # main message; echoing it here too would render the same
+                    # text twice (once in the panel, once in the message body).
+                    # The panel keeps the child's tool work, just not a
+                    # duplicate of the answer.
+                    "result": "" if transfer else (result.answer or ""),
                     "status": result.status,
                     "error": result.error,
                     "duration_ms": result.duration_ms,
                     "child_assistant_id": child_id,
                     "child_thread_id": result.child_run_id,
+                    "transferred": transfer,
                 },
             )
         )
@@ -540,6 +611,14 @@ async def dispatch_subagent(
     # in the tool observation back to the parent LLM.
     if not result.metadata.get("subagent_id"):
         result.metadata["subagent_id"] = subagent_id
+
+    # TRANSFER: tell the caller the child owns the answer, so it can end the
+    # parent's turn instead of looping back to the LLM for a synthesis pass.
+    # Only claim it when the child actually produced something — an empty or
+    # failed transfer must fall back to the normal report path, or the turn
+    # ends with silence.
+    if transfer and result.status == "completed" and (result.answer or "").strip():
+        result.metadata["transferred"] = True
 
     # Phase 2 (R1): if the child paused for the user, surface the interrupt on the
     # result so the dispatch tool returns a clarification-marker observation and the
@@ -557,6 +636,7 @@ def _render_dispatcher_description(
     sub_agents: "Sequence[SubAgent]",
     *,
     extra_note: Optional[str] = None,
+    transfer_allowed: bool = False,
 ) -> str:
     """Render the LLM-facing dispatcher tool description from the
     sub-agent list.
@@ -592,25 +672,83 @@ def _render_dispatcher_description(
         "most recent user message. Include any other context the child "
         "needs in `structured_handoff_data`."
     )
+    if transfer_allowed:
+        parts.append("")
+        parts.append(
+            "**`mode` — who answers the user.**\n"
+            "\n"
+            "- `report` (default): the sub-agent's findings come back to you as "
+            "a tool result and YOU write the user-facing answer. Use this "
+            "whenever you dispatch more than one sub-agent, or when you need to "
+            "combine the result with your own data, reframe it, or render it.\n"
+            "- `transfer`: you hand the turn over. The sub-agent's reply goes "
+            "straight to the user in its own voice, and your turn ENDS — you do "
+            "not get another chance to speak, add caveats, or render anything. "
+            "Use it when ONE sub-agent fully owns the question and you would "
+            "add nothing but a re-wording.\n"
+            "\n"
+            "`transfer` is only honored on a lone `dispatch_assistant` call. If "
+            "you emit it alongside any other tool call it silently degrades to "
+            "`report`, so don't plan a turn around a transfer running in "
+            "parallel with anything else."
+        )
     if extra_note:
         parts.append("")
         parts.append(extra_note)
     return "\n".join(parts)
 
 
-def _build_dispatcher_schema(sub_agents: "Sequence[SubAgent]"):
+def _build_dispatcher_schema(
+    sub_agents: "Sequence[SubAgent]", *, transfer_allowed: bool = False
+):
     """Build the `ToolSchema` for the synthesized dispatcher.
 
     The `handle` parameter is an enum constrained to the registered
     sub-agent handles, so the LLM can only call into known children.
+
+    ``transfer_allowed`` adds the optional `mode` parameter. When it's False
+    the parameter is omitted from the schema ENTIRELY rather than being
+    accepted-and-ignored — a run with nobody to talk to (headless: the
+    suggestion pipeline, schedules, `run_assistant_once`) should not even be
+    able to express a transfer, and a model can't misuse a parameter it was
+    never shown.
     """
     from ..tools.schemas import ParameterSchema, ToolSchema
     from ..tools.types import ParameterType, ToolType
 
     handles = [sub.handle for sub in sub_agents]
+    mode_param = (
+        {
+            "mode": ParameterSchema(
+                name="mode",
+                type=ParameterType.STRING,
+                description=(
+                    "Who answers the user. 'report' — the sub-agent reports "
+                    "back and YOU write the user-facing answer; required when "
+                    "you dispatch more than one sub-agent or must combine the "
+                    "result with your own data. 'transfer' — hand the turn to "
+                    "the sub-agent: its reply goes directly to the user and "
+                    "your turn ends; use it when ONE sub-agent fully owns the "
+                    "question and you would only be re-wording its answer. "
+                    "Valid only as the sole tool call in a message."
+                ),
+                # REQUIRED on purpose. As an optional field with a documented
+                # default, models simply omitted it — measured: the router
+                # never once set it across several live runs, so transfer was
+                # unreachable in practice. Required forces an explicit choice
+                # per dispatch, which is the decision we actually want made.
+                required=True,
+                enum=["report", "transfer"],
+            )
+        }
+        if transfer_allowed
+        else {}
+    )
     return ToolSchema(
         name=DISPATCH_TOOL_NAME,
-        description=_render_dispatcher_description(sub_agents),
+        description=_render_dispatcher_description(
+            sub_agents, transfer_allowed=transfer_allowed
+        ),
         tool_type=ToolType.FUNCTION,
         # Parallel dispatch is gather-safe: each child runs under its own
         # `subagent_id` + `subagent_path`, and the dispatch lifecycle owns
@@ -659,6 +797,7 @@ def _build_dispatcher_schema(sub_agents: "Sequence[SubAgent]"):
                 ),
                 required=False,
             ),
+            **mode_param,
         },
     )
 
@@ -679,6 +818,7 @@ def make_subagent_dispatcher_tool(
     parent_assistant_id: str,
     counter: Optional[DispatchCounter] = None,
     child_id_resolver: Optional[Callable[["SubAgent"], Any]] = None,
+    transfer_allowed: bool = False,
 ) -> "FunctionTool":
     """Build a `dispatch_assistant`-shaped FunctionTool from a SubAgent list.
 
@@ -711,10 +851,15 @@ def make_subagent_dispatcher_tool(
         - ``depth`` (int) — current dispatch nesting depth
         - ``parent_user_message`` (Optional[str]) — last user message
           for handoffs that forward it
+
+    ``transfer_allowed`` exposes the `mode` parameter so the model can hand
+    the turn to a sub-agent (see `_build_dispatcher_schema`). Callers derive
+    it from the run's surface: interactive surfaces can transfer, headless
+    runs cannot.
     """
     from ..tools.function.function_tool import FunctionTool
 
-    schema = _build_dispatcher_schema(sub_agents)
+    schema = _build_dispatcher_schema(sub_agents, transfer_allowed=transfer_allowed)
     child_map: Dict[str, "SubAgent"] = {sub.handle: sub for sub in sub_agents}
     closure_counter = counter or DispatchCounter()
 
@@ -729,6 +874,7 @@ def make_subagent_dispatcher_tool(
         task: str,
         intent_summary: str,
         structured_handoff_data: Optional[Dict[str, Any]] = None,
+        mode: str = "report",
     ) -> Dict[str, Any]:
         from ..subagent import SubAgentHandoff
 
@@ -771,6 +917,21 @@ def make_subagent_dispatcher_tool(
 
         child_id = _resolve_child_id(child)
 
+        # A transfer is only coherent as the sole tool call in the message —
+        # "hand over the turn AND also do these other things" has no meaning.
+        # The orchestrator sets `batch_size` for parallel batches; anything
+        # above 1 degrades to a report rather than failing the call, so a
+        # mis-planned turn still produces an answer.
+        transfer = transfer_allowed and mode == "transfer"
+        if transfer and int(deps.get("batch_size", 1) or 1) > 1:
+            logger.info(
+                "dispatch: transfer downgraded to report — not a lone tool call "
+                "(handle=%s batch_size=%s)",
+                handle,
+                deps.get("batch_size"),
+            )
+            transfer = False
+
         try:
             result = await dispatch_subagent(
                 child,
@@ -781,6 +942,7 @@ def make_subagent_dispatcher_tool(
                 child_id=child_id,
                 counter=runtime_counter,
                 surface_interrupts=bool(deps.get("surface_child_interrupts")),
+                transfer=transfer,
             )
         except DispatchGuardrailError as guard:
             return _err(guard.kind, str(guard))
@@ -898,15 +1060,39 @@ def make_subagent_dispatcher_tool(
                 },
             )
 
-        observation = {
-            "handle": handle,
-            "child_assistant_id": child_id,
-            "subagent_id": result.metadata.get("subagent_id"),
-            "status": result.status,
-            "answer": result.answer,
-            "error": result.error,
-            "duration_ms": result.duration_ms,
-        }
+        transferred = bool(result.metadata.get("transferred"))
+        if transferred:
+            # Hand the answer to the orchestrator out-of-band and keep the tool
+            # observation TINY. The turn ends here, so the model never reads
+            # this — but it still has to exist, because the assistant message
+            # already carries a tool_use block and a tool_use without a matching
+            # tool_result breaks replay of this thread on the next turn.
+            # The answer itself reaches history as the final assistant message.
+            deps["pending_transfer"] = {
+                "answer": result.answer,
+                "handle": handle,
+                "child_assistant_id": child_id,
+                "child_thread_id": result.child_run_id,
+                "subagent_id": result.metadata.get("subagent_id"),
+            }
+            observation = {
+                "handle": handle,
+                "status": "transferred",
+                "note": (
+                    "Turn handed to the sub-agent; its reply went directly to "
+                    "the user."
+                ),
+            }
+        else:
+            observation = {
+                "handle": handle,
+                "child_assistant_id": child_id,
+                "subagent_id": result.metadata.get("subagent_id"),
+                "status": result.status,
+                "answer": result.answer,
+                "error": result.error,
+                "duration_ms": result.duration_ms,
+            }
         # Ledger entry targets the root checkpoint (shared blackboard for the
         # dispatch tree) and stays bounded: digest only — the full dispatch
         # observation is recorded by the parent's observation seam.

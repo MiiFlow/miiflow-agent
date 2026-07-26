@@ -1190,3 +1190,257 @@ def test_orchestrator_media_store_empty_when_unseeded():
 
     assert ctx.deps["media_store"] == {}
     assert ctx.run_state.media_store is ctx.deps["media_store"]
+
+
+# ── Transfer mode ────────────────────────────────────────────────────────
+#
+# Transfer hands the user-facing turn to a sub-agent: the child's answer IS
+# the answer, so the parent must not run a synthesis pass. These lock the
+# three things that make that safe — the answer reaches the parent's own
+# stream, headless runs can't express a transfer at all, and an empty or
+# failed transfer falls back to the normal report path rather than ending
+# the turn in silence.
+
+
+def test_transfer_promotes_child_chunks_to_parent_final_answer():
+    """In transfer mode the child's answer streams into the MAIN message.
+
+    Report mode wraps it as subagent_dispatch/progress (nested panel); transfer
+    must emit a real FINAL_ANSWER_CHUNK or the text would never reach
+    `streaming_service.full_response` and the persisted message would be empty.
+    """
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    bus, received = _make_event_bus()
+    events = [
+        ReActEvent(
+            event_type=ReActEventType.FINAL_ANSWER_CHUNK,
+            step_number=0,
+            data={"delta": "Spend was "},
+        ),
+        ReActEvent(
+            event_type=ReActEventType.FINAL_ANSWER_CHUNK,
+            step_number=0,
+            data={"delta": "$4,120."},
+        ),
+    ]
+
+    asyncio.run(
+        forward_subagent_events(
+            _gen_events(events),
+            parent_event_bus=bus,
+            parent_step_number=2,
+            subagent_id="sub_abc",
+            own_path=["sub_abc"],
+            promote_to_final=True,
+        )
+    )
+
+    assert [e.event_type for e in received] == [
+        ReActEventType.FINAL_ANSWER_CHUNK,
+        ReActEventType.FINAL_ANSWER_CHUNK,
+    ]
+    assert [e.data["delta"] for e in received] == ["Spend was ", "$4,120."]
+    # `content` accumulates so the event stays self-describing.
+    assert received[-1].data["content"] == "Spend was $4,120."
+
+
+def test_transfer_forwards_render_events_report_mode_drops_them():
+    """A transferred child renders its own visuals, so its VISUALIZATION
+    events must reach the parent's stream. In report mode the parent owns
+    rendering and the child runs HEADLESS, so they stay private."""
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    def _viz():
+        return ReActEvent(
+            event_type=ReActEventType.VISUALIZATION,
+            step_number=0,
+            data={"chart": "kpi"},
+        )
+
+    bus_t, received_t = _make_event_bus()
+    asyncio.run(
+        forward_subagent_events(
+            _gen_events([_viz()]),
+            parent_event_bus=bus_t,
+            parent_step_number=1,
+            subagent_id="s1",
+            own_path=["s1"],
+            promote_to_final=True,
+        )
+    )
+    assert [e.event_type for e in received_t] == [ReActEventType.VISUALIZATION]
+
+    bus_r, received_r = _make_event_bus()
+    asyncio.run(
+        forward_subagent_events(
+            _gen_events([_viz()]),
+            parent_event_bus=bus_r,
+            parent_step_number=1,
+            subagent_id="s1",
+            own_path=["s1"],
+        )
+    )
+    assert received_r == []
+
+
+def test_transfer_keeps_tool_events_in_the_panel():
+    """The panel still shows the child's work under transfer — only the
+    ANSWER moves to the main stream."""
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    bus, received = _make_event_bus()
+    asyncio.run(
+        forward_subagent_events(
+            _gen_events(
+                [
+                    ReActEvent(
+                        event_type=ReActEventType.ACTION_PLANNED,
+                        step_number=0,
+                        data={"action": "google_ads_query"},
+                    )
+                ]
+            ),
+            parent_event_bus=bus,
+            parent_step_number=1,
+            subagent_id="s1",
+            own_path=["s1"],
+            promote_to_final=True,
+        )
+    )
+    assert len(received) == 1
+    assert received[0].event_type == ReActEventType.SUBAGENT_DISPATCH
+    assert received[0].data["sub_event"] == "tool"
+
+
+def test_mode_param_absent_on_headless_present_when_transfer_allowed():
+    """The surface gate is structural: a headless run is never SHOWN the
+    option, so it cannot mis-set it."""
+    from miiflow_agent.core.react.dispatch import _build_dispatcher_schema
+
+    headless = _build_dispatcher_schema([], transfer_allowed=False)
+    interactive = _build_dispatcher_schema([], transfer_allowed=True)
+
+    assert "mode" not in headless.parameters
+    assert "mode" in interactive.parameters
+    assert interactive.parameters["mode"].enum == ["report", "transfer"]
+    # REQUIRED, not optional. Measured on live runs: as an optional field with
+    # a documented default, the router omitted `mode` every single time, so
+    # transfer was unreachable no matter how the prompt was worded. Forcing an
+    # explicit choice per dispatch is what actually made it selectable — if
+    # this ever flips back to optional, transfer silently becomes dead code.
+    assert interactive.parameters["mode"].required is True
+
+
+def _stub_subagent(answer: str, status: str = "completed"):
+    """Minimal SubAgent whose stream emits `answer` as one chunk."""
+    from miiflow_agent.core.subagent import SubAgentResult
+
+    class _Stub:
+        handle = "google_ads_specialist"
+        name = "Google Ads Specialist"
+        description = ""
+        when_to_use = ""
+
+        async def stream(self, handoff):
+            from miiflow_agent.core.react.enums import ReActEventType
+            from miiflow_agent.core.react.react_events import ReActEvent
+
+            if answer:
+                yield ReActEvent(
+                    event_type=ReActEventType.FINAL_ANSWER_CHUNK,
+                    step_number=0,
+                    data={"delta": answer},
+                )
+
+        def final_result(self):
+            return SubAgentResult(answer=answer, status=status)
+
+    return _Stub()
+
+
+def _run_dispatch(sub_agent, *, transfer: bool):
+    from miiflow_agent.core.react.dispatch import DispatchCounter, dispatch_subagent
+    from miiflow_agent.core.subagent import SubAgentHandoff
+
+    bus, received = _make_event_bus()
+    result = asyncio.run(
+        dispatch_subagent(
+            sub_agent,
+            SubAgentHandoff(task="t", intent_summary="s"),
+            parent_event_bus=bus,
+            parent_step_number=1,
+            parent_assistant_id="parent",
+            child_id="child",
+            counter=DispatchCounter(),
+            transfer=transfer,
+        )
+    )
+    return result, received
+
+
+def test_transfer_marks_result_and_blanks_panel_result():
+    result, received = _run_dispatch(_stub_subagent("Spend was $4,120."), transfer=True)
+
+    assert result.metadata.get("transferred") is True
+    complete = [
+        e for e in received
+        if e.data.get("sub_event") in ("complete", "failed")
+    ][0]
+    assert complete.data["sub_event"] == "complete"
+    # Blank on purpose: the answer already streamed into the message body, so
+    # echoing it in the panel would render it twice.
+    assert complete.data["result"] == ""
+    assert complete.data["transferred"] is True
+
+
+def test_report_mode_never_marks_transferred():
+    result, received = _run_dispatch(_stub_subagent("Findings: ..."), transfer=False)
+
+    assert "transferred" not in result.metadata
+    complete = [e for e in received if e.data.get("sub_event") == "complete"][0]
+    assert complete.data["result"] == "Findings: ..."
+    assert complete.data["transferred"] is False
+
+
+def test_empty_transfer_falls_back_to_report():
+    """The safety valve: a transfer that produced nothing must NOT end the
+    turn, or the user gets silence. Leaving `transferred` unset sends the
+    parent down the normal synthesis path."""
+    result, _ = _run_dispatch(_stub_subagent(""), transfer=True)
+    assert "transferred" not in result.metadata
+
+
+def test_failed_transfer_falls_back_to_report():
+    result, _ = _run_dispatch(
+        _stub_subagent("partial text", status="failed"), transfer=True
+    )
+    assert "transferred" not in result.metadata
+
+
+def test_a_transferred_step_is_marked_final_via_answer_not_the_property():
+    """Regression: `is_final_step` is DERIVED and has no setter.
+
+    The orchestrator's transfer path originally did `step.is_final_step = True`.
+    That raises AttributeError, which the step's own error handling swallows —
+    so on a live run the transfer succeeded, the child's answer was discarded,
+    and the turn ended with an empty message. Every unit test passed, because
+    none of them constructed a real ReActStep.
+    """
+    from miiflow_agent.core.react.models import ReActStep
+
+    step = ReActStep(step_number=1, thought="dispatching to the specialist")
+    assert step.is_final_step is False
+
+    with pytest.raises(AttributeError):
+        step.is_final_step = True  # type: ignore[misc]
+
+    # Setting `answer` is the only way to mark a step final.
+    step.answer = "Spend was $4,120 last week."
+    assert step.is_final_step is True

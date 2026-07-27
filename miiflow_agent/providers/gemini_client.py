@@ -201,21 +201,25 @@ class GeminiClient(ModelClient):
     # ------------------------------------------------------------------
 
     def _build_rest_url(self, streaming: bool = False) -> str:
-        """Build the REST API endpoint URL."""
+        """Build the REST API endpoint URL.
+
+        The API key is NOT in the URL — it goes in the `x-goog-api-key` header
+        (see `_auth_headers`). A key in the query string is echoed by every
+        httpx INFO log line, every traceback, and every proxy access log, which
+        is how platform credentials end up in log aggregators.
+        """
         # Strip "models/" prefix if present — the SDK accepted both formats
         # but the REST URL already includes /models/ in the path.
         model = self.model
         if model.startswith("models/"):
             model = model[len("models/"):]
         if streaming:
-            return (
-                f"{_GEMINI_API_BASE}/models/{model}:streamGenerateContent"
-                f"?alt=sse&key={self.api_key}"
-            )
-        return (
-            f"{_GEMINI_API_BASE}/models/{model}:generateContent"
-            f"?key={self.api_key}"
-        )
+            return f"{_GEMINI_API_BASE}/models/{model}:streamGenerateContent?alt=sse"
+        return f"{_GEMINI_API_BASE}/models/{model}:generateContent"
+
+    def _auth_headers(self) -> Dict[str, str]:
+        """Credential header for the Generative Language REST API."""
+        return {"x-goog-api-key": self.api_key}
 
     # ------------------------------------------------------------------
     # Request body builders
@@ -657,7 +661,7 @@ class GeminiClient(ModelClient):
             url = self._build_rest_url(streaming=False)
 
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, json=body)
+                resp = await client.post(url, json=body, headers=self._auth_headers())
                 if resp.status_code != 200:
                     raise ProviderError(
                         f"Gemini API error ({resp.status_code}): {resp.text}",
@@ -732,7 +736,9 @@ class GeminiClient(ModelClient):
             self._stream_normalizer.reset_state()
 
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                async with client.stream("POST", url, json=body) as resp:
+                async with client.stream(
+                    "POST", url, json=body, headers=self._auth_headers()
+                ) as resp:
                     if resp.status_code != 200:
                         error_body = await resp.aread()
                         raise ProviderError(

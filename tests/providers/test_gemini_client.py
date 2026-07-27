@@ -92,7 +92,7 @@ class TestGeminiClient:
 
         mock_resp = _mock_httpx_response(rest_data)
 
-        async def mock_post(url, json=None):
+        async def mock_post(url, json=None, headers=None):
             return mock_resp
 
         mock_http = AsyncMock()
@@ -124,7 +124,7 @@ class TestGeminiClient:
 
         mock_resp = _mock_httpx_response(rest_data)
 
-        async def mock_post(url, json=None):
+        async def mock_post(url, json=None, headers=None):
             return mock_resp
 
         mock_http = AsyncMock()
@@ -165,7 +165,7 @@ class TestGeminiClient:
 
         mock_resp = _mock_httpx_response(rest_data)
 
-        async def mock_post(url, json=None):
+        async def mock_post(url, json=None, headers=None):
             return mock_resp
 
         mock_http = AsyncMock()
@@ -347,7 +347,7 @@ class TestGeminiClient:
         mock_resp = _mock_httpx_response({}, status_code=400)
         mock_resp.text = "Bad request"
 
-        async def mock_post(url, json=None):
+        async def mock_post(url, json=None, headers=None):
             return mock_resp
 
         mock_http = AsyncMock()
@@ -405,7 +405,7 @@ class TestGeminiClient:
 
         mock_resp = _mock_httpx_response(rest_data)
 
-        async def mock_post(url, json=None):
+        async def mock_post(url, json=None, headers=None):
             return mock_resp
 
         mock_http = AsyncMock()
@@ -506,12 +506,20 @@ class TestGeminiClient:
         """Test REST API URL construction."""
         url = client._build_rest_url(streaming=False)
         assert "generateContent" in url
-        assert "key=test-key" in url
         assert "gemini-3.5-flash" in url
 
         url_stream = client._build_rest_url(streaming=True)
         assert "streamGenerateContent" in url_stream
         assert "alt=sse" in url_stream
+
+    @pytest.mark.asyncio
+    async def test_api_key_travels_in_a_header_not_the_url(self, client):
+        """A key in the query string is echoed by every httpx INFO log line,
+        traceback, and proxy access log — that is how platform credentials end
+        up in log aggregators."""
+        assert "test-key" not in client._build_rest_url(streaming=False)
+        assert "test-key" not in client._build_rest_url(streaming=True)
+        assert client._auth_headers() == {"x-goog-api-key": "test-key"}
 
     @pytest.mark.asyncio
     async def test_rest_url_strips_models_prefix(self):

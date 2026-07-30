@@ -21,6 +21,11 @@ class StreamChunk:
     finish_reason: Optional[str] = None
     usage: Optional[TokenCount] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
+    # Results of tools the provider executed itself (Anthropic/OpenAI native
+    # MCP). These are NOT pending work — the tool already ran server-side, so
+    # the consumer records them and must not dispatch them locally. Each entry:
+    # {"tool_use_id": str, "is_error": bool, "content": str}.
+    mcp_tool_results: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass

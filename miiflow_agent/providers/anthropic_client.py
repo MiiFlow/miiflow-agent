@@ -14,7 +14,7 @@ from ..core.exceptions import TimeoutError as MiiflowTimeoutError
 from ..core.message import Message, MessageRole
 from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
-from ..core.stream_normalizer import AnthropicStreamNormalizer
+from ..core.stream_normalizer import AnthropicStreamNormalizer, extract_mcp_result_text
 from ..core.streaming import StreamChunk
 from ..models.anthropic import (
     supports_native_mcp,
@@ -185,6 +185,14 @@ class AnthropicClient(ModelClient):
             if message.content and message.content.strip():
                 content_list.append({"type": "text", "text": message.content})
 
+            # Results of provider-executed MCP calls, keyed by the id of the
+            # mcp_tool_use they answer. Replayed inline below so each
+            # mcp_tool_use block keeps its pair.
+            mcp_results_by_id = {
+                r.get("tool_use_id"): r
+                for r in (message.metadata or {}).get("mcp_tool_results", [])
+            }
+
             # Add tool use blocks
             for tool_call in message.tool_calls:
                 import json
@@ -196,6 +204,55 @@ class AnthropicClient(ModelClient):
                         args = json.loads(args)
                     except (json.JSONDecodeError, TypeError):
                         args = {}
+
+                # Provider-executed MCP calls round-trip as the block types the
+                # API issued them as. Emitting them as plain `tool_use` is a
+                # protocol error twice over: the id is an `mcptoolu_` id the
+                # API will not accept in a tool_use block, and there is no
+                # local tool_result message to pair with it (nothing ran on our
+                # side), so the request 400s on an unanswered tool_use.
+                if tool_call.get("type") == "mcp_function":
+                    call_id = tool_call.get("id", "")
+                    server_name = tool_call.get("server_name")
+                    result = mcp_results_by_id.get(call_id)
+
+                    # Replay the pair only when it can be reconstructed
+                    # completely. A half-formed mcp_tool_use — no id, no
+                    # server_name, or no matching result — is rejected by the
+                    # API, which would 400 every remaining turn of the thread.
+                    # Dropping it instead costs the model the raw payload from
+                    # a turn it already summarized in its own text; that
+                    # degrades grounding, it does not break the conversation.
+                    if not (call_id and server_name and result):
+                        logger.debug(
+                            "Dropping unreplayable native-MCP call from history "
+                            "(id=%s server_name=%s has_result=%s)",
+                            call_id,
+                            server_name,
+                            result is not None,
+                        )
+                        continue
+
+                    content_list.append(
+                        {
+                            "type": "mcp_tool_use",
+                            "id": call_id,
+                            "name": tool_call.get("function", {}).get("name", ""),
+                            "input": args,
+                            "server_name": server_name,
+                        }
+                    )
+                    content_list.append(
+                        {
+                            "type": "mcp_tool_result",
+                            "tool_use_id": call_id,
+                            "is_error": bool(result.get("is_error", False)),
+                            "content": [
+                                {"type": "text", "text": result.get("content", "") or ""}
+                            ],
+                        }
+                    )
+                    continue
 
                 content_list.append(
                     {
@@ -931,20 +988,15 @@ class AnthropicClient(ModelClient):
                         )
                         logger.debug(f"MCP tool use: {getattr(block, 'name', 'unknown')}")
                     elif hasattr(block, "type") and block.type == "mcp_tool_result":
-                        # Native MCP tool result (already executed by API)
+                        # Native MCP tool result (already executed by the API).
+                        # This is an observation, not prose — it must NOT be
+                        # concatenated into `content`, or raw tool payloads end
+                        # up rendered as the assistant's answer. Mirrors the
+                        # streaming path in AnthropicStreamNormalizer.
                         is_error = getattr(block, "is_error", False)
-                        result_content = getattr(block, "content", "")
-
-                        # Extract text content from result
-                        if isinstance(result_content, list):
-                            # Content is a list of blocks
-                            for item in result_content:
-                                if hasattr(item, "text"):
-                                    content += item.text
-                                elif isinstance(item, dict) and "text" in item:
-                                    content += item["text"]
-                        elif isinstance(result_content, str):
-                            content += result_content
+                        result_content = extract_mcp_result_text(
+                            getattr(block, "content", "")
+                        )
 
                         mcp_tool_results.append(
                             {
@@ -1260,6 +1312,7 @@ class AnthropicClient(ModelClient):
                     normalized_chunk.delta
                     or normalized_chunk.thinking_delta
                     or normalized_chunk.tool_calls
+                    or normalized_chunk.mcp_tool_results
                     or normalized_chunk.finish_reason
                 ):
                     yield normalized_chunk

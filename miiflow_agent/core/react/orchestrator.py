@@ -1733,6 +1733,62 @@ class ReActOrchestrator:
             )
         return ref
 
+    async def _record_provider_executed_calls(
+        self,
+        context: RunContext,
+        state: "ExecutionState",
+        *,
+        calls: Dict[str, Dict[str, Any]],
+        results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Write observations for tools the provider ran itself (native MCP).
+
+        These never pass through the local dispatcher, so nothing else on the
+        run would record them — without this the timeline shows an answer that
+        cites data no visible tool call produced.
+
+        Returns the metadata to attach to the assistant message so
+        `_convert_message` can replay the mcp_tool_use/mcp_tool_result pairs.
+        """
+        results_by_id = {r.get("tool_use_id"): r for r in results if r.get("tool_use_id")}
+
+        for call_id, call in calls.items():
+            fn = call.get("function", {}) or {}
+            result = results_by_id.get(call_id) or {}
+            # A call with no matching result means the provider never reported
+            # one (turn cut short, or a paused turn). Record it as a failure
+            # rather than dropping it — a silent gap in the trail is worse than
+            # a visible incomplete call.
+            has_result = call_id in results_by_id
+            is_error = bool(result.get("is_error", False)) or not has_result
+            observation = result.get("content") or (
+                "" if has_result else "No result returned by the provider for this call."
+            )
+
+            ref = await self._record_tool_observation(
+                context,
+                state,
+                tool_name=fn.get("name"),
+                inputs=fn.get("arguments") if isinstance(fn.get("arguments"), dict) else {},
+                observation=observation,
+                success=not is_error,
+                tool_call_id=call_id,
+                error=observation if is_error else None,
+            )
+
+            await self.event_bus.publish(
+                EventFactory.observation(
+                    state.current_step,
+                    observation,
+                    fn.get("name"),
+                    not is_error,
+                    tool_call_id=call_id,
+                    observation_ref=ref,
+                )
+            )
+
+        return {"mcp_tool_results": results} if results else {}
+
     async def _execute_reasoning_step_native(
         self, context: RunContext, state: "ExecutionState"
     ) -> ReActStep:
@@ -1755,6 +1811,13 @@ class ReActOrchestrator:
             cost = 0.0
             # Accumulate tool calls during streaming
             accumulated_tool_calls = {}  # index -> {id, function: {name, arguments}}
+            # Native-MCP calls the provider executed itself (Anthropic/OpenAI
+            # connect to the MCP server directly). Kept SEPARATE from
+            # accumulated_tool_calls: they are already-finished transcript
+            # events, not work this process owes, so they must not make the
+            # turn an action turn nor reach the local dispatcher.
+            provider_executed_calls: Dict[str, Dict[str, Any]] = {}  # id -> call
+            provider_tool_results: List[Dict[str, Any]] = []
             finish_reason = None
 
             logger.debug(f"Step {state.current_step} - Calling LLM with tools enabled")
@@ -1820,9 +1883,30 @@ class ReActOrchestrator:
                     else:
                         pending_answer_deltas.append(chunk.delta)
 
+                # Split off calls the provider ran server-side before anything
+                # else looks at this chunk's tool calls. They carry provider
+                # ids (Anthropic `mcptoolu_*`) and have no pending work, so
+                # they are recorded as observations after the stream, never
+                # dispatched. Re-keying by id means the finalized block
+                # (emitted at content_block_stop with parsed args) replaces the
+                # placeholder emitted at content_block_start.
+                if chunk.tool_calls:
+                    for provider_call in chunk.tool_calls:
+                        if provider_call.get("type") == "mcp_function":
+                            provider_executed_calls[provider_call.get("id") or ""] = (
+                                provider_call
+                            )
+                if getattr(chunk, "mcp_tool_results", None):
+                    provider_tool_results.extend(chunk.mcp_tool_results)
+
                 # Accumulate tool calls if present in chunk
                 # All providers now normalize to dict format via stream normalizers
-                if chunk.tool_calls:
+                local_tool_calls = [
+                    tc
+                    for tc in (chunk.tool_calls or [])
+                    if tc.get("type") != "mcp_function"
+                ]
+                if local_tool_calls:
                     if buffer and not accumulated_tool_calls:
                         # Frontier models often narrate before a tool call
                         # ("I'll do X"). Logged at INFO for observability;
@@ -1841,7 +1925,7 @@ class ReActOrchestrator:
                                     state.current_step, preamble, buffer
                                 )
                             )
-                    for tool_call_dict in chunk.tool_calls:
+                    for tool_call_dict in local_tool_calls:
                         # All tool calls are now dicts thanks to provider normalizers.
                         # Resolve the index for this tool call chunk so parallel
                         # tool_use blocks accumulate as distinct entries.
@@ -1963,6 +2047,20 @@ class ReActOrchestrator:
 
             step.tokens_used = tokens_used
             step.cost = cost
+
+            # Native-MCP calls finished server-side during the stream. Record
+            # them on the observation trail now so the timeline, citations and
+            # read_observation see the same history they would for a locally
+            # dispatched tool, and carry the results on the assistant message
+            # so the next request can replay the blocks.
+            provider_mcp_metadata: Dict[str, Any] = {}
+            if provider_executed_calls:
+                provider_mcp_metadata = await self._record_provider_executed_calls(
+                    context=context,
+                    state=state,
+                    calls=provider_executed_calls,
+                    results=provider_tool_results,
+                )
 
             assistant_content = buffer.strip()
             if not accumulated_tool_calls and finish_reason != "length":
@@ -2414,7 +2512,12 @@ class ReActOrchestrator:
                 # to preserve, so we don't emit an empty message.
                 if assistant_content:
                     context.messages.append(
-                        Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                        Message(
+                            role=MessageRole.ASSISTANT,
+                            content=assistant_content,
+                            tool_calls=list(provider_executed_calls.values()) or None,
+                            metadata=provider_mcp_metadata,
+                        )
                     )
                 context.messages.append(
                     Message(
@@ -2437,7 +2540,12 @@ class ReActOrchestrator:
                     f"Step {state.current_step} - No tool calls; treating as final answer"
                 )
                 context.messages.append(
-                    Message(role=MessageRole.ASSISTANT, content=assistant_content)
+                    Message(
+                        role=MessageRole.ASSISTANT,
+                        content=assistant_content,
+                        tool_calls=list(provider_executed_calls.values()) or None,
+                        metadata=provider_mcp_metadata,
+                    )
                 )
                 step.answer = assistant_content
 

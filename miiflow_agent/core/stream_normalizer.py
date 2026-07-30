@@ -16,6 +16,30 @@ from .streaming import StreamChunk
 logger = logging.getLogger(__name__)
 
 
+def extract_mcp_result_text(content: Any) -> str:
+    """Flatten an mcp_tool_result `content` payload to plain text.
+
+    Anthropic returns the payload as a list of content blocks (SDK objects or
+    plain dicts depending on streaming vs. non-streaming), but a bare string
+    is also valid. Non-text blocks are skipped rather than stringified — a
+    repr of an image block is noise, not an observation.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            text = getattr(item, "text", None)
+            if text is None and isinstance(item, dict):
+                text = item.get("text")
+            if text:
+                parts.append(text)
+        return "".join(parts)
+    return ""
+
+
 @dataclass
 class StreamState:
     """Encapsulates streaming state to avoid scattered instance variables.
@@ -32,7 +56,7 @@ class StreamState:
     # MCP-specific state
     current_mcp_tool_use: Optional[Dict[str, Any]] = None
     accumulated_mcp_tool_json: str = ""
-    mcp_tool_results: List[Dict[str, Any]] = field(default_factory=list)
+    current_mcp_tool_result: Optional[Dict[str, Any]] = None
     # Content block tracking to prevent interleaving of different block types
     current_block_index: int = -1
     current_block_type: Optional[str] = None  # "text", "thinking", "tool_use", etc.
@@ -90,6 +114,7 @@ class BaseStreamNormalizer(ABC):
         finish_reason: Optional[str] = None,
         usage: Optional[TokenCount] = None,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
+        mcp_tool_results: Optional[List[Dict[str, Any]]] = None,
     ) -> StreamChunk:
         """Build a StreamChunk with accumulated content.
 
@@ -106,6 +131,7 @@ class BaseStreamNormalizer(ABC):
             finish_reason=finish_reason,
             usage=usage,
             tool_calls=tool_calls,
+            mcp_tool_results=mcp_tool_results,
         )
 
     def _restore_tool_name(self, sanitized_name: str) -> str:
@@ -219,6 +245,7 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         finish_reason = None
         usage = None
         tool_calls = None
+        mcp_tool_results = None
 
         try:
             if hasattr(chunk, "type"):
@@ -233,7 +260,7 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
                         delta = result
 
                 elif chunk.type == "content_block_stop":
-                    tool_calls = self._handle_content_block_stop()
+                    tool_calls, mcp_tool_results = self._handle_content_block_stop()
 
                 elif chunk.type == "message_delta":
                     if hasattr(chunk.delta, "stop_reason"):
@@ -247,7 +274,14 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         except AttributeError:
             delta = str(chunk) if chunk else ""
 
-        return self._build_chunk(delta=delta, thinking_delta=thinking_delta, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
+        return self._build_chunk(
+            delta=delta,
+            thinking_delta=thinking_delta,
+            finish_reason=finish_reason,
+            usage=usage,
+            tool_calls=tool_calls,
+            mcp_tool_results=mcp_tool_results,
+        )
 
     def _handle_content_block_start(self, chunk: Any) -> Optional[List[Dict[str, Any]]]:
         """Handle content_block_start event.
@@ -301,13 +335,20 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
                 return [self._state.current_mcp_tool_use]
 
             elif block_type == "mcp_tool_result":
-                # MCP tool result - store for metadata
-                is_error = getattr(chunk.content_block, "is_error", False)
-                self._state.mcp_tool_results.append({
+                # The provider already executed this tool server-side and is
+                # replaying the result. Capture it as an observation; it is
+                # emitted on content_block_stop, never as answer text.
+                #
+                # The payload may arrive whole on the start event or stream in
+                # as text deltas, depending on the block — seed with whatever
+                # is present and let _handle_content_block_delta append.
+                self._state.current_mcp_tool_result = {
                     "tool_use_id": getattr(chunk.content_block, "tool_use_id", ""),
-                    "is_error": is_error,
-                    "content": "",  # Will be accumulated in delta
-                })
+                    "is_error": bool(getattr(chunk.content_block, "is_error", False)),
+                    "content": extract_mcp_result_text(
+                        getattr(chunk.content_block, "content", None)
+                    ),
+                }
 
         return None
 
@@ -337,6 +378,15 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
                 return ("", thinking_text)
             return ""
 
+        # Provider-executed MCP output is an observation, not prose. This must
+        # precede the generic text branch below: these deltas carry `.text`,
+        # so falling through would splice raw tool JSON into the answer.
+        if self._state.current_block_type == "mcp_tool_result":
+            text = getattr(chunk.delta, "text", None) or ""
+            if text and self._state.current_mcp_tool_result is not None:
+                self._state.current_mcp_tool_result["content"] += text
+            return ""
+
         if hasattr(chunk.delta, "text"):
             return chunk.delta.text
 
@@ -350,21 +400,19 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             elif self._state.current_mcp_tool_use:
                 self._state.accumulated_mcp_tool_json += chunk.delta.partial_json
 
-        # Handle MCP tool result content
-        if self._state.mcp_tool_results and hasattr(chunk.delta, "type"):
-            if chunk.delta.type == "text" and hasattr(chunk.delta, "text"):
-                # Accumulate text content from MCP result
-                if self._state.mcp_tool_results:
-                    self._state.mcp_tool_results[-1]["content"] += chunk.delta.text
-                return chunk.delta.text
-
         return ""
 
-    def _handle_content_block_stop(self) -> Optional[List[Dict[str, Any]]]:
+    def _handle_content_block_stop(
+        self,
+    ) -> tuple[Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]]]:
         """Handle content_block_stop event.
 
-        Handles both regular tool_use and MCP tool_use blocks.
+        Handles regular tool_use, MCP tool_use, and MCP tool_result blocks.
         Resets block tracking state to prevent state leakage between blocks.
+
+        Returns:
+            (tool_calls, mcp_tool_results) — at most one is non-None, since a
+            content block has exactly one type.
         """
         # Log the block stop for debugging
         logger.debug(
@@ -387,7 +435,7 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             self._state.current_tool_use = None
             self._state.accumulated_tool_json = ""
 
-            return result
+            return result, None
 
         # Handle MCP tool_use block completion
         if self._state.current_mcp_tool_use:
@@ -400,9 +448,16 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             self._state.current_mcp_tool_use = None
             self._state.accumulated_mcp_tool_json = ""
 
-            return result
+            return result, None
 
-        return None
+        # Handle MCP tool_result block completion
+        if self._state.current_mcp_tool_result:
+            result = [self._state.current_mcp_tool_result]
+            self._state.current_mcp_tool_result = None
+
+            return None, result
+
+        return None, None
 
     @staticmethod
     def _finalize_tool_args(tool_call: Dict[str, Any], accumulated_json: str) -> None:

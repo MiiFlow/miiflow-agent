@@ -1741,11 +1741,20 @@ class ReActOrchestrator:
         calls: Dict[str, Dict[str, Any]],
         results: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Write observations for tools the provider ran itself (native MCP).
+        """Write the action+observation pair for tools the provider ran itself.
 
         These never pass through the local dispatcher, so nothing else on the
         run would record them — without this the timeline shows an answer that
         cites data no visible tool call produced.
+
+        Each call emits ACTION_PLANNED *before* its OBSERVATION even though the
+        work is already finished. Consumers build their tool row on the action
+        event and only update it on the observation (streaming_service's
+        execution_timeline, both frontend chunk reducers), so an
+        observation-only call is invisible: no reasoning-panel row live, an
+        empty execution_timeline on reload, and `has_tool_events` left False so
+        the turn is mislabeled `single_hop`. The event pair is the contract —
+        keep it whole here rather than teaching every consumer about MCP.
 
         Returns the metadata to attach to the assistant message so
         `_convert_message` can replay the mcp_tool_use/mcp_tool_result pairs.
@@ -1754,7 +1763,17 @@ class ReActOrchestrator:
 
         for call_id, call in calls.items():
             fn = call.get("function", {}) or {}
+            arguments = fn.get("arguments") if isinstance(fn.get("arguments"), dict) else {}
             result = results_by_id.get(call_id) or {}
+
+            await self.event_bus.publish(
+                EventFactory.action_planned(
+                    state.current_step,
+                    fn.get("name"),
+                    arguments,
+                    tool_call_id=call_id,
+                )
+            )
             # A call with no matching result means the provider never reported
             # one (turn cut short, or a paused turn). Record it as a failure
             # rather than dropping it — a silent gap in the trail is worse than
@@ -1769,7 +1788,7 @@ class ReActOrchestrator:
                 context,
                 state,
                 tool_name=fn.get("name"),
-                inputs=fn.get("arguments") if isinstance(fn.get("arguments"), dict) else {},
+                inputs=arguments,
                 observation=observation,
                 success=not is_error,
                 tool_call_id=call_id,

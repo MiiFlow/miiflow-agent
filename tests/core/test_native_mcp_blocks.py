@@ -351,6 +351,37 @@ class TestOrchestratorDispatch:
         assert observations[0].data["tool_call_id"] == "mcptoolu_017CQkNV6chUEvYzibnddrGr"
 
     @pytest.mark.asyncio
+    async def test_call_is_announced_before_its_observation(self):
+        """The action+observation pair is the contract every consumer builds on.
+
+        Consumers create their tool row on ACTION_PLANNED and only *update* it
+        on OBSERVATION (execution_timeline in streaming_service, both frontend
+        chunk reducers). Emitting the observation alone made a native-MCP turn
+        invisible: no reasoning panel live, empty execution_timeline on reload,
+        and the turn mislabeled `single_hop` because `has_tool_events` stayed
+        False (production thread thread_AE8cAXDlY8gqhCy4GKjlLoXp).
+        """
+        orch, _, _ = await self._run_step([])
+
+        trail = [
+            e
+            for e in orch.event_bus.event_buffer
+            if e.event_type
+            in (ReActEventType.ACTION_PLANNED, ReActEventType.OBSERVATION)
+        ]
+        assert [e.event_type for e in trail] == [
+            ReActEventType.ACTION_PLANNED,
+            ReActEventType.OBSERVATION,
+        ]
+
+        planned = trail[0]
+        assert planned.data["action"] == "get_profiles"
+        # Same id on both halves so consumers correlate by id rather than by
+        # name — a turn can run several calls of the same tool in one batch.
+        assert planned.data["tool_call_id"] == trail[1].data["tool_call_id"]
+        assert planned.data["action_input"] == {"page_size": 1}
+
+    @pytest.mark.asyncio
     async def test_results_ride_the_assistant_message_for_replay(self):
         _, context, _ = await self._run_step([])
 

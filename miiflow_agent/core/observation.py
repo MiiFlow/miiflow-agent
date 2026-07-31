@@ -2,10 +2,10 @@
 
 The orchestrator invokes an adapter-supplied ``ObservationSink`` at the moment a
 tool observation is finalized (serial step, parallel batch, deterministic
-approval-resume). The sink persists the full LLM-facing observation once and
-returns an opaque ``ref``; every other surface (execution timeline, dispatch
-ledger, SSE, sub-agent traces) carries ``{excerpt, observation_ref}`` instead of
-a second full copy.
+approval-resume). The sink persists the observation once and returns an opaque
+``ref``; every other surface (execution timeline, dispatch ledger, SSE,
+sub-agent traces) carries ``{excerpt, observation_ref}`` instead of a second
+full copy.
 
 Contract notes for adapters:
 
@@ -18,12 +18,43 @@ Contract notes for adapters:
 * ``fetch`` MUST enforce the adapter's tenancy boundary (an org-scoped guard):
   refs travel across agents in ledgers and prompts, so serving is where leaks
   would happen.
+* OPTIONAL ``llm_excerpt(text, tool_name, ref) -> str`` bounds what the model
+  sees (see ``bound_observation_for_llm``). Adapters that store a truncated
+  copy MUST implement it so their store cap and their context cap agree —
+  otherwise the ref cannot serve back what the model was already shown.
+
+Why the LLM-facing string is bounded (production incident, 2026-07-31):
+a single ``google_ads_query`` returned 2,349,866 chars and the very next
+request was 1,110,727 tokens against a 1,000,000-token ceiling — a hard 400
+that killed the run at step 8. Every *derived* surface was already bounded;
+the live ``context.messages`` append was the one path with no ceiling, so the
+model routinely saw more than the store retained. Depth on demand goes through
+``read_observation``, never through an unbounded inline paste.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
+logger = logging.getLogger(__name__)
+
 OBSERVATION_SINK_DEPS_KEY = "observation_sink"
+
+# Framework fallback ceiling on the observation string handed to the model,
+# used when no sink is wired or the sink declares no policy of its own. Chosen
+# to be generous — this is a blast-radius guard against pathological tool
+# output, not a tuning knob for normal analysis. Adapters with a store cap
+# should override via ``llm_excerpt`` and keep the two numbers equal.
+LLM_OBSERVATION_MAX_CHARS = 200_000
+
+# No ref to point at (no sink wired), so the guidance is "re-run narrower"
+# rather than "read the rest" — telling the model to follow a ref that cannot
+# resolve is worse than telling it the data is gone.
+_FALLBACK_TRUNCATION_MARKER = (
+    "\n…[truncated {omitted} chars to fit the context window. Re-run the tool "
+    "with a narrower scope — fewer rows, a shorter date range, or fewer "
+    "fields — if you need the rest.]"
+)
 
 
 @dataclass
@@ -41,6 +72,22 @@ class ObservationRecord:
     step_number: int = 0
     produced_by_path: List[str] = field(default_factory=list)
     source: str = "react"  # "react" | "resume"
+
+
+@dataclass
+class RecordedObservation:
+    """What the orchestrator gets back from finalizing one tool observation.
+
+    ``observation`` — NOT the caller's original string — is what may be shown
+    to the model: it is the bounded form produced by
+    ``bound_observation_for_llm``. Returning the two together is deliberate;
+    the recording seam is the only place that knows the ref, and a caller that
+    took the ref while keeping its own unbounded text is exactly the bug this
+    type exists to make unwritable.
+    """
+
+    ref: Optional[str]
+    observation: str
 
 
 @dataclass
@@ -77,3 +124,44 @@ def get_observation_sink(context: Any) -> Optional[ObservationSink]:
     if not (hasattr(sink, "record") and hasattr(sink, "fetch")):
         return None
     return sink
+
+
+def bound_observation_for_llm(
+    sink: Optional[ObservationSink],
+    text: Optional[str],
+    *,
+    tool_name: Optional[str],
+    ref: Optional[str],
+) -> str:
+    """Return the observation string that may enter ``context.messages``.
+
+    Delegates to the sink's ``llm_excerpt`` when it declares one (the adapter
+    owns the marker wording and the cap that agrees with its store), and falls
+    back to the framework ceiling otherwise. A sink whose ``llm_excerpt``
+    raises or returns a non-string is treated as declaring no policy — same
+    fail-soft rule as ``record``/``fetch``: an adapter defect must degrade the
+    bound, never fail the run.
+    """
+    if not text:
+        return text or ""
+
+    excerpt = getattr(sink, "llm_excerpt", None) if sink is not None else None
+    if callable(excerpt):
+        try:
+            bounded = excerpt(text=text, tool_name=tool_name, ref=ref)
+            if isinstance(bounded, str):
+                return bounded
+            logger.debug(
+                "observation sink llm_excerpt returned %s, not str; "
+                "falling back to the framework bound",
+                type(bounded).__name__,
+            )
+        except Exception:  # noqa: BLE001 — never fail the run on adapter policy
+            logger.debug("observation sink llm_excerpt failed", exc_info=True)
+
+    if len(text) <= LLM_OBSERVATION_MAX_CHARS:
+        return text
+    omitted = len(text) - LLM_OBSERVATION_MAX_CHARS
+    return text[:LLM_OBSERVATION_MAX_CHARS] + _FALLBACK_TRUNCATION_MARKER.format(
+        omitted=omitted
+    )

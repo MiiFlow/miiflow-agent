@@ -26,6 +26,13 @@ class StreamChunk:
     # the consumer records them and must not dispatch them locally. Each entry:
     # {"tool_use_id": str, "is_error": bool, "content": str}.
     mcp_tool_results: Optional[List[Dict[str, Any]]] = None
+    # Raw server-side tool-search blocks (Anthropic `defer_loading`): the
+    # `server_tool_use` / `tool_search_tool_result` pair the provider produced
+    # while discovering a deferred tool. Nothing to execute — but they must be
+    # replayed into the next request's history, or the model loses its record
+    # of the discovery and re-searches every turn. Kept verbatim because the
+    # API validates the pair.
+    tool_search_blocks: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass

@@ -14,7 +14,12 @@ from ..checkpoint import (
     stable_json_hash,
 )
 from ..interrupt import mint_interrupt_id
-from ..observation import ObservationRecord, get_observation_sink
+from ..observation import (
+    ObservationRecord,
+    RecordedObservation,
+    bound_observation_for_llm,
+    get_observation_sink,
+)
 from ..message import Message, MessageRole
 from .enums import ReActEventType, StopReason
 from .exceptions import PlanApprovalRequired, ToolApprovalRequired
@@ -127,6 +132,81 @@ def _observation_with_citation_ref(output: Any) -> str:
         ref = output.pop("_citation_ref")
         return f"[ref:{ref}]\n{str(output)}"
     return str(output)
+
+
+def _attach_search_blocks(
+    messages: List[Message], blocks: List[Dict[str, Any]], since_index: int
+) -> bool:
+    """Record provider tool-search blocks on this step's assistant message.
+
+    The provider streams a ``server_tool_use`` / ``tool_search_tool_result``
+    pair whenever it resolves a ``defer_loading`` tool. Nothing executes on our
+    side, but the pair is the model's only record that the discovery happened —
+    drop it and the model re-runs the same search on every later turn, paying a
+    round-trip each time.
+
+    ``since_index`` is the length of ``messages`` when the step began, and the
+    search is bounded to messages at or after it. Without that bound the caller
+    (a ``finally``, which also runs on the error, truncation and empty-turn
+    paths where this step appended NO assistant message) would walk back into a
+    previous step's — or a previous turn's — assistant message and mutate it.
+    That message was already sent verbatim in the cached prefix, so editing it
+    diverges the history, misses the cache tier and re-bills the whole prefix:
+    precisely the cost this feature exists to avoid. It would also show the
+    model a search result on a turn where it never searched.
+
+    Only complete pairs are kept: the API rejects a ``server_tool_use`` replayed
+    without its matching result, which would 400 every remaining turn of the
+    thread. An orphan half is discarded, costing one repeated search instead.
+    Ids must be non-empty — two id-less halves would otherwise "pair" with each
+    other on the empty string, and a blank id is itself rejected by the API.
+
+    Returns True if the blocks were attached.
+    """
+    used = {
+        b.get("id") for b in blocks if b.get("type") == "server_tool_use" and b.get("id")
+    }
+    answered = {
+        b.get("tool_use_id")
+        for b in blocks
+        if b.get("type") == "tool_search_tool_result" and b.get("tool_use_id")
+    }
+    paired = used & answered
+    complete = [
+        b
+        for b in blocks
+        if (b.get("id") if b.get("type") == "server_tool_use" else b.get("tool_use_id"))
+        in paired
+    ]
+    if not complete:
+        logger.debug(
+            "Discarding %d unpaired tool-search block(s); model will re-search",
+            len(blocks),
+        )
+        return False
+
+    for index in range(len(messages) - 1, max(since_index, 0) - 1, -1):
+        message = messages[index]
+        if message.role != MessageRole.ASSISTANT:
+            continue
+        existing = message.metadata if isinstance(message.metadata, dict) else {}
+        # Copy the list too, not just the dict: `{**existing}` is shallow, so a
+        # setdefault-then-extend would mutate a list shared with the original
+        # metadata (and with any other message copied from it).
+        merged = {**existing}
+        merged["tool_search_blocks"] = [
+            *(merged.get("tool_search_blocks") or []),
+            *complete,
+        ]
+        message.metadata = merged
+        return True
+
+    logger.debug(
+        "No assistant message from this step to carry %d tool-search block(s); "
+        "model will re-search",
+        len(complete),
+    )
+    return False
 
 
 def _sanitize_error_message(error_msg: str) -> str:
@@ -1138,7 +1218,7 @@ class ReActOrchestrator:
                         tool_call_id,
                         raised_by_path,
                     )
-                    child_observation_ref = await self._record_tool_observation(
+                    _recorded = await self._record_tool_observation(
                         context,
                         state,
                         tool_name=tool_name,
@@ -1151,6 +1231,8 @@ class ReActOrchestrator:
                         produced_by_path=raised_by_path or ["root"],
                         source="resume",
                     )
+                    child_observation_ref = _recorded.ref
+                    observation = _recorded.observation
                     for msg in reversed(context.messages):
                         if (
                             getattr(msg, "role", None) == MessageRole.TOOL
@@ -1292,7 +1374,7 @@ class ReActOrchestrator:
             success,
             tool_call_id,
         )
-        approved_observation_ref = await self._record_tool_observation(
+        _recorded = await self._record_tool_observation(
             context,
             state,
             tool_name=tool_name,
@@ -1304,6 +1386,8 @@ class ReActOrchestrator:
             error=str(raw_error) if raw_error else None,
             source="resume",
         )
+        approved_observation_ref = _recorded.ref
+        observation = _recorded.observation
 
         # Pair the result with the approved tool_use: replace the reconstructed
         # "approved — call it again" placeholder for this tool_call_id, or append
@@ -1671,14 +1755,32 @@ class ReActOrchestrator:
         execution_time_ms: Optional[int] = None,
         produced_by_path: Optional[List[str]] = None,
         source: str = "react",
-    ) -> Optional[str]:
+    ) -> RecordedObservation:
         """Single seam for a finalized tool call: persist the canonical
         observation via the adapter sink (awaited inline — see
         core/observation.py for why never fire-and-forget), then reduce it
-        into the checkpoint ledger. Returns the observation ref (or None
-        when no sink is wired / the write failed)."""
+        into the checkpoint ledger.
+
+        Returns the ref (None when no sink is wired / the write failed) paired
+        with the BOUNDED observation string. Callers must use the returned
+        ``.observation`` for anything the model will see — the raw argument may
+        be arbitrarily large (a 2.35 MB GAQL dump took a production run past
+        the 1M-token ceiling), and the ref needed to write the "read the rest"
+        marker only exists here.
+        """
         if not tool_name:
-            return None
+            # Nothing to store, but still bound: this must not be an escape
+            # hatch that returns an arbitrarily large string to a caller that
+            # is about to put it in front of the model.
+            return RecordedObservation(
+                ref=None,
+                observation=bound_observation_for_llm(
+                    get_observation_sink(context),
+                    observation,
+                    tool_name=tool_name,
+                    ref=None,
+                ),
+            )
 
         # Default producer address: the per-run stamp the adapter set
         # (["root"] for the root run, ["child", <thread_id>] for a
@@ -1754,7 +1856,25 @@ class ReActOrchestrator:
                     )
                 ]
             )
-        return ref
+
+        # Bound AFTER the store write and the ledger reduce: the row keeps the
+        # fullest copy the adapter is willing to retain (that is what the ref
+        # serves), and the digest summarizes the real output. Only the string
+        # travelling into the next request is clamped.
+        bounded = bound_observation_for_llm(
+            sink, observation, tool_name=tool_name, ref=ref
+        )
+        if observation and len(bounded) != len(observation):
+            logger.warning(
+                "[ORCH] step=%d observation for '%s' bounded for context: "
+                "%d -> %d chars (ref=%s)",
+                state.current_step,
+                tool_name,
+                len(observation),
+                len(bounded),
+                ref,
+            )
+        return RecordedObservation(ref=ref, observation=bounded)
 
     async def _record_provider_executed_calls(
         self,
@@ -1807,7 +1927,7 @@ class ReActOrchestrator:
                 "" if has_result else "No result returned by the provider for this call."
             )
 
-            ref = await self._record_tool_observation(
+            recorded = await self._record_tool_observation(
                 context,
                 state,
                 tool_name=fn.get("name"),
@@ -1817,6 +1937,12 @@ class ReActOrchestrator:
                 tool_call_id=call_id,
                 error=observation if is_error else None,
             )
+            observation = recorded.observation
+            # These results are replayed to the provider verbatim by
+            # `_convert_message` (as mcp_tool_result blocks), so the bound has
+            # to land on the payload itself — not just on the event.
+            if has_result and isinstance(result, dict):
+                result["content"] = observation
 
             await self.event_bus.publish(
                 EventFactory.observation(
@@ -1825,7 +1951,7 @@ class ReActOrchestrator:
                     fn.get("name"),
                     not is_error,
                     tool_call_id=call_id,
-                    observation_ref=ref,
+                    observation_ref=recorded.ref,
                 )
             )
 
@@ -1844,6 +1970,15 @@ class ReActOrchestrator:
         # Initialized before the try so the except handler can retract
         # optimistically streamed deltas no matter where the failure hit.
         pending_answer_deltas: List[str] = []
+        # Same reason: the finally reads these, and a BaseException (task
+        # cancellation on the step_started await) skips `except Exception`
+        # entirely — an unbound local would raise from the finally and replace
+        # the CancelledError, turning a graceful timeout into an internal error.
+        provider_search_blocks: List[Dict[str, Any]] = []
+        # Watermark: messages at or after this index are the ones THIS step
+        # appended. Search blocks may only attach within that window — see
+        # _attach_search_blocks.
+        messages_before_step = len(context.messages)
 
         try:
             # Publish step start event
@@ -1966,6 +2101,8 @@ class ReActOrchestrator:
                             )
                 if getattr(chunk, "mcp_tool_results", None):
                     provider_tool_results.extend(chunk.mcp_tool_results)
+                if getattr(chunk, "tool_search_blocks", None):
+                    provider_search_blocks.extend(chunk.tool_search_blocks)
 
                 # Accumulate tool calls if present in chunk
                 # All providers now normalize to dict format via stream normalizers
@@ -2640,6 +2777,41 @@ class ReActOrchestrator:
                 )
                 # Don't set step.answer — loop will continue
 
+            elif not (assistant_content or "").strip():
+                # Empty turn: no tool calls, no truncation, and nothing said.
+                # This is NOT an answer. Setting step.answer = "" would make
+                # is_final_step true (it tests `is not None`), break the loop,
+                # and hand _build_result a falsy final_answer — which then
+                # emits the generic "I wasn't able to produce a complete
+                # answer" fallback with no stop condition and no failure
+                # metadata, so neither the user nor a dispatching parent
+                # learns anything. It also short-circuits EmptyResponseCondition,
+                # the safety condition that exists for exactly this: the loop
+                # ended before the condition was ever consulted.
+                #
+                # Nudge and continue instead. EmptyResponseCondition (2
+                # consecutive) and MaxStepsCondition bound the retries, and
+                # stopping through a safety condition means the run reports a
+                # real cause.
+                logger.warning(
+                    "Step %d - LLM returned an empty response (no tool calls, "
+                    "finish_reason=%s); nudging and continuing",
+                    state.current_step,
+                    finish_reason,
+                )
+                context.messages.append(
+                    Message(
+                        role=MessageRole.USER,
+                        content=(
+                            "Your last response was empty. Provide your answer "
+                            "from the data you already have, or call a tool. If "
+                            "you cannot complete the request, say what blocked "
+                            "you and what you did retrieve."
+                        ),
+                    )
+                )
+                # Don't set step.answer — loop will continue
+
             else:
                 # Answer turn: no tool calls, no truncation. Buffered text
                 # deltas were replayed as final_answer_chunk events above;
@@ -2680,6 +2852,18 @@ class ReActOrchestrator:
             self._handle_step_error(step, e, state)
 
         finally:
+            # Carry the provider's tool-search blocks on whichever assistant
+            # message this step appended. Done here, at the one point every
+            # branch converges, rather than at the dozen Message(...) sites —
+            # threading a new field through each is how the next branch silently
+            # drops it. Bounded to messages this step appended: this finally also
+            # runs on the error/truncation/empty-turn paths, where attaching to
+            # an earlier message would mutate already-sent history.
+            if provider_search_blocks:
+                _attach_search_blocks(
+                    context.messages, provider_search_blocks, messages_before_step
+                )
+
             # TRANSFER: a dispatch_assistant call handed this turn to a
             # sub-agent. The child's answer already streamed to the user as
             # real FINAL_ANSWER_CHUNKs, so there is nothing left for this agent
@@ -3098,7 +3282,7 @@ class ReActOrchestrator:
             if _served:
                 observation_ref = _result_meta.get("observation_ref")
             else:
-                observation_ref = await self._record_tool_observation(
+                recorded = await self._record_tool_observation(
                     context,
                     state,
                     tool_name=inv.name,
@@ -3110,6 +3294,11 @@ class ReActOrchestrator:
                     error=str(inv.error) if inv.error else None,
                     execution_time_ms=int((getattr(result, "execution_time", 0) or 0) * 1000),
                 )
+                observation_ref = recorded.ref
+                # Phase 5 appends `inv.observation` as this call's TOOL
+                # message — write the bounded form back so N parallel calls
+                # can't each paste an unbounded result into one request.
+                inv.observation = recorded.observation
             try:
                 await self.event_bus.publish(
                     EventFactory.observation(
@@ -3520,7 +3709,7 @@ class ReActOrchestrator:
                 observation_ref = _result_meta.get("observation_ref")
             else:
                 _result_error = getattr(result, "error", None)
-                observation_ref = await self._record_tool_observation(
+                recorded = await self._record_tool_observation(
                     context,
                     state,
                     tool_name=step.action,
@@ -3534,6 +3723,11 @@ class ReActOrchestrator:
                         (getattr(result, "execution_time", 0) or 0) * 1000
                     ),
                 )
+                observation_ref = recorded.ref
+                # Everything downstream (the event, the TOOL message appended
+                # below, step.observation on the transcript) reads this — one
+                # assignment bounds them all.
+                step.observation = recorded.observation
             await self.event_bus.publish(
                 EventFactory.observation(
                     state.current_step,

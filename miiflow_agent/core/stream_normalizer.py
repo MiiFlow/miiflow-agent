@@ -16,6 +16,48 @@ from .streaming import StreamChunk
 logger = logging.getLogger(__name__)
 
 
+class UnreplayableBlock(Exception):
+    """A provider block cannot be safely replayed to the API."""
+
+
+#: Response-only keys the request schema rejects ("Extra inputs are not
+#: permitted"). A replayed block carrying one 400s every remaining turn of the
+#: thread, so they are stripped at any depth.
+_RESPONSE_ONLY_KEYS = frozenset({"citations", "caller"})
+
+
+def _plain(value: Any) -> Any:
+    """Recursively convert SDK model objects to JSON-safe plain structures.
+
+    Server-tool blocks are replayed to the API verbatim, so their payload has
+    to survive a round-trip through our own message history. SDK block objects
+    do not serialize, and stringifying them produces a repr the API rejects —
+    so unwrap to dicts/lists/scalars, preferring the SDK's own ``model_dump``.
+
+    Fails CLOSED: anything that cannot be unwrapped raises
+    :class:`UnreplayableBlock` so the caller drops the block. Substituting a
+    ``str(value)`` repr instead (the original behaviour) is worse than dropping
+    — the poisoned block is replayed on every later request and 400s the thread
+    from that turn on, whereas dropping costs one repeated search.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {
+            k: _plain(v) for k, v in value.items() if k not in _RESPONSE_ONLY_KEYS
+        }
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            dumped = dump()
+        except Exception as exc:
+            raise UnreplayableBlock(f"model_dump failed: {exc!r}") from exc
+        return _plain(dumped)
+    raise UnreplayableBlock(f"cannot serialize {type(value).__name__}")
+
+
 def extract_mcp_result_text(content: Any) -> str:
     """Flatten an mcp_tool_result `content` payload to plain text.
 
@@ -57,6 +99,14 @@ class StreamState:
     current_mcp_tool_use: Optional[Dict[str, Any]] = None
     accumulated_mcp_tool_json: str = ""
     current_mcp_tool_result: Optional[Dict[str, Any]] = None
+    # Server-side tool-search state (Anthropic `defer_loading`). The provider
+    # runs the search itself and streams back a server_tool_use +
+    # tool_search_tool_result pair. We execute nothing, but the pair MUST be
+    # replayed into history or the model loses its record of the discovery and
+    # re-searches on every subsequent turn.
+    current_search_use: Optional[Dict[str, Any]] = None
+    accumulated_search_json: str = ""
+    current_search_result: Optional[Dict[str, Any]] = None
     # Content block tracking to prevent interleaving of different block types
     current_block_index: int = -1
     current_block_type: Optional[str] = None  # "text", "thinking", "tool_use", etc.
@@ -118,6 +168,7 @@ class BaseStreamNormalizer(ABC):
         usage: Optional[TokenCount] = None,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
         mcp_tool_results: Optional[List[Dict[str, Any]]] = None,
+        tool_search_blocks: Optional[List[Dict[str, Any]]] = None,
     ) -> StreamChunk:
         """Build a StreamChunk with accumulated content.
 
@@ -135,6 +186,7 @@ class BaseStreamNormalizer(ABC):
             usage=usage,
             tool_calls=tool_calls,
             mcp_tool_results=mcp_tool_results,
+            tool_search_blocks=tool_search_blocks,
         )
 
     def _restore_tool_name(self, sanitized_name: str) -> str:
@@ -249,6 +301,7 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         usage = None
         tool_calls = None
         mcp_tool_results = None
+        tool_search_blocks = None
 
         try:
             if hasattr(chunk, "type"):
@@ -263,7 +316,11 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
                         delta = result
 
                 elif chunk.type == "content_block_stop":
-                    tool_calls, mcp_tool_results = self._handle_content_block_stop()
+                    (
+                        tool_calls,
+                        mcp_tool_results,
+                        tool_search_blocks,
+                    ) = self._handle_content_block_stop()
 
                 elif chunk.type == "message_delta":
                     if hasattr(chunk.delta, "stop_reason"):
@@ -284,6 +341,7 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             usage=usage,
             tool_calls=tool_calls,
             mcp_tool_results=mcp_tool_results,
+            tool_search_blocks=tool_search_blocks,
         )
 
     def _handle_content_block_start(self, chunk: Any) -> Optional[List[Dict[str, Any]]]:
@@ -336,6 +394,49 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
 
                 # Yield MCP tool call immediately
                 return [self._state.current_mcp_tool_use]
+
+            elif block_type == "server_tool_use":
+                # A provider-executed server tool. Today that is the tool-search
+                # tool used by `defer_loading`; capture it so the
+                # server_tool_use / tool_search_tool_result pair can be replayed
+                # into the next request. Nothing runs on our side, so this is
+                # NOT emitted as a tool call. Only input-legal fields are kept —
+                # echoing a response-only key (`caller`, `citations`) 400s.
+                try:
+                    seeded_input = _plain(
+                        getattr(chunk.content_block, "input", None) or {}
+                    )
+                except UnreplayableBlock as exc:
+                    logger.debug("Dropping unserializable server_tool_use: %s", exc)
+                    self._state.current_search_use = None
+                else:
+                    self._state.current_search_use = {
+                        "type": "server_tool_use",
+                        "id": getattr(chunk.content_block, "id", "") or "",
+                        "name": getattr(chunk.content_block, "name", "") or "",
+                        "input": seeded_input,
+                    }
+                self._state.accumulated_search_json = ""
+
+            elif block_type == "tool_search_tool_result":
+                # The other half of the pair. The API rejects a server_tool_use
+                # replayed without its result, so both are kept together.
+                try:
+                    content = _plain(getattr(chunk.content_block, "content", None))
+                except UnreplayableBlock as exc:
+                    # No equivalent of the use-half's parse guard existed here;
+                    # without this the poisoned block is replayed forever.
+                    logger.debug(
+                        "Dropping unserializable tool_search_tool_result: %s", exc
+                    )
+                    self._state.current_search_result = None
+                else:
+                    self._state.current_search_result = {
+                        "type": "tool_search_tool_result",
+                        "tool_use_id": getattr(chunk.content_block, "tool_use_id", "")
+                        or "",
+                        "content": content,
+                    }
 
             elif block_type == "mcp_tool_result":
                 # The provider already executed this tool server-side and is
@@ -390,6 +491,36 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
                 self._state.current_mcp_tool_result["content"] += text
             return ""
 
+        # The search query streams in as input_json_delta. Like the MCP branch
+        # above, this must precede the generic text/partial_json handling —
+        # otherwise the query JSON is spliced into the answer or, worse,
+        # accumulated onto whichever regular tool_use is mid-flight.
+        if self._state.current_block_type == "server_tool_use":
+            partial = getattr(chunk.delta, "partial_json", None) or ""
+            if partial:
+                self._state.accumulated_search_json += partial
+            return ""
+
+        if self._state.current_block_type == "tool_search_tool_result":
+            # The payload normally arrives whole on the start event, but the
+            # sibling mcp_tool_result branch documents both shapes for its own
+            # type — so append text deltas rather than assuming. Silently
+            # dropping them would replay an empty result, which reads to the
+            # model as "the search found nothing" and makes it re-search anyway.
+            text = getattr(chunk.delta, "text", None) or ""
+            if text and self._state.current_search_result is not None:
+                content = self._state.current_search_result.get("content")
+                if isinstance(content, str):
+                    self._state.current_search_result["content"] = content + text
+                elif not content:
+                    self._state.current_search_result["content"] = text
+                else:
+                    logger.debug(
+                        "Ignoring tool-search result delta: content is %s, not text",
+                        type(content).__name__,
+                    )
+            return ""
+
         if hasattr(chunk.delta, "text"):
             return chunk.delta.text
 
@@ -407,15 +538,20 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
 
     def _handle_content_block_stop(
         self,
-    ) -> tuple[Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]]]:
+    ) -> tuple[
+        Optional[List[Dict[str, Any]]],
+        Optional[List[Dict[str, Any]]],
+        Optional[List[Dict[str, Any]]],
+    ]:
         """Handle content_block_stop event.
 
-        Handles regular tool_use, MCP tool_use, and MCP tool_result blocks.
-        Resets block tracking state to prevent state leakage between blocks.
+        Handles regular tool_use, MCP tool_use, MCP tool_result, and the
+        server-side tool-search blocks. Resets block tracking state to prevent
+        state leakage between blocks.
 
         Returns:
-            (tool_calls, mcp_tool_results) — at most one is non-None, since a
-            content block has exactly one type.
+            (tool_calls, mcp_tool_results, tool_search_blocks) — at most one is
+            non-None, since a content block has exactly one type.
         """
         # Log the block stop for debugging
         logger.debug(
@@ -438,7 +574,7 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             self._state.current_tool_use = None
             self._state.accumulated_tool_json = ""
 
-            return result, None
+            return result, None, None
 
         # Handle MCP tool_use block completion
         if self._state.current_mcp_tool_use:
@@ -451,16 +587,62 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             self._state.current_mcp_tool_use = None
             self._state.accumulated_mcp_tool_json = ""
 
-            return result, None
+            return result, None, None
 
         # Handle MCP tool_result block completion
         if self._state.current_mcp_tool_result:
             result = [self._state.current_mcp_tool_result]
             self._state.current_mcp_tool_result = None
 
-            return None, result
+            return None, result, None
 
-        return None, None
+        # Server-side tool-search halves. Each is emitted on its own block_stop
+        # and re-paired downstream by tool_use_id — the API streams them as two
+        # adjacent blocks, but nothing guarantees we see them in one chunk.
+        if self._state.current_search_use:
+            block = self._state.current_search_use
+            accumulated = self._state.accumulated_search_json
+            self._state.current_search_use = None
+            self._state.accumulated_search_json = ""
+
+            if accumulated:
+                try:
+                    block["input"] = json.loads(accumulated)
+                except json.JSONDecodeError:
+                    # A truncated query is unreplayable: the API rejects a
+                    # server_tool_use whose input isn't a valid object. Drop the
+                    # half-block rather than 400 every remaining turn.
+                    logger.debug("Dropping tool-search use with unparseable input")
+                    return None, None, None
+
+            # Validate the assembled block regardless of which path filled it —
+            # the parse guard above only covers the case where deltas actually
+            # arrived, leaving a start-event-seeded or delta-less block (empty
+            # or non-object input, blank id) to fail at the API instead, where
+            # it breaks every remaining turn of the thread.
+            if not block["id"] or not block["name"]:
+                logger.debug("Dropping tool-search use with missing id/name")
+                return None, None, None
+            if not isinstance(block["input"], dict) or not block["input"]:
+                logger.debug(
+                    "Dropping tool-search use with %s input",
+                    "non-object" if not isinstance(block["input"], dict) else "empty",
+                )
+                return None, None, None
+
+            return None, None, [block]
+
+        if self._state.current_search_result:
+            block = self._state.current_search_result
+            self._state.current_search_result = None
+            if not block["tool_use_id"]:
+                # A blank id would "pair" with another blank id downstream and
+                # is rejected by the API on replay.
+                logger.debug("Dropping tool-search result with missing tool_use_id")
+                return None, None, None
+            return None, None, [block]
+
+        return None, None, None
 
     @staticmethod
     def _finalize_tool_args(tool_call: Dict[str, Any], accumulated_json: str) -> None:

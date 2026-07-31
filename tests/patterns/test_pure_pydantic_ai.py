@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 
 from miiflow_agent import LLMClient, Agent, RunContext, FunctionTool, tool
 
+from tests.conftest import skip_on_provider_auth_error
+
 
 @dataclass
 class MockDeps:
@@ -182,27 +184,42 @@ class TestRealLLMIntegration:
         
         # Test autonomous tool calling
         user_ctx = UserContext()
-        result = await agent.run(
-            "Who am I and what's 15 + 27?",
-            deps=user_ctx
-        )
-        
+        key_name = {
+            'groq': 'GROQ_API_KEY',
+            'openai': 'OPENAI_API_KEY',
+            'anthropic': 'ANTHROPIC_API_KEY',
+        }[provider]
+        with skip_on_provider_auth_error(provider, key_name):
+            result = await agent.run(
+                "Who am I and what's 15 + 27?",
+                deps=user_ctx
+            )
+
         response = result.data
         print(f"🤖 Agent Response: {response}")
-        
+
         # Check if tools were used
         profile_used = any(word in response.lower() for word in ["alice123", "researcher"])
         calc_used = any(word in response for word in ["42", "15", "27", "="])
-        
+
         if profile_used and calc_used:
             print("✅ SUCCESS: LLM autonomously used BOTH tools!")
-            return True
         elif profile_used or calc_used:
             print("⚠️ PARTIAL: LLM used at least one tool autonomously")
-            return True  
-        else:
-            print("❌ FAILED: LLM did not use tools autonomously")
-            return False
+
+        # ASSERT, don't return. `return False` is not a failing test — pytest
+        # ignores the value (it only warns), so before this the "❌ FAILED: LLM
+        # did not use tools autonomously" branch reported PASS and the test
+        # could never fail on the behaviour it exists to check.
+        #
+        # The bar is "at least one tool", matching what the return-based
+        # version treated as acceptable: a real model is free to answer one
+        # half of a two-part question from a tool and the other from context,
+        # and pinning both would make this flaky for no added signal.
+        assert profile_used or calc_used, (
+            "LLM did not autonomously call either tool. "
+            f"Response: {response!r}"
+        )
 
 
 def main():

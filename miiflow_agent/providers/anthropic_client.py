@@ -183,6 +183,14 @@ class AnthropicClient(ModelClient):
 
         anthropic_message = {"role": message.role.value}
 
+        # Provider-run tool-search blocks (server_tool_use +
+        # tool_search_tool_result) recorded by the orchestrator. Replaying them
+        # is what stops the model re-searching for the same deferred tool every
+        # turn. Emitted verbatim and adjacent — the API validates the pair.
+        search_blocks = []
+        if message.role == MessageRole.ASSISTANT:
+            search_blocks = list((message.metadata or {}).get("tool_search_blocks") or [])
+
         # Handle assistant messages with tool calls
         if message.tool_calls and message.role == MessageRole.ASSISTANT:
             content_list = []
@@ -190,6 +198,8 @@ class AnthropicClient(ModelClient):
             # Add text content if present and non-whitespace
             if message.content and message.content.strip():
                 content_list.append({"type": "text", "text": message.content})
+
+            content_list.extend(search_blocks)
 
             # Results of provider-executed MCP calls, keyed by the id of the
             # mcp_tool_use they answer. Replayed inline below so each
@@ -269,6 +279,24 @@ class AnthropicClient(ModelClient):
                     }
                 )
 
+            anthropic_message["content"] = content_list
+            return anthropic_message
+
+        # An assistant turn that searched but called nothing (the model looked
+        # up a tool, then answered from context). Without this the blocks are
+        # dropped by the plain-string path below and the discovery is forgotten
+        # exactly as if we had never recorded it.
+        #
+        # Only the str shape is handled here; a list content (multi-modal
+        # assistant turn built by _build_message) falls through to the block
+        # loop below and has the search blocks appended there instead. Handling
+        # str-only *and* returning early would silently drop every text, image
+        # and document block on such a message.
+        if search_blocks and isinstance(message.content, str):
+            content_list = []
+            if message.content.strip():
+                content_list.append({"type": "text", "text": message.content})
+            content_list.extend(search_blocks)
             anthropic_message["content"] = content_list
             return anthropic_message
 
@@ -392,6 +420,10 @@ class AnthropicClient(ModelClient):
                                     "text": f"[Error processing document{filename_info}: {str(e)}]",
                                 }
                             )
+
+            # A multi-modal assistant turn that also searched: append the pair
+            # after the real blocks rather than replacing them.
+            content_list.extend(search_blocks)
 
             # Ensure content_list is not empty (after filtering whitespace-only blocks)
             if not content_list:
@@ -653,6 +685,44 @@ class AnthropicClient(ModelClient):
             or "compiled grammar is too large" in text
             or "reduce the number of strict tools" in text
         )
+
+    @staticmethod
+    def _is_tool_search_unsupported_error(error: Exception) -> bool:
+        """Whether a 400 says this model/endpoint can't do server-side tool search.
+
+        `defer_loading` + the `tool_search_tool_regex_*` server tool are gated on
+        the PROVIDER being Anthropic, not on the model supporting them — an
+        Anthropic-named proxy, or a model predating the feature, therefore 400s
+        on every request with no way to recover. Detect it so the caller can
+        retry once with the full tool list, the way the strict-tool ladder does.
+        """
+        text = str(getattr(error, "message", None) or error).lower()
+        return "tool_search" in text or "defer_loading" in text
+
+    @staticmethod
+    def _disable_tool_deferral(request_params: Dict[str, Any]) -> bool:
+        """Strip deferral + the server search tool; load every tool instead.
+
+        Returns True if anything changed (i.e. a retry is worth attempting).
+        """
+        tools = request_params.get("tools")
+        if not tools:
+            return False
+        rebuilt, changed = [], False
+        for tool in tools:
+            if not isinstance(tool, dict):
+                rebuilt.append(tool)
+                continue
+            if str(tool.get("type", "")).startswith("tool_search_tool"):
+                changed = True  # drop the server tool entirely
+                continue
+            if "defer_loading" in tool:
+                tool = {k: v for k, v in tool.items() if k != "defer_loading"}
+                changed = True
+            rebuilt.append(tool)
+        if changed:
+            request_params["tools"] = rebuilt
+        return changed
 
     # Block types that accept a cache_control marker. Notably absent:
     # thinking / redacted_thinking — marking those is a 400.
@@ -1301,6 +1371,23 @@ class AnthropicClient(ModelClient):
                     stream = await asyncio.wait_for(
                         create_fn(**request_params), timeout=self.timeout
                     )
+                elif self._is_tool_search_unsupported_error(
+                    e
+                ) and self._disable_tool_deferral(request_params):
+                    # Deferral is enabled per PROVIDER, but supported per MODEL.
+                    # Without this the mismatch fails every request for that
+                    # assistant, with no ladder to recover — pre-loading the
+                    # full tool list costs prompt tokens but keeps it working.
+                    logger.warning(
+                        "[TOOL_SEARCH_UNSUPPORTED] Anthropic rejected deferred "
+                        "tool loading (model=%s); retrying with all tools loaded. "
+                        "This model does not support server-side tool search — "
+                        "raise the tool_search threshold for it.",
+                        self.model,
+                    )
+                    stream = await asyncio.wait_for(
+                        create_fn(**request_params), timeout=self.timeout
+                    )
                 else:
                     raise
 
@@ -1321,6 +1408,12 @@ class AnthropicClient(ModelClient):
                     or normalized_chunk.thinking_delta
                     or normalized_chunk.tool_calls
                     or normalized_chunk.mcp_tool_results
+                    # Search blocks arrive on content_block_stop, where every
+                    # other field above is empty — omit this and the chunk is
+                    # filtered out here and the whole capture→replay chain is
+                    # dead code. Any future provider-payload field added to
+                    # StreamChunk needs a clause here for the same reason.
+                    or normalized_chunk.tool_search_blocks
                     or normalized_chunk.finish_reason
                 ):
                     yield normalized_chunk

@@ -880,6 +880,13 @@ def make_subagent_dispatcher_tool(
     from ..tools.function.function_tool import FunctionTool
 
     schema = _build_dispatcher_schema(sub_agents, transfer_allowed=transfer_allowed)
+    # Always exposed: routing to a sub-agent is the parent's primary action, so
+    # the tool must be callable without a tool_search round-trip. Set on the
+    # factory, not on any one caller — this tool is BUILT rather than registered
+    # with the @tool decorator, so it never picks up the decorator's
+    # `always_load` kwarg, and that is a property of the factory shared by every
+    # call site (Django adapter, Agent(sub_agents=...), configured_subagent).
+    schema.metadata["always_load"] = True
     child_map: Dict[str, "SubAgent"] = {sub.handle: sub for sub in sub_agents}
     closure_counter = counter or DispatchCounter()
 

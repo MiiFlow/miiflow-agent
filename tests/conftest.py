@@ -2,10 +2,113 @@
 
 import os
 import pytest
+from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from typing import AsyncGenerator, List, Dict, Any
 
 from miiflow_agent.core import Message, MessageRole, TokenCount, StreamChunk, ChatResponse
+
+
+# ── Local credentials for the integration tests ──────────────────────────────
+#
+# The integration tests read provider keys from the environment. Locally the
+# monorepo's canonical secrets live in ``server/.env``, so load them here —
+# otherwise a fresh checkout skips every real-API test even though the repo is
+# fully configured.
+#
+# Overriding is deliberate: a stale key exported from a shell profile outranks
+# the repo's current one and turns these tests RED (a revoked sk-proj-… key
+# produced a 401 on every local run of this suite), which is worse than not
+# running them at all. For a repo test run, the repo's own file is the
+# authority. Files are applied least-specific first, so a package-local
+# ``.env`` wins over the server's.
+#
+# Only the provider keys below are taken. A blanket ``load_dotenv(override=True)``
+# would drag the server's entire environment into this process, so the day
+# someone adds e.g. MIIFLOW_OPTIMISTIC_ANSWER_STREAMING=0 to server/.env for
+# local dev, the unit tests would silently start exercising a different code
+# path. Narrow need, narrow mechanism.
+#
+# In CI there is no ``.env`` on disk, so this is a no-op and the environment
+# stays authoritative. Set MIIFLOW_TEST_ENV_OVERRIDE=0 to keep an explicitly
+# exported key when you mean to test with a specific one.
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = _PACKAGE_ROOT.parents[1]
+_ENV_FILES = (_REPO_ROOT / "server" / ".env", _PACKAGE_ROOT / ".env")
+_PROVIDER_KEY_VARS = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_API_KEY",
+    "GOOGLE_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "OPENAI_API_KEY",
+)
+
+
+def _load_local_env() -> None:
+    if os.getenv("MIIFLOW_TEST_ENV_OVERRIDE") == "0":
+        return
+    try:
+        from dotenv import dotenv_values
+    except ImportError:  # pragma: no cover — dotenv is a declared dependency
+        return
+    for path in _ENV_FILES:
+        if not path.is_file():
+            continue
+        values = dotenv_values(path)
+        for var in _PROVIDER_KEY_VARS:
+            value = values.get(var)
+            if value:
+                os.environ[var] = value
+
+
+_load_local_env()
+
+
+# Provider auth failures are an environment precondition, not a defect in the
+# code under test. The presence checks below (`has_api_key`) can only see that
+# SOME key is set — they cannot tell a live key from a revoked one, so a
+# rotated credential surfaces as a failing assertion in whatever suite happens
+# to run next. Tests that reach a real provider route auth failures here and
+# skip with an actionable message instead. ONLY auth signatures skip;
+# everything else re-raises untouched.
+_AUTH_ERROR_MARKERS = (
+    "authenticationerror",
+    "invalid_api_key",
+    "incorrect api key",
+    "invalid x-api-key",
+    "error code: 401",
+    "status': 401",
+    "permissiondeniederror",
+)
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        haystack = f"{type(current).__name__} {current}".lower()
+        if any(marker in haystack for marker in _AUTH_ERROR_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+@contextmanager
+def skip_on_provider_auth_error(provider: str, env_var: str):
+    """Turn a provider credential failure into a skip, not a red test."""
+    try:
+        yield
+    except BaseException as exc:  # noqa: BLE001 — re-raised unless it's auth
+        if not _is_auth_error(exc):
+            raise
+        pytest.skip(
+            f"{provider} rejected the credentials in {env_var} "
+            f"(revoked or wrong account). Update it in server/.env, or unset "
+            f"a stale export in your shell. Original: {str(exc)[:200]}"
+        )
 
 
 def is_ci_environment() -> bool:

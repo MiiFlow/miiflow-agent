@@ -156,8 +156,9 @@ class TestReActOrchestratorSetup:
 
 class TestReActTurnClassification:
     @pytest.mark.asyncio
-    async def test_text_before_tool_call_is_not_final_answer_chunk(self):
-        """A provider text preamble followed by tool_use is thinking, not answer."""
+    async def test_text_before_tool_call_is_streamed_then_retracted(self):
+        """A provider text preamble streams live, then is retracted and demoted
+        to thinking when the tool_use block arrives."""
 
         class FakeExecutor:
             agent = SimpleNamespace(temperature=0, max_tokens=1024)
@@ -165,7 +166,7 @@ class TestReActTurnClassification:
             def _build_native_tool_schemas(self):
                 return [{"name": "lookup"}]
 
-            async def stream_with_tools(self, messages):
+            async def stream_with_tools(self, messages, prebuilt_tools=None):
                 yield SimpleNamespace(
                     delta="I'll check that. ",
                     thinking_delta=None,
@@ -213,14 +214,192 @@ class TestReActTurnClassification:
 
         await ReActOrchestrator._execute_reasoning_step_native(orch, context, state)
 
-        event_types = [e.event_type for e in orch.event_bus.event_buffer]
-        assert ReActEventType.FINAL_ANSWER_CHUNK not in event_types
+        events = list(orch.event_bus.event_buffer)
+        event_types = [e.event_type for e in events]
+        # Preamble streamed live...
+        assert ReActEventType.FINAL_ANSWER_CHUNK in event_types
+        # ...then retracted the moment the tool call arrived, and demoted to
+        # a thinking chunk carrying the full preamble.
+        assert ReActEventType.ANSWER_RETRACTED in event_types
         assert ReActEventType.THINKING_CHUNK in event_types
         assert ReActEventType.ACTION_PLANNED in event_types
+        retract_idx = event_types.index(ReActEventType.ANSWER_RETRACTED)
+        assert event_types.index(ReActEventType.FINAL_ANSWER_CHUNK) < retract_idx
+        assert events[retract_idx].data["retracted_text"] == "I'll check that. "
+        assert events[retract_idx].data["reason"] == "tool_call"
+        # The demotion thinking chunk follows the retraction.
+        assert any(
+            e.event_type == ReActEventType.THINKING_CHUNK
+            and e.data.get("delta") == "I'll check that. "
+            for e in events[retract_idx:]
+        )
 
     @pytest.mark.asyncio
-    async def test_truncated_answer_text_is_non_final_thinking_chunk(self):
-        """A length-truncated answer is surfaced, but never as committed final text."""
+    async def test_tool_free_answer_streams_live(self):
+        """Answer deltas are published DURING the provider stream, not
+        replayed after it closes, and a clean answer emits no retraction."""
+
+        types_at_second_yield: List = []
+        orch = ReActOrchestrator.__new__(ReActOrchestrator)
+
+        class FakeExecutor:
+            agent = SimpleNamespace(temperature=0, max_tokens=1024)
+
+            def _build_native_tool_schemas(self):
+                return []
+
+            async def stream_with_tools(self, messages, prebuilt_tools=None):
+                yield SimpleNamespace(
+                    delta="Hello ",
+                    thinking_delta=None,
+                    tool_calls=None,
+                    usage=None,
+                    cost=0,
+                    finish_reason=None,
+                )
+                types_at_second_yield.extend(
+                    e.event_type for e in orch.event_bus.event_buffer
+                )
+                yield SimpleNamespace(
+                    delta="world.",
+                    thinking_delta=None,
+                    tool_calls=None,
+                    usage=None,
+                    cost=0,
+                    finish_reason="stop",
+                )
+
+        orch.tool_executor = FakeExecutor()
+        orch.event_bus = EventBus()
+        orch.context_compressor = None
+        orch.safety_manager = SafetyManager(max_steps=5)
+
+        context = RunContext(deps={}, messages=[Message.user("hi")])
+        state = ExecutionState()
+        state.current_step = 1
+
+        step = await ReActOrchestrator._execute_reasoning_step_native(
+            orch, context, state
+        )
+
+        # First delta was already on the bus before the stream finished.
+        assert ReActEventType.FINAL_ANSWER_CHUNK in types_at_second_yield
+        event_types = [e.event_type for e in orch.event_bus.event_buffer]
+        assert event_types.count(ReActEventType.FINAL_ANSWER_CHUNK) == 2
+        assert ReActEventType.ANSWER_RETRACTED not in event_types
+        assert step.answer == "Hello world."
+
+    @pytest.mark.asyncio
+    async def test_stream_error_mid_answer_retracts_streamed_deltas(self):
+        """A provider failure mid-answer retracts what was optimistically
+        streamed, so a recovery retry doesn't stack a second answer on top."""
+
+        class FakeExecutor:
+            agent = SimpleNamespace(temperature=0, max_tokens=1024)
+
+            def _build_native_tool_schemas(self):
+                return []
+
+            async def stream_with_tools(self, messages, prebuilt_tools=None):
+                yield SimpleNamespace(
+                    delta="The campaign is performing well beca",
+                    thinking_delta=None,
+                    tool_calls=None,
+                    usage=None,
+                    cost=0,
+                    finish_reason=None,
+                )
+                raise ConnectionError("provider reset")
+
+        orch = ReActOrchestrator.__new__(ReActOrchestrator)
+        orch.tool_executor = FakeExecutor()
+        orch.event_bus = EventBus()
+        orch.context_compressor = None
+        orch.safety_manager = SafetyManager(max_steps=5)
+
+        context = RunContext(deps={}, messages=[Message.user("how are my ads?")])
+        state = ExecutionState()
+        state.current_step = 1
+
+        step = await ReActOrchestrator._execute_reasoning_step_native(
+            orch, context, state
+        )
+
+        events = list(orch.event_bus.event_buffer)
+        event_types = [e.event_type for e in events]
+        assert ReActEventType.FINAL_ANSWER_CHUNK in event_types  # streamed live
+        retracted = next(
+            e for e in events if e.event_type == ReActEventType.ANSWER_RETRACTED
+        )
+        assert retracted.data["reason"] == "stream_error"
+        assert (
+            retracted.data["retracted_text"]
+            == "The campaign is performing well beca"
+        )
+        assert step.error is not None
+        assert step.answer is None
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_restores_buffer_and_replay(self, monkeypatch):
+        """MIIFLOW_OPTIMISTIC_ANSWER_STREAMING=0 reverts to legacy replay:
+        nothing streams until the provider stream closes."""
+
+        monkeypatch.setenv("MIIFLOW_OPTIMISTIC_ANSWER_STREAMING", "0")
+
+        types_at_second_yield: List = []
+        orch = ReActOrchestrator.__new__(ReActOrchestrator)
+
+        class FakeExecutor:
+            agent = SimpleNamespace(temperature=0, max_tokens=1024)
+
+            def _build_native_tool_schemas(self):
+                return []
+
+            async def stream_with_tools(self, messages, prebuilt_tools=None):
+                yield SimpleNamespace(
+                    delta="Hello ",
+                    thinking_delta=None,
+                    tool_calls=None,
+                    usage=None,
+                    cost=0,
+                    finish_reason=None,
+                )
+                types_at_second_yield.extend(
+                    e.event_type for e in orch.event_bus.event_buffer
+                )
+                yield SimpleNamespace(
+                    delta="world.",
+                    thinking_delta=None,
+                    tool_calls=None,
+                    usage=None,
+                    cost=0,
+                    finish_reason="stop",
+                )
+
+        orch.tool_executor = FakeExecutor()
+        orch.event_bus = EventBus()
+        orch.context_compressor = None
+        orch.safety_manager = SafetyManager(max_steps=5)
+
+        context = RunContext(deps={}, messages=[Message.user("hi")])
+        state = ExecutionState()
+        state.current_step = 1
+
+        step = await ReActOrchestrator._execute_reasoning_step_native(
+            orch, context, state
+        )
+
+        # Legacy behavior: nothing streamed mid-stream; replay after close.
+        assert ReActEventType.FINAL_ANSWER_CHUNK not in types_at_second_yield
+        event_types = [e.event_type for e in orch.event_bus.event_buffer]
+        assert event_types.count(ReActEventType.FINAL_ANSWER_CHUNK) == 2
+        assert ReActEventType.ANSWER_RETRACTED not in event_types
+        assert step.answer == "Hello world."
+
+    @pytest.mark.asyncio
+    async def test_truncated_answer_text_is_retracted_not_final(self):
+        """A length-truncated answer streams live but is retracted and demoted —
+        never committed as final text."""
 
         class FakeExecutor:
             agent = SimpleNamespace(temperature=0, max_tokens=8)
@@ -228,7 +407,7 @@ class TestReActTurnClassification:
             def _build_native_tool_schemas(self):
                 return []
 
-            async def stream_with_tools(self, messages):
+            async def stream_with_tools(self, messages, prebuilt_tools=None):
                 yield SimpleNamespace(
                     delta="This answer was cut off mid",
                     thinking_delta=None,
@@ -252,9 +431,16 @@ class TestReActTurnClassification:
             orch, context, state
         )
 
-        event_types = [e.event_type for e in orch.event_bus.event_buffer]
+        events = list(orch.event_bus.event_buffer)
+        event_types = [e.event_type for e in events]
+        # Streams live, then the max_tokens retraction demotes it.
+        assert ReActEventType.FINAL_ANSWER_CHUNK in event_types
+        assert ReActEventType.ANSWER_RETRACTED in event_types
         assert ReActEventType.THINKING_CHUNK in event_types
-        assert ReActEventType.FINAL_ANSWER_CHUNK not in event_types
+        retracted = next(
+            e for e in events if e.event_type == ReActEventType.ANSWER_RETRACTED
+        )
+        assert retracted.data["reason"] == "max_tokens"
         assert step.answer is None
 
 
@@ -855,6 +1041,10 @@ class TestNativeToolCallingMode:
         assert result.final_answer == real_answer
         # The tool-call preamble must have been logged for observability.
         assert any("Tool-call preamble" in rec.message for rec in caplog.records)
+        # Multi-step run: exactly ONE retraction (step 1's preamble), and the
+        # closing answer turn streams clean.
+        event_types = [e.event_type for e in orchestrator.event_bus.event_buffer]
+        assert event_types.count(ReActEventType.ANSWER_RETRACTED) == 1
 
 
 class TestToolFuzzyMatching:

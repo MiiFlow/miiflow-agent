@@ -252,6 +252,11 @@ class ConfiguredSubAgent:
                     )
                     if delta:
                         answer_parts.append(delta)
+                elif event_type == ReActEventType.ANSWER_RETRACTED:
+                    # Optimistically streamed deltas were preamble narration
+                    # (a tool call followed); drop them from the accumulated
+                    # answer.
+                    answer_parts.clear()
                 elif event_type == ReActEventType.STOP_CONDITION:
                     # Carries structured failure info when the child loop
                     # halted via a safety condition (e.g. repeated tool

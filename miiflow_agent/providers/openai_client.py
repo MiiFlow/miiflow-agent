@@ -46,7 +46,13 @@ class OpenAIClient(ModelClient):
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
         super().__init__(model=model, api_key=api_key, **kwargs)
-        self.client = openai.AsyncOpenAI(api_key=api_key)
+        from .sdk_client_cache import get_or_create_sdk_client
+
+        # Reuse the SDK client (and its warm TLS connection pool) across
+        # turns — see sdk_client_cache. OpenAIClient itself stays per-turn.
+        self.client = get_or_create_sdk_client(
+            "openai", api_key, lambda: openai.AsyncOpenAI(api_key=api_key)
+        )
         self.provider_name = "openai"
 
         # Stream normalizer for unified streaming handling

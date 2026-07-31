@@ -242,7 +242,7 @@ class TestOrchestratorDispatch:
             def _build_native_tool_schemas(self):
                 return []
 
-            async def stream_with_tools(self, messages):
+            async def stream_with_tools(self, messages, prebuilt_tools=None):
                 # Anthropic streams the mcp_tool_use, then the result it
                 # already produced server-side, then the answer text.
                 yield SimpleNamespace(

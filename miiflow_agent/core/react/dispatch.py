@@ -337,6 +337,24 @@ async def forward_subagent_events(
                             },
                         )
                     )
+        elif et == ReActEventType.ANSWER_RETRACTED:
+            if promote_to_final:
+                # TRANSFER: the child's optimistically streamed chunks were
+                # re-published as real parent FINAL_ANSWER_CHUNKs, so the
+                # retraction must bubble too — child tool calls never emit a
+                # parent ACTION_PLANNED, making this the only signal that
+                # clears the streamed preamble from consumers and the server
+                # accumulator.
+                promoted_answer = ""
+                await parent_event_bus.publish(
+                    EventFactory.answer_retracted(
+                        parent_step_number,
+                        data.get("retracted_text", ""),
+                        data.get("reason", "tool_call"),
+                    )
+                )
+            # Non-transfer: the child's chunks only fed the nested panel's
+            # transient progress description; nothing to retract.
         elif et == ReActEventType.THINKING_CHUNK:
             # Stream the child's intermediate reasoning into a nested
             # thinking chunk on the parent's panel. The FE appends deltas

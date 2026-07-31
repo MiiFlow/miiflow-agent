@@ -38,7 +38,13 @@ class AnthropicClient(ModelClient):
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
         super().__init__(model=model, api_key=api_key, **kwargs)
-        self.client = anthropic.AsyncAnthropic(api_key=api_key)
+        from .sdk_client_cache import get_or_create_sdk_client
+
+        # Reuse the SDK client (and its warm TLS connection pool) across
+        # turns — see sdk_client_cache. AnthropicClient itself stays per-turn.
+        self.client = get_or_create_sdk_client(
+            "anthropic", api_key, lambda: anthropic.AsyncAnthropic(api_key=api_key)
+        )
         self.provider_name = "anthropic"
         self._tool_name_mapping: Dict[str, str] = {}
 

@@ -559,9 +559,20 @@ class AgentToolExecutor:
             max_tokens=self.agent.max_tokens,
         )
 
-    async def stream_with_tools(self, messages: List, temperature: float = None):
-        """Stream LLM call WITH native tools enabled."""
-        tools = self._build_native_tool_schemas()
+    async def stream_with_tools(
+        self, messages: List, temperature: float = None, prebuilt_tools: List = None
+    ):
+        """Stream LLM call WITH native tools enabled.
+
+        ``prebuilt_tools`` lets the caller reuse a schema list it already
+        built this step (the orchestrator builds one for trace logging);
+        building ~50 provider-format schemas twice per step is pure waste.
+        """
+        tools = (
+            prebuilt_tools
+            if prebuilt_tools is not None
+            else self._build_native_tool_schemas()
+        )
 
         # Use LLMClient with pre-formatted tools via _formatted_tools parameter
         # This ensures callbacks fire while avoiding tool re-formatting

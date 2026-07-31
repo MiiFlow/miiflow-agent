@@ -469,6 +469,85 @@ def test_forward_subagent_events_nested_dispatch_path_prefix():
     assert out.data["subagent_id"] == "grandchild_id"  # original preserved
 
 
+def test_forward_subagent_events_transfer_bubbles_answer_retraction():
+    """TRANSFER mode: a child's ANSWER_RETRACTED must bubble to the parent bus
+    (child tool calls never emit a parent ACTION_PLANNED, so this is the only
+    signal that clears optimistically streamed preamble) and reset the
+    promoted-answer accumulator."""
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    bus, received = _make_event_bus()
+    events = [
+        ReActEvent(
+            event_type=ReActEventType.FINAL_ANSWER_CHUNK,
+            step_number=0,
+            data={"delta": "Let me check. "},
+        ),
+        ReActEvent(
+            event_type=ReActEventType.ANSWER_RETRACTED,
+            step_number=0,
+            data={"retracted_text": "Let me check. ", "reason": "tool_call"},
+        ),
+        ReActEvent(
+            event_type=ReActEventType.FINAL_ANSWER_CHUNK,
+            step_number=1,
+            data={"delta": "Real answer."},
+        ),
+    ]
+
+    asyncio.run(
+        forward_subagent_events(
+            _gen_events(events),
+            parent_event_bus=bus,
+            parent_step_number=3,
+            subagent_id="sub_abc",
+            own_path=["sub_abc"],
+            promote_to_final=True,
+        )
+    )
+
+    out_types = [e.event_type for e in received]
+    assert out_types == [
+        ReActEventType.FINAL_ANSWER_CHUNK,
+        ReActEventType.ANSWER_RETRACTED,
+        ReActEventType.FINAL_ANSWER_CHUNK,
+    ]
+    retraction = received[1]
+    assert retraction.step_number == 3
+    assert retraction.data["retracted_text"] == "Let me check. "
+    assert retraction.data["reason"] == "tool_call"
+    # Accumulator reset: the post-retraction chunk starts fresh content.
+    assert received[2].data["content"] == "Real answer."
+
+
+def test_forward_subagent_events_non_transfer_drops_answer_retraction():
+    """Outside TRANSFER mode child chunks only feed the nested panel, so a
+    child retraction has nothing to retract on the parent — it is dropped."""
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    bus, received = _make_event_bus()
+    retraction = ReActEvent(
+        event_type=ReActEventType.ANSWER_RETRACTED,
+        step_number=0,
+        data={"retracted_text": "preamble", "reason": "tool_call"},
+    )
+
+    asyncio.run(
+        forward_subagent_events(
+            _gen_events([retraction]),
+            parent_event_bus=bus,
+            parent_step_number=0,
+            subagent_id="sub_x",
+            own_path=["sub_x"],
+        )
+    )
+    assert received == []
+
+
 def test_forward_subagent_events_ignores_other_event_types():
     from miiflow_agent.core.react.dispatch import forward_subagent_events
     from miiflow_agent.core.react.enums import ReActEventType

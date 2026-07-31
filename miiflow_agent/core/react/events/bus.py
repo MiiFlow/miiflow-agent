@@ -243,6 +243,21 @@ class EventBus:
                 pass
             return self._agui_factory.text_message_content(delta)
 
+        elif event_type == ReActEventType.ANSWER_RETRACTED:
+            # Optimistically streamed text_message_content turned out to be
+            # preamble narration (a tool call followed) or a truncated/failed
+            # answer. AG-UI has no native "unsay" event, so surface it as a
+            # custom event — clients that understand it clear the in-progress
+            # message; silently dropping it would leave the narration baked
+            # into the assistant message.
+            return self._agui_factory.custom(
+                "answer_retracted",
+                {
+                    "retracted_text": data.get("retracted_text", ""),
+                    "reason": data.get("reason", ""),
+                },
+            )
+
         elif event_type == ReActEventType.FINAL_ANSWER:
             # Final answer - emit message end
             return self._agui_factory.text_message_end()
@@ -408,6 +423,26 @@ class EventFactory:
             event_type=ReActEventType.FINAL_ANSWER_CHUNK,
             step_number=step_number,
             data={"delta": delta, "content": content}
+        )
+
+    @staticmethod
+    def answer_retracted(
+        step_number: int, retracted_text: str, reason: str
+    ) -> ReActEvent:
+        """Retract optimistically streamed answer text.
+
+        Emitted when text that was streamed as FINAL_ANSWER_CHUNK turns out
+        to be preamble narration (a tool call followed), a truncated
+        answer (max_tokens), or the orphaned fragment of a stream that died
+        mid-answer (stream_error). Consumers must clear their accumulated
+        answer buffer; on the tool_call/max_tokens paths the retracted text
+        re-arrives as a THINKING_CHUNK.
+        reason: "tool_call" | "max_tokens" | "stream_error".
+        """
+        return ReActEvent(
+            event_type=ReActEventType.ANSWER_RETRACTED,
+            step_number=step_number,
+            data={"retracted_text": retracted_text, "reason": reason},
         )
 
     @staticmethod

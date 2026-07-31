@@ -22,6 +22,7 @@ class ReActEventType(Enum):
     STEP_COMPLETE = "step_complete"
     FINAL_ANSWER = "final_answer"
     FINAL_ANSWER_CHUNK = "final_answer_chunk"  # Streaming chunks for final answer
+    ANSWER_RETRACTED = "answer_retracted"  # Optimistically streamed answer text was preamble; demote to thinking
     ERROR = "error"
     STOP_CONDITION = "stop_condition"
     INTERRUPT_REQUESTED = "interrupt_requested"  # Canonical human-in-the-loop pause

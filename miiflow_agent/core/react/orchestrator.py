@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -25,6 +26,28 @@ from .safety import SafetyManager
 from .tool_executor import AgentToolExecutor, ToolCall
 
 logger = logging.getLogger(__name__)
+
+
+def _optimistic_answer_streaming_enabled() -> bool:
+    """Kill switch: MIIFLOW_OPTIMISTIC_ANSWER_STREAMING=0 reverts to
+    buffer-and-replay of answer deltas (no live streaming, no retractions)."""
+    return os.environ.get("MIIFLOW_OPTIMISTIC_ANSWER_STREAMING", "1").lower() not in (
+        "0",
+        "false",
+    )
+
+
+class _LazyTrace:
+    """Defer expensive trace-string rendering until the log record is emitted."""
+
+    def __init__(self, render):
+        self._render = render
+
+    def __str__(self) -> str:
+        try:
+            return self._render()
+        except Exception as exc:  # noqa: BLE001
+            return f"<trace failed: {exc}>"
 
 
 def _preview(value: Any, max_len: int = 200) -> str:
@@ -1818,6 +1841,9 @@ class ReActOrchestrator:
         """
         step = ReActStep(step_number=state.current_step, thought="")
         step_start_time = time.time()
+        # Initialized before the try so the except handler can retract
+        # optimistically streamed deltas no matter where the failure hit.
+        pending_answer_deltas: List[str] = []
 
         try:
             # Publish step start event
@@ -1825,7 +1851,6 @@ class ReActOrchestrator:
 
             # Single-phase: Stream LLM response WITH tools enabled
             buffer = ""
-            pending_answer_deltas: List[str] = []
             tokens_used = 0
             cost = 0.0
             # Accumulate tool calls during streaming
@@ -1841,36 +1866,47 @@ class ReActOrchestrator:
 
             logger.debug(f"Step {state.current_step} - Calling LLM with tools enabled")
 
+            # Build the provider-format tool schemas ONCE per step: the trace
+            # log below and stream_with_tools share the same list (building
+            # ~50 schemas twice was pure setup latency).
+            try:
+                step_tools = self.tool_executor._build_native_tool_schemas()
+            except Exception:
+                # Let stream_with_tools rebuild and surface the real error.
+                step_tools = None
+
             # Trace: dump everything going INTO the LLM so we can audit the
             # exact messages, tool schemas, and generation settings on each
             # turn. Kept at INFO level (single prefix [LLM_TURN]) so it's easy
-            # to grep and filter.
-            try:
-                _trace_tools = self.tool_executor._build_native_tool_schemas()
-                _trace_tool_names = []
-                for _t in _trace_tools:
+            # to grep and filter. Message/tool summaries are lazily rendered
+            # so deployments logging above INFO pay nothing.
+            def _render_trace_tool_names() -> str:
+                if step_tools is None:
+                    return "<unavailable: schema build failed>"
+                names = []
+                for _t in step_tools:
                     # Providers vary: OpenAI nests under function.name, others use top-level name.
                     _fn = _t.get("function") if isinstance(_t, dict) else None
-                    _trace_tool_names.append(
+                    names.append(
                         (_fn or {}).get("name")
                         if _fn
                         else (_t.get("name") if isinstance(_t, dict) else str(_t))
                     )
-            except Exception as _trace_err:
-                _trace_tool_names = [f"<unavailable: {_trace_err}>"]
+                return str(names)
+
             logger.info(
                 "[LLM_TURN] step=%d OUT messages=%d tools=%d temp=%s max_tokens=%s\n%s\n  tool_names=%s",
                 state.current_step,
                 len(context.messages),
-                len(_trace_tool_names),
+                len(step_tools or []),
                 getattr(self.tool_executor.agent, "temperature", None),
                 getattr(self.tool_executor.agent, "max_tokens", None),
-                _summarize_messages_for_trace(context.messages),
-                _trace_tool_names,
+                _LazyTrace(lambda: _summarize_messages_for_trace(context.messages)),
+                _LazyTrace(_render_trace_tool_names),
             )
 
             async for chunk in self.tool_executor.stream_with_tools(
-                messages=context.messages
+                messages=context.messages, prebuilt_tools=step_tools
             ):
                 # Native extended thinking (Anthropic thinking blocks, OpenAI
                 # reasoning tokens) arrive on a dedicated channel separate
@@ -1884,11 +1920,14 @@ class ReActOrchestrator:
                     )
 
                 # Text deltas are not final until the provider turn is classified.
-                # Frontier models often emit narration before tool_use blocks; if we
-                # stream that as FINAL_ANSWER_CHUNK and a tool appears later, runtime
-                # control-flow text leaks into the final answer. Buffer answer
-                # candidates and replay them only after the stream closes with no
-                # tool calls.
+                # Frontier models often emit narration before tool_use blocks; if
+                # a tool appears later the streamed text must not leak into the
+                # final answer. Publish deltas optimistically as
+                # FINAL_ANSWER_CHUNK and retract them (ANSWER_RETRACTED) the
+                # moment a tool_use block starts; pending_answer_deltas records
+                # what was streamed so it can be retracted/demoted. With the
+                # kill switch off, deltas are buffered and replayed after the
+                # stream closes (legacy behavior).
                 if chunk.delta:
                     buffer += chunk.delta
                     if accumulated_tool_calls:
@@ -1901,6 +1940,14 @@ class ReActOrchestrator:
                         )
                     else:
                         pending_answer_deltas.append(chunk.delta)
+                        if _optimistic_answer_streaming_enabled():
+                            await self.event_bus.publish(
+                                EventFactory.final_answer_chunk(
+                                    state.current_step,
+                                    chunk.delta,
+                                    "".join(pending_answer_deltas),
+                                )
+                            )
 
                 # Split off calls the provider ran server-side before anything
                 # else looks at this chunk's tool calls. They carry provider
@@ -1939,6 +1986,16 @@ class ReActOrchestrator:
                         if pending_answer_deltas:
                             preamble = "".join(pending_answer_deltas)
                             pending_answer_deltas = []
+                            if _optimistic_answer_streaming_enabled():
+                                # The preamble already went out live as
+                                # FINAL_ANSWER_CHUNKs — tell consumers to clear
+                                # their answer buffer before re-emitting it on
+                                # the thinking channel.
+                                await self.event_bus.publish(
+                                    EventFactory.answer_retracted(
+                                        state.current_step, preamble, "tool_call"
+                                    )
+                                )
                             await self.event_bus.publish(
                                 EventFactory.thinking_chunk(
                                     state.current_step, preamble, buffer
@@ -2083,15 +2140,29 @@ class ReActOrchestrator:
 
             assistant_content = buffer.strip()
             if not accumulated_tool_calls and finish_reason != "length":
-                replayed = ""
-                for delta in pending_answer_deltas:
-                    replayed += delta
+                # Stream closed with no tool calls: the buffered deltas ARE the
+                # final answer. With optimistic streaming they already went out
+                # live; otherwise replay them now (legacy behavior).
+                if not _optimistic_answer_streaming_enabled():
+                    replayed = ""
+                    for delta in pending_answer_deltas:
+                        replayed += delta
+                        await self.event_bus.publish(
+                            EventFactory.final_answer_chunk(
+                                state.current_step, delta, replayed
+                            )
+                        )
+            elif not accumulated_tool_calls and pending_answer_deltas:
+                # max_tokens truncation: the text is not a final answer. Retract
+                # what was optimistically streamed, then demote it to thinking.
+                if _optimistic_answer_streaming_enabled():
                     await self.event_bus.publish(
-                        EventFactory.final_answer_chunk(
-                            state.current_step, delta, replayed
+                        EventFactory.answer_retracted(
+                            state.current_step,
+                            "".join(pending_answer_deltas),
+                            "max_tokens",
                         )
                     )
-            elif not accumulated_tool_calls and pending_answer_deltas:
                 await self.event_bus.publish(
                     EventFactory.thinking_chunk(
                         state.current_step, "".join(pending_answer_deltas), buffer
@@ -2569,6 +2640,24 @@ class ReActOrchestrator:
                 step.answer = assistant_content
 
         except Exception as e:
+            # The stream died mid-answer: any optimistically streamed deltas
+            # were never classified, and the recovery ladder may retry this
+            # turn and stream a fresh answer on top of them. Retract so every
+            # consumer clears the orphaned fragment. No-op on tool-call paths
+            # (the tool-call retraction already cleared the list) and on
+            # approval/plan interrupts (raised during tool execution, after
+            # the clear).
+            if pending_answer_deltas and _optimistic_answer_streaming_enabled():
+                try:
+                    await self.event_bus.publish(
+                        EventFactory.answer_retracted(
+                            state.current_step,
+                            "".join(pending_answer_deltas),
+                            "stream_error",
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to retract answer on stream error")
             self._handle_step_error(step, e, state)
 
         finally:

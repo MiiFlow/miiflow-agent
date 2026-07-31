@@ -70,7 +70,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.6-terra": ModelConfig(
         model_identifier="gpt-5.6-terra",
         name="gpt-5.6-terra",
-        description="GPT-5.6 Terra is the balanced mid-tier of the GPT-5.6 family (July 9, 2026), delivering strong reasoning and agentic performance at roughly half the cost of Sol. 1M context window.",
+        description="GPT-5.6 Terra is the balanced mid-tier of the GPT-5.6 family (July 9, 2026), delivering strong reasoning and agentic performance at well under half the cost of Sol. A July 30, 2026 price cut lowered it to $2/$12 per 1M input/output tokens (from $2.50/$15). 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -81,13 +81,13 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         maximum_output_tokens=128000,
         token_param_name="max_completion_tokens",
         supports_temperature=False,
-        input_cost_hint=2.50,
-        output_cost_hint=15.0,
+        input_cost_hint=2.0,
+        output_cost_hint=12.0,
     ),
     "gpt-5.6-luna": ModelConfig(
         model_identifier="gpt-5.6-luna",
         name="gpt-5.6-luna",
-        description="GPT-5.6 Luna is the fastest and most cost-efficient tier of the GPT-5.6 family (July 9, 2026), optimized for high-throughput, latency-sensitive workloads. 1M context window.",
+        description="GPT-5.6 Luna is the fastest and most cost-efficient tier of the GPT-5.6 family (July 9, 2026), optimized for high-throughput, latency-sensitive workloads. A July 30, 2026 price cut lowered it ~80% to $0.20/$1.20 per 1M input/output tokens (from $1/$6). 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -98,8 +98,8 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         maximum_output_tokens=128000,
         token_param_name="max_completion_tokens",
         supports_temperature=False,
-        input_cost_hint=1.0,
-        output_cost_hint=6.0,
+        input_cost_hint=0.20,
+        output_cost_hint=1.20,
     ),
     # GPT-5.5 series (released April 23, 2026) — succeeded by the GPT-5.6 family
     "gpt-5.5": ModelConfig(
@@ -209,7 +209,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1": ModelConfig(
         model_identifier="gpt-4.1",
         name="gpt-4.1",
-        description="Legacy — succeeded by GPT-5.4. General-purpose model with 1M token context. Retired from ChatGPT Feb 13, 2026; still available via the API.",
+        description="Legacy — succeeded by GPT-5.4. General-purpose model with 1M token context. Retired from ChatGPT Feb 13, 2026; still available via the API, with the API shutdown scheduled for Oct 14, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -226,7 +226,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1-mini": ModelConfig(
         model_identifier="gpt-4.1-mini",
         name="gpt-4.1-mini",
-        description="Legacy — succeeded by GPT-5.4 Mini. Smaller GPT-4.1 with 1M token context.",
+        description="Legacy — succeeded by GPT-5.4 Mini. Smaller GPT-4.1 with 1M token context. API shutdown scheduled for Oct 14, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -243,7 +243,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1-nano": ModelConfig(
         model_identifier="gpt-4.1-nano",
         name="gpt-4.1-nano",
-        description="Legacy — succeeded by GPT-5.4 Nano. Smallest, fastest 4.1 variant.",
+        description="Legacy — succeeded by GPT-5.4 Nano. Smallest, fastest 4.1 variant. API shutdown scheduled for Oct 14, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,

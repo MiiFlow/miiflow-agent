@@ -26,7 +26,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-5": ModelConfig(
         model_identifier="claude-opus-5",
         name="claude-opus-5",
-        description="Anthropic's most capable Opus model (released July 23, 2026), delivering near-Fable 5 performance at half the token price. Features always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (2.5x faster at 2x the price), structured outputs, and a safety fallback that routes to Opus 4.8. 1M context window.",
+        description="Anthropic's most capable Opus model (released July 24, 2026), delivering near-Fable 5 performance at half the token price. Features always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (2.5x faster at 2x the price), structured outputs, and a safety fallback that routes to Opus 4.8. 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -44,7 +44,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.8": ModelConfig(
         model_identifier="claude-opus-4-8",
         name="claude-opus-4.8",
-        description="Legacy — succeeded by Claude Opus 5 (July 23, 2026). Powerful reasoning and coding model with adaptive thinking, structured outputs, and fast mode; remains available and serves as Opus 5's safety fallback. 1M context window.",
+        description="Legacy — succeeded by Claude Opus 5 (July 24, 2026). Powerful reasoning and coding model with adaptive thinking, structured outputs, and fast mode; remains available and serves as Opus 5's safety fallback. 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,

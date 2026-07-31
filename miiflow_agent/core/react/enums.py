@@ -16,6 +16,7 @@ class ReActEventType(Enum):
     STEP_START = "step_start"
     THOUGHT = "thought"
     THINKING_CHUNK = "thinking_chunk"  # Streaming chunks during thinking
+    ACTION_STREAMING = "action_streaming"  # tool_use block started; args still streaming
     ACTION_PLANNED = "action_planned"
     ACTION_EXECUTING = "action_executing"
     OBSERVATION = "observation"

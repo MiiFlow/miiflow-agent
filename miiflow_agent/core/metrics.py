@@ -22,12 +22,21 @@ class TokenCount:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
-    
+    # Provider prompt-cache split of prompt_tokens (Anthropic: ~0.1x for
+    # reads, ~1.25x for writes). Zero when the provider reports none —
+    # observability for "is prompt caching actually hitting".
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
     def __add__(self, other: "TokenCount") -> "TokenCount":
         return TokenCount(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
             total_tokens=self.total_tokens + other.total_tokens,
+            cache_read_tokens=self.cache_read_tokens
+            + getattr(other, "cache_read_tokens", 0),
+            cache_write_tokens=self.cache_write_tokens
+            + getattr(other, "cache_write_tokens", 0),
         )
 
 

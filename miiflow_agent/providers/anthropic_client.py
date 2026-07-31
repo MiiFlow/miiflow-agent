@@ -1052,6 +1052,8 @@ class AnthropicClient(ModelClient):
                 prompt_tokens=input_tokens_total,
                 completion_tokens=response.usage.output_tokens,
                 total_tokens=input_tokens_total + response.usage.output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_creation_tokens,
             )
 
             if cache_creation_tokens or cache_read_tokens:

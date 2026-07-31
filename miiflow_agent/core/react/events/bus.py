@@ -338,6 +338,24 @@ class EventFactory:
         )
 
     @staticmethod
+    def action_streaming(
+        step_number: int, action: str, tool_call_id: str = None
+    ) -> ReActEvent:
+        """A tool_use block just STARTED streaming — the name is known but the
+        arguments are still being generated.
+
+        Emitted so the UI can show the upcoming tool immediately: argument
+        generation can run tens of seconds (e.g. dispatch task briefs) during
+        which no other event fires, and ACTION_PLANNED only follows once the
+        args are complete.
+        """
+        return ReActEvent(
+            event_type=ReActEventType.ACTION_STREAMING,
+            step_number=step_number,
+            data={"action": action, "tool_call_id": tool_call_id},
+        )
+
+    @staticmethod
     def action_planned(step_number: int, action: str, action_input: dict, tool_description: str = None, tool_call_id: str = None) -> ReActEvent:
         """Create action planned event.
 

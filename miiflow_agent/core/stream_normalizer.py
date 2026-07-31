@@ -63,6 +63,9 @@ class StreamState:
     # Anthropic: input-side token total (input + prompt-cache buckets) captured
     # from message_start, since later message_delta events may omit it.
     input_tokens_total: int = 0
+    # Prompt-cache split captured alongside, for cache-hit observability.
+    cache_read_tokens_total: int = 0
+    cache_write_tokens_total: int = 0
 
 
 class BaseStreamNormalizer(ABC):
@@ -521,14 +524,32 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
             self._state.input_tokens_total = max(
                 self._state.input_tokens_total, _input_total(start_usage)
             )
+            self._state.cache_read_tokens_total = max(
+                self._state.cache_read_tokens_total,
+                _as_int(getattr(start_usage, "cache_read_input_tokens", None)),
+            )
+            self._state.cache_write_tokens_total = max(
+                self._state.cache_write_tokens_total,
+                _as_int(getattr(start_usage, "cache_creation_input_tokens", None)),
+            )
 
         if hasattr(chunk, "usage") and chunk.usage is not None:
             input_tokens = max(_input_total(chunk.usage), self._state.input_tokens_total)
             output_tokens = _as_int(getattr(chunk.usage, "output_tokens", None))
+            cache_read = max(
+                _as_int(getattr(chunk.usage, "cache_read_input_tokens", None)),
+                self._state.cache_read_tokens_total,
+            )
+            cache_write = max(
+                _as_int(getattr(chunk.usage, "cache_creation_input_tokens", None)),
+                self._state.cache_write_tokens_total,
+            )
             return TokenCount(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
                 total_tokens=input_tokens + output_tokens,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
             )
         return None
 

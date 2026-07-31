@@ -235,6 +235,84 @@ class TestReActTurnClassification:
         )
 
     @pytest.mark.asyncio
+    async def test_tool_use_block_start_announces_action_streaming(self):
+        """The tool name is announced the moment its block starts streaming —
+        before the arguments finish — and exactly once per tool call."""
+
+        class FakeExecutor:
+            agent = SimpleNamespace(temperature=0, max_tokens=1024)
+
+            def _build_native_tool_schemas(self):
+                return [{"name": "lookup"}]
+
+            async def stream_with_tools(self, messages, prebuilt_tools=None):
+                # content_block_start: name + id, no args yet
+                yield SimpleNamespace(
+                    delta="",
+                    thinking_delta=None,
+                    tool_calls=[
+                        {
+                            "id": "tc_1",
+                            "index": 0,
+                            "type": "function",
+                            "function": {"name": "lookup", "arguments": None},
+                        }
+                    ],
+                    usage=None,
+                    cost=0,
+                    finish_reason=None,
+                )
+                # content_block_stop: finalized args
+                yield SimpleNamespace(
+                    delta="",
+                    thinking_delta=None,
+                    tool_calls=[
+                        {
+                            "id": "tc_1",
+                            "index": 0,
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": {"query": "x"},
+                            },
+                        }
+                    ],
+                    usage=None,
+                    cost=0,
+                    finish_reason="tool_calls",
+                )
+
+            def get_tool_schema(self, name):
+                return {"parameters": {"required": []}}
+
+            def has_tool(self, name):
+                return name == "lookup"
+
+            async def execute_tool(self, name, inputs, context=None):
+                return ToolResult(name=name, input=inputs, output="ok", success=True)
+
+        orch = ReActOrchestrator.__new__(ReActOrchestrator)
+        orch.tool_executor = FakeExecutor()
+        orch.event_bus = EventBus()
+        orch.context_compressor = None
+        orch.safety_manager = SafetyManager(max_steps=5)
+
+        context = RunContext(deps={}, messages=[Message.user("do it")])
+        state = ExecutionState()
+        state.current_step = 1
+
+        await ReActOrchestrator._execute_reasoning_step_native(orch, context, state)
+
+        events = list(orch.event_bus.event_buffer)
+        event_types = [e.event_type for e in events]
+        assert event_types.count(ReActEventType.ACTION_STREAMING) == 1
+        streaming_idx = event_types.index(ReActEventType.ACTION_STREAMING)
+        assert event_types.index(ReActEventType.ACTION_PLANNED) > streaming_idx
+        announce = events[streaming_idx]
+        assert announce.data["action"] == "lookup"
+        assert announce.data["tool_call_id"] == "tc_1"
+
+    @pytest.mark.asyncio
     async def test_tool_free_answer_streams_live(self):
         """Answer deltas are published DURING the provider stream, not
         replayed after it closes, and a clean answer emits no retraction."""

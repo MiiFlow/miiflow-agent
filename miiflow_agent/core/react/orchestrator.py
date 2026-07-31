@@ -1852,6 +1852,8 @@ class ReActOrchestrator:
             # Single-phase: Stream LLM response WITH tools enabled
             buffer = ""
             tokens_used = 0
+            # Slots whose ACTION_STREAMING announcement already went out.
+            announced_tool_slots: set = set()
             cost = 0.0
             # Accumulate tool calls during streaming
             accumulated_tool_calls = {}  # index -> {id, function: {name, arguments}}
@@ -2069,6 +2071,23 @@ class ReActOrchestrator:
                             accumulated_tool_calls[idx]["function"]["name"] = (
                                 function_data.get("name")
                             )
+                            # Announce the tool the moment its block STARTS:
+                            # argument generation can run tens of seconds (e.g.
+                            # dispatch task briefs) with no other event, and
+                            # ACTION_PLANNED only fires after args complete —
+                            # without this the user stares at a blank bubble
+                            # for the whole argument stream.
+                            if idx not in announced_tool_slots:
+                                announced_tool_slots.add(idx)
+                                await self.event_bus.publish(
+                                    EventFactory.action_streaming(
+                                        state.current_step,
+                                        function_data.get("name"),
+                                        tool_call_id=accumulated_tool_calls[idx].get(
+                                            "id"
+                                        ),
+                                    )
+                                )
 
                         # Handle arguments based on format:
                         # - OpenAI: sends progressively longer strings in each chunk

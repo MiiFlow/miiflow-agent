@@ -32,13 +32,18 @@ logger = logging.getLogger(__name__)
 
 
 def _format_tokens(tokens: TokenCount) -> str:
-    """Compact token summary for log lines: in/out/total."""
+    """Compact token summary for log lines: in/out/total (+cache split)."""
     if tokens is None:
         return "in=?/out=?/total=?"
     in_t = getattr(tokens, "prompt_tokens", None)
     out_t = getattr(tokens, "completion_tokens", None)
     total_t = getattr(tokens, "total_tokens", None)
-    return f"in={in_t}/out={out_t}/total={total_t}"
+    base = f"in={in_t}/out={out_t}/total={total_t}"
+    cache_r = getattr(tokens, "cache_read_tokens", 0) or 0
+    cache_w = getattr(tokens, "cache_write_tokens", 0) or 0
+    if cache_r or cache_w:
+        return f"{base} cache_read={cache_r}/cache_write={cache_w}"
+    return base
 
 
 @dataclass

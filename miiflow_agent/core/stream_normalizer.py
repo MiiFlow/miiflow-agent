@@ -273,11 +273,10 @@ class OpenAIStreamNormalizer(BaseStreamNormalizer):
     def _extract_usage(self, chunk: Any) -> Optional[TokenCount]:
         """Extract usage information from chunk."""
         if hasattr(chunk, "usage") and chunk.usage:
-            return TokenCount(
-                prompt_tokens=chunk.usage.prompt_tokens,
-                completion_tokens=chunk.usage.completion_tokens,
-                total_tokens=chunk.usage.total_tokens,
-            )
+            # Same reader as the non-streaming client, so the streaming and
+            # non-streaming paths can never disagree about cached/reasoning
+            # tokens.
+            return TokenCount.from_openai_usage(chunk.usage)
         return None
 
 
@@ -825,11 +824,7 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
 
         usage_meta = chunk.get("usageMetadata")
         if usage_meta:
-            usage = TokenCount(
-                prompt_tokens=usage_meta.get("promptTokenCount", 0) or 0,
-                completion_tokens=usage_meta.get("candidatesTokenCount", 0) or 0,
-                total_tokens=usage_meta.get("totalTokenCount", 0) or 0,
-            )
+            usage = TokenCount.from_gemini_usage(usage_meta)
 
         return self._build_chunk(delta=delta, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
 
@@ -919,11 +914,10 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
     def _extract_protobuf_usage(self, chunk: Any) -> Optional[TokenCount]:
         """Extract usage information from protobuf chunk."""
         if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-            return TokenCount(
-                prompt_tokens=getattr(chunk.usage_metadata, "prompt_token_count", 0) or 0,
-                completion_tokens=getattr(chunk.usage_metadata, "candidates_token_count", 0) or 0,
-                total_tokens=getattr(chunk.usage_metadata, "total_token_count", 0) or 0,
-            )
+            # from_gemini_usage reads snake_case attributes as well as the
+            # REST camelCase dict keys, so the legacy protobuf path picks up
+            # thinking/cache tokens without a second implementation.
+            return TokenCount.from_gemini_usage(chunk.usage_metadata)
         return None
 
 

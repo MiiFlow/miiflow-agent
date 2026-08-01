@@ -76,8 +76,23 @@ from .core.callback_context import (
     set_callback_context,
 )
 
-# Context compression
+# Context compression (legacy message-only compressor, still used directly by
+# adapters and tests; new callers should go through the context engine below).
 from .core.context_compression import CompressionStrategy, ContextCompressor
+
+# Context management: pluggable engines that size the WHOLE request
+# (system + tools + messages), not just the conversation.
+from .core.context import (
+    CompressionVerdict,
+    ContextBudget,
+    ContextEngine,
+    DefaultContextEngine,
+    RequestShape,
+    TokenBreakdown,
+    get_counter,
+    get_engine,
+    register_engine,
+)
 
 # Recovery strategies
 from .core.react.recovery import RecoveryManager, RecoveryStrategy
@@ -159,6 +174,15 @@ __all__ = [
     "unregister",
     # Context compression
     "ContextCompressor",
+    "CompressionVerdict",
+    "ContextBudget",
+    "ContextEngine",
+    "DefaultContextEngine",
+    "RequestShape",
+    "TokenBreakdown",
+    "get_counter",
+    "get_engine",
+    "register_engine",
     "CompressionStrategy",
     # Recovery strategies
     "RecoveryManager",

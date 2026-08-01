@@ -54,6 +54,7 @@ class ToolRegistry:
         *,
         tool_search_enabled: bool = True,
         tool_search_threshold: Optional[int] = None,
+        tool_bridge_enabled: bool = False,
     ):
         self.tools: Dict[str, FunctionTool] = {}
         self.http_tools: Dict[str, HTTPTool] = {}
@@ -85,6 +86,26 @@ class ToolRegistry:
         self._search_index: Dict[str, str] = {}
         # The built-in tool_search FunctionTool, lazily built on first need.
         self._tool_search_tool: Optional[FunctionTool] = None
+
+        # Bridge-model disclosure (tool_search / tool_describe / tool_call).
+        # Strictly better than the in-process meta-tool on providers without
+        # native deferral — discovered tools are invoked *through* the bridge
+        # rather than appended to the tools array, so the array never grows
+        # mid-run and the prompt cache survives (see ``tool_bridge``).
+        #
+        # Defaults OFF regardless, because switching it on materially changes
+        # what the model sees: three tools plus the always-load core instead of
+        # the full schema list. That is the host application's call to make per
+        # environment, not a default this library should impose on every
+        # existing caller at upgrade time.
+        self.tool_bridge_enabled = tool_bridge_enabled
+        self._bridge_tools: Optional[List[FunctionTool]] = None
+        # Signature of the catalog the cached bridge was built from. The
+        # bridge embeds the catalog in tool_search's description, so it must
+        # be rebuilt when the registry's contents change — but NOT on every
+        # call, or the description would be re-rendered (and potentially
+        # re-ordered) each turn, defeating the caching it exists to protect.
+        self._bridge_signature: Optional[tuple] = None
 
     def calibrate_for_provider(self, provider_name: Optional[str]) -> None:
         """Pin ``tool_search_threshold`` to the provider-safe ceiling unless
@@ -502,6 +523,47 @@ class ToolRegistry:
             }
         return self._tool_search_tool
 
+    def get_bridge_tools(
+        self, exclude: Optional[Iterable[str]] = None
+    ) -> List["FunctionTool"]:
+        """Return (and lazily build) the three bridge tools.
+
+        ``exclude`` names the tools already resident in the model's array —
+        the always-load core. Those must NOT appear in the catalog: listing a
+        tool as "available on demand" when it is already callable directly
+        invites a pointless ``tool_describe``/``tool_call`` round-trip for
+        something the model could have invoked immediately.
+
+        Like ``get_tool_search_tool``, these live off ``self.tools`` so they
+        never leak into ``list_tools()`` or any code that iterates the
+        registry.
+
+        The result is cached against a signature of the catalog contents. The
+        catalog is embedded in ``tool_search``'s description, so re-rendering
+        it every turn would produce a different tools array each iteration —
+        the exact cache-invalidation this design exists to prevent.
+        """
+        from . import tool_bridge as _bridge
+
+        excluded = set(exclude or ())
+        deferred: List[tuple] = []
+        for name, description, _metadata in self._iter_all_tool_entries():
+            if name in excluded or name in _bridge.BRIDGE_TOOL_NAMES:
+                continue
+            deferred.append((name, description or ""))
+        deferred.sort()
+
+        signature = tuple(name for name, _ in deferred)
+        if self._bridge_tools is None or self._bridge_signature != signature:
+            self._bridge_tools = _bridge.build_bridge_tools(self, deferred=deferred)
+            self._bridge_signature = signature
+            for tool in self._bridge_tools:
+                self.execution_stats.setdefault(
+                    tool.name,
+                    {"calls": 0, "successes": 0, "failures": 0, "total_time": 0.0},
+                )
+        return self._bridge_tools
+
     def get_filtered_schemas(
         self,
         provider: str,
@@ -675,6 +737,38 @@ class ToolRegistry:
 
         if resolved_name in self.execution_stats:
             self.execution_stats[resolved_name]["calls"] += 1
+
+        # Route the off-registry bridge tools, if built. `tool_call` never
+        # reaches here — the tool executor unwraps it into a direct call to
+        # the underlying tool before dispatch, so approval and context
+        # injection see the real name (see ``tool_bridge.unwrap_bridge_call``).
+        # `tool_search` and `tool_describe` are registry-internal helpers that
+        # take no context, so they dispatch here directly.
+        if self._bridge_tools:
+            for bridge_tool in self._bridge_tools:
+                if resolved_name != bridge_tool.name:
+                    continue
+                try:
+                    result = await bridge_tool.acall(**kwargs)
+                    stats = self.execution_stats.get(resolved_name)
+                    if stats is not None:
+                        stats["total_time"] += result.execution_time
+                        if result.success:
+                            stats["successes"] += 1
+                        else:
+                            stats["failures"] += 1
+                    return result
+                except Exception as e:
+                    if resolved_name in self.execution_stats:
+                        self.execution_stats[resolved_name]["failures"] += 1
+                    return ToolResult(
+                        name=resolved_name,
+                        input=kwargs,
+                        output=None,
+                        error=f"{resolved_name} execution failed: {e}",
+                        success=False,
+                        metadata={"error_type": "tool_bridge_error"},
+                    )
 
         # Route the off-registry tool_search meta-tool, if active.
         if (

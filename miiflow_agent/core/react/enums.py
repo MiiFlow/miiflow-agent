@@ -35,6 +35,7 @@ class ReActEventType(Enum):
     MEDIA = "media"  # Tool returned a media result (image/video/audio)
     ARTIFACT = "artifact"  # Tool returned a downloadable artifact (PDF, HTML, ...)
     PROGRESS = "progress"  # Progress snapshot update
+    CONTEXT_BREAKDOWN = "context_breakdown"  # Per-tier token sizing + compaction verdict for the next call
     LLM_TRUNCATED = "llm_truncated"  # Model hit max_tokens (often mid-tool-call)
     SUBAGENT_DISPATCH = "subagent_dispatch"  # Sub-assistant dispatch (start/progress/complete/failed sub-events)
     PLAN_MODE_ENTERED = "plan_mode_entered"  # Model called enter_plan_mode; only read-only tools execute until exit

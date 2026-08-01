@@ -38,6 +38,14 @@ class ExecutionState:
     needs_clarification: bool = False
     clarification_data: Optional[Dict[str, Any]] = None
 
+    # Uncorrected local token estimate for the request most recently sized by
+    # the context engine. Handed back to `ContextEngine.update_from_response`
+    # once the provider reports what it actually counted, which is what trains
+    # the estimator. Must stay UNCORRECTED — feeding back a calibrated
+    # estimate makes the ratio converge to 1.0 regardless of accuracy and
+    # silently disables the loop.
+    last_estimated_prompt_tokens: Optional[int] = None
+
     # Media store - maps media IDs to their URLs so subsequent tool calls
     # (e.g. image editing) can reference generated images via media_ref:<id>
     media_store: Dict[str, str] = field(default_factory=dict)

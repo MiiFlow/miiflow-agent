@@ -595,6 +595,27 @@ class EventFactory:
         )
 
     @staticmethod
+    def context_breakdown(decision: dict, step_number: int = 0) -> ReActEvent:
+        """Create a context-sizing event.
+
+        Carries the per-tier token breakdown (system / tools / conversation)
+        alongside the compaction verdict, so a surface can render a
+        context-usage meter and, more importantly, so "why was this turn slow"
+        is answerable after the fact. A request that is 90% tool schemas and
+        one that is 90% conversation look identical from a single total; only
+        the split says which one to go fix.
+
+        Args:
+            decision: ``CompressionDecision.to_dict()``
+            step_number: Step this sizing applies to (0 = pre-execution)
+        """
+        return ReActEvent(
+            event_type=ReActEventType.CONTEXT_BREAKDOWN,
+            step_number=step_number,
+            data=decision,
+        )
+
+    @staticmethod
     def subagent_dispatch(
         step_number: int,
         sub_event: str,

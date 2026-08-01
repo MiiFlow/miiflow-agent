@@ -82,6 +82,21 @@ class AgentToolExecutor:
         Emits PRE_TOOL_USE callback before execution (can block via ToolApprovalRequired).
         Emits a TOOL_EXECUTED callback event after execution for billing/tracking.
         """
+        # Unwrap a bridge `tool_call(name=X, arguments={...})` into a direct
+        # call to X. This has to happen FIRST — before the tool filter, the
+        # plan-mode gate, and the PRE_TOOL_USE approval callback — because
+        # every one of those decides based on the tool name. Unwrapping later
+        # would have them all reasoning about `tool_call`: the filter would
+        # allow a denied tool, plan mode would let a write through as
+        # read-only, and the approval prompt would ask the user to approve
+        # "tool_call" instead of the mutation it stands for.
+        from ..tools.tool_bridge import unwrap_bridge_call
+
+        unwrapped = unwrap_bridge_call(tool_name, inputs)
+        if unwrapped is not None:
+            tool_name, inputs = unwrapped
+            logger.debug("[TOOL_BRIDGE] unwrapped tool_call -> %s", tool_name)
+
         # Check tool filter before execution
         if self.tool_filter and not self.tool_filter.is_allowed(tool_name):
             return ToolResult(
@@ -584,6 +599,30 @@ class AgentToolExecutor:
         ):
             yield chunk
 
+    def build_request_shape(self, messages: List, tools: List = None):
+        """Describe the next request the way the context engine needs to see it.
+
+        The engine's whole job is sizing what goes on the wire, so it needs the
+        tool schemas — not just the messages. Those schemas are the largest
+        static block on a tool-heavy assistant (tens of thousands of tokens),
+        and the engine was previously blind to them.
+
+        ``tools`` lets a caller that already built the schema list this step
+        reuse it. Building ~50 provider-format schemas twice per step is pure
+        waste, and worse, a second build could disagree with the first if a
+        ToolSearch discovery landed in between — sizing a different tool list
+        from the one actually sent.
+        """
+        from ..context import RequestShape
+
+        provider_client = getattr(self._client, "client", None)
+        return RequestShape(
+            messages=messages,
+            tools=tools if tools is not None else self._build_native_tool_schemas(),
+            provider=getattr(provider_client, "provider_name", None),
+            model=getattr(provider_client, "model", None),
+        )
+
     def _build_native_tool_schemas(self) -> List:
         """Build tool schemas in native provider format.
 
@@ -612,10 +651,33 @@ class AgentToolExecutor:
         # NATIVE_TOOL_SEARCH_TOOL. This supersedes the in-process meta-tool for
         # Anthropic — no enabled-set hiding, hence no mid-loop tools-array growth.
         native_search = wants_search and provider_name == "anthropic"
-        # In-process meta-tool path (non-Anthropic providers): hide undiscovered
-        # tools and expose the meta-tool so the model can enable them by name.
+
+        # Bridge path (non-Anthropic providers). The in-process meta-tool
+        # *enables* discovered tools, which grows the tools array on the next
+        # iteration and invalidates the tools cache tier — and because the
+        # tiers nest (tools → system → messages), that cascades and re-bills
+        # the whole prefix uncached. That is the ~40s parent stall, and the
+        # reason the threshold was raised to 100 on these providers so the
+        # meta-tool would effectively never activate — at the cost of shipping
+        # the full ~32K-token array every turn.
+        #
+        # The bridge fixes the root cause: discovered tools are invoked
+        # *through* `tool_call` rather than added to the array, so the array is
+        # exactly `always_load + pinned + 3` and never grows. See
+        # ``core.tools.tool_bridge``.
+        use_bridge = (
+            not native_search
+            and wants_search
+            and self._tool_registry.tool_bridge_enabled
+        )
+        # Legacy in-process meta-tool path. Retained for callers that opt out
+        # of the bridge; it still grows the array, so it is no longer the
+        # default.
         use_tool_search = (
-            not native_search and is_session_active() and wants_search
+            not native_search
+            and not use_bridge
+            and is_session_active()
+            and wants_search
         )
 
         keep_loaded: set = set()
@@ -629,6 +691,13 @@ class AgentToolExecutor:
                 get_pinned_tool_names()
             )
             tool_names = self.list_tools()
+        elif use_bridge:
+            # Only the always-load core stays resident; everything else is
+            # reachable through the bridge. This set is byte-stable for the
+            # run, which is the whole point.
+            visible = set(self._tool_registry.get_always_load_names())
+            visible.update(get_pinned_tool_names())
+            tool_names = [name for name in self.list_tools() if name in visible]
         elif use_tool_search:
             visible = set(self._tool_registry.get_always_load_names())
             enabled = get_enabled_tool_names()
@@ -691,6 +760,22 @@ class AgentToolExecutor:
             native_schemas.append(
                 self._client.client.convert_schema_to_provider_format(meta_filtered)
             )
+
+        # Append the three bridge tools. Their count and content depend only on
+        # the registry's contents, not on what the model has discovered, so
+        # this list is byte-identical on every iteration of the run — which is
+        # exactly what keeps the tools cache tier warm.
+        if use_bridge:
+            for bridge_tool in self._tool_registry.get_bridge_tools(
+                exclude=set(tool_names)
+            ):
+                bridge_universal = bridge_tool.schema.to_universal_schema()
+                bridge_filtered = self._inject_description_param(bridge_universal)
+                native_schemas.append(
+                    self._client.client.convert_schema_to_provider_format(
+                        bridge_filtered
+                    )
+                )
 
         # Apply tool filter if configured
         if self.tool_filter:

@@ -254,6 +254,8 @@ class Agent(Generic[Deps, Result]):
         max_context_tokens: Optional[int] = None,
         enable_plan_mode: bool = False,
         tool_search_threshold: Optional[int] = None,
+        context_engine: str = "compressor",
+        tool_bridge_enabled: Optional[bool] = None,
     ):
         # Two construction modes:
         #   1) ``Agent(config=AgentConfig(...))`` — canonical, used by Stage 2+
@@ -295,6 +297,7 @@ class Agent(Generic[Deps, Result]):
                 json_schema=json_schema,
                 context_compression=context_compression,
                 max_context_tokens=max_context_tokens,
+                context_engine=context_engine,
                 enable_plan_mode=enable_plan_mode,
             )
 
@@ -309,12 +312,19 @@ class Agent(Generic[Deps, Result]):
         self.json_schema = effective.json_schema
         self.enable_plan_mode = getattr(effective, "enable_plan_mode", False)
 
-        # Context compression: enabled for the multi-step ReAct path
+        # Context management: enabled for the multi-step ReAct path
         # (SINGLE_HOP has at most two LLM calls and doesn't need it).
+        #
+        # `max_context_tokens` stays optional and now means "override the
+        # model's real window", not "the window is 128000". Left unset, the
+        # engine resolves it from the model registry — which is why a 1M-token
+        # model no longer compacts at 96K.
         self._context_compressor = None
         if effective.context_compression and effective.agent_type == AgentType.REACT:
-            from .context_compression import ContextCompressor
-            self._context_compressor = ContextCompressor(
+            from .context import get_engine
+
+            self._context_compressor = get_engine(
+                getattr(effective, "context_engine", "compressor"),
                 client=effective.client,
                 max_context_tokens=effective.max_context_tokens,
             )
@@ -351,6 +361,11 @@ class Agent(Generic[Deps, Result]):
         # provider ceiling is not needed here.
         if tool_search_threshold is not None:
             self.tool_registry.tool_search_threshold = tool_search_threshold
+        # Bridge-model disclosure. Re-applied on every construction for the same
+        # reason as the threshold above: a shared/cached registry must not leak
+        # one assistant's setting to the next.
+        if tool_bridge_enabled is not None:
+            self.tool_registry.tool_bridge_enabled = tool_bridge_enabled
         self._tools: List[FunctionTool] = []
         self._sub_agents: List["SubAgent"] = []
 

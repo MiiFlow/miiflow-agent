@@ -103,6 +103,11 @@ def _convert_to_rest_format(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     return rest_messages
 
 
+#: Shared with ``GeminiStreamNormalizer`` — see ``TokenCount.from_gemini_usage``.
+#: Handles both the REST dict and the protobuf SDK object.
+extract_usage = TokenCount.from_gemini_usage
+
+
 def _parse_rest_response(
     data: Dict[str, Any], tool_name_mapping: Dict[str, str]
 ) -> Tuple[str, List[Dict[str, Any]], TokenCount, Optional[str]]:
@@ -155,12 +160,7 @@ def _parse_rest_response(
 
         finish_reason = candidate.get("finishReason")
 
-    usage_meta = data.get("usageMetadata", {})
-    usage = TokenCount(
-        prompt_tokens=usage_meta.get("promptTokenCount", 0) or 0,
-        completion_tokens=usage_meta.get("candidatesTokenCount", 0) or 0,
-        total_tokens=usage_meta.get("totalTokenCount", 0) or 0,
-    )
+    usage = extract_usage(data.get("usageMetadata"))
 
     return content, tool_calls, usage, finish_reason
 

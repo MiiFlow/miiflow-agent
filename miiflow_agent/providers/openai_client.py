@@ -37,6 +37,10 @@ def _sanitize_tool_name(name: str) -> str:
     return sanitized[:64]  # OpenAI has a 64 char limit for function names
 
 
+#: Shared with ``OpenAIStreamNormalizer`` — see ``TokenCount.from_openai_usage``.
+extract_usage = TokenCount.from_openai_usage
+
+
 class OpenAIClient(ModelClient):
     """OpenAI provider client."""
 
@@ -317,11 +321,7 @@ class OpenAIClient(ModelClient):
                 role=MessageRole.ASSISTANT, content=content, tool_calls=choice.message.tool_calls
             )
 
-            usage = TokenCount(
-                prompt_tokens=response.usage.prompt_tokens,
-                completion_tokens=response.usage.completion_tokens,
-                total_tokens=response.usage.total_tokens,
-            )
+            usage = extract_usage(getattr(response, "usage", None))
 
             return ChatResponse(
                 message=response_message,
@@ -555,12 +555,7 @@ class OpenAIClient(ModelClient):
                 )
 
         # Extract usage
-        usage_data = getattr(response, "usage", None)
-        usage = TokenCount(
-            prompt_tokens=getattr(usage_data, "input_tokens", 0) if usage_data else 0,
-            completion_tokens=getattr(usage_data, "output_tokens", 0) if usage_data else 0,
-            total_tokens=getattr(usage_data, "total_tokens", 0) if usage_data else 0,
-        )
+        usage = extract_usage(getattr(response, "usage", None))
 
         response_message = Message(
             role=MessageRole.ASSISTANT,
@@ -663,11 +658,7 @@ class OpenAIClient(ModelClient):
                 # This is sent when stream_options.include_usage=True
                 if not chunk.choices:
                     if hasattr(chunk, "usage") and chunk.usage:
-                        usage = TokenCount(
-                            prompt_tokens=chunk.usage.prompt_tokens,
-                            completion_tokens=chunk.usage.completion_tokens,
-                            total_tokens=chunk.usage.total_tokens,
-                        )
+                        usage = extract_usage(chunk.usage)
                         yield StreamChunk(
                             content=self._stream_normalizer._state.accumulated_content,
                             delta="",
@@ -831,11 +822,7 @@ class OpenAIClient(ModelClient):
                     if response_data:
                         usage_data = getattr(response_data, "usage", None)
                         if usage_data:
-                            usage = TokenCount(
-                                prompt_tokens=getattr(usage_data, "input_tokens", 0),
-                                completion_tokens=getattr(usage_data, "output_tokens", 0),
-                                total_tokens=getattr(usage_data, "total_tokens", 0),
-                            )
+                            usage = extract_usage(usage_data)
 
                     yield StreamChunk(
                         content=accumulated_content,

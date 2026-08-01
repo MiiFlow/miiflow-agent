@@ -20,6 +20,7 @@ from ..observation import (
     bound_observation_for_llm,
     get_observation_sink,
 )
+from ..context import CompressionVerdict
 from ..message import Message, MessageRole
 from .enums import ReActEventType, StopReason
 from .exceptions import PlanApprovalRequired, ToolApprovalRequired
@@ -756,19 +757,32 @@ class ReActOrchestrator:
             )
             await self._execute_pending_approved_action(context, execution_state)
 
-            # Apply context compression before starting if available
-            if self.context_compressor:
-                result = await self.context_compressor.compress_if_needed(
-                    context.messages
-                )
-                if result.was_compressed:
-                    context.messages = result.messages
-                    logger.info(
-                        f"Pre-execution context compression: {result.original_count} -> {result.compressed_count} messages"
+            if self.context_compressor and hasattr(
+                self.context_compressor, "on_session_start"
+            ):
+                try:
+                    await self.context_compressor.on_session_start(
+                        self.tool_executor.build_request_shape(context.messages)
                     )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[ORCH] context engine session start failed: %s", exc)
 
             while execution_state.is_running:
                 execution_state.current_step += 1
+
+                # Size the request before every LLM call, not just once at the
+                # start. A run that accumulates twenty tool results grows past
+                # the window mid-loop; checking only up front means the first
+                # sign of trouble is a provider 400, handled reactively by the
+                # recovery manager after the latency has already been paid.
+                # The check itself is local and cheap — that is precisely why
+                # `should_compress` does no I/O.
+                if self.context_compressor:
+                    await self._maybe_compress(
+                        context,
+                        phase=f"step={execution_state.current_step}",
+                        state=execution_state,
+                    )
 
                 # Check for user cancellation
                 if context.is_cancelled:
@@ -1013,6 +1027,110 @@ class ReActOrchestrator:
                 messages.append(Message(role=MessageRole.USER, content=query))
 
         context.messages = messages
+
+    def _reconcile_context_usage(self, usage, state: "ExecutionState") -> None:
+        """Hand the provider's real usage to the context engine.
+
+        Consumes ``state.last_estimated_prompt_tokens`` — the uncorrected
+        estimate for the request that produced this usage — and clears it, so
+        a later call can never be calibrated against a stale estimate from an
+        earlier, differently-shaped request.
+        """
+        engine = self.context_compressor
+        if engine is None or not hasattr(engine, "update_from_response"):
+            return
+        estimated = state.last_estimated_prompt_tokens
+        state.last_estimated_prompt_tokens = None
+        try:
+            engine.update_from_response(usage, estimated_prompt_tokens=estimated)
+        except Exception as exc:  # noqa: BLE001 — telemetry must not fail a run
+            logger.debug("[ORCH] context usage reconciliation failed: %s", exc)
+
+    async def _maybe_compress(
+        self, context: RunContext, phase: str, state: "ExecutionState" = None
+    ) -> None:
+        """Run the context engine over the request that is about to go out.
+
+        Accepts either a ``ContextEngine`` or the legacy ``ContextCompressor``
+        in ``self.context_compressor``. The legacy path is kept because
+        adapters and tests construct one directly; it takes messages only, so
+        it stays blind to the tool schemas and behaves exactly as before.
+        Anything constructed through ``core.context`` gets the shape-aware
+        path.
+        """
+        engine = self.context_compressor
+        if engine is None:
+            return
+
+        # Legacy compressor: no shape, no verdicts, message-only sizing.
+        if not hasattr(engine, "should_compress"):
+            result = await engine.compress_if_needed(context.messages)
+            if result.was_compressed:
+                context.messages = result.messages
+                logger.info(
+                    "[ORCH] %s context compression: %d -> %d messages",
+                    phase,
+                    result.original_count,
+                    result.compressed_count,
+                )
+            return
+
+        # Build the shape from the SAME schema list the next call will send.
+        # Sizing a freshly-rebuilt list risks measuring a different tool set
+        # than the one that actually goes on the wire.
+        try:
+            shape = self.tool_executor.build_request_shape(context.messages)
+        except Exception as exc:  # noqa: BLE001 — sizing must not fail a run
+            logger.warning("[ORCH] could not build request shape: %s", exc)
+            return
+
+        decision = engine.should_compress(shape)
+        step_number = state.current_step if state is not None else 0
+        await self.event_bus.publish(
+            EventFactory.context_breakdown(decision.to_dict(), step_number)
+        )
+
+        def record_estimate(sized_shape) -> None:
+            """Stash the uncorrected estimate for the request we're about to
+            send, so the next response's usage can calibrate against it."""
+            if state is None:
+                return
+            try:
+                from ..context import get_counter
+
+                counter = get_counter(sized_shape.provider, sized_shape.model)
+                state.last_estimated_prompt_tokens = counter.raw_total(sized_shape)
+            except Exception:  # noqa: BLE001 — calibration is best-effort
+                state.last_estimated_prompt_tokens = None
+
+        if decision.verdict is CompressionVerdict.FLOOR_EXCEEDED:
+            # Surfaced rather than swallowed: the actionable fix is upstream
+            # (fewer tools, shorter system prompt, bigger window), and the run
+            # is about to fail or degrade in a way that looks like a model
+            # problem unless we say otherwise.
+            logger.error("[ORCH] %s %s", phase, decision.reason)
+            record_estimate(shape)
+            return
+
+        if not decision.should_compress:
+            record_estimate(shape)
+            return
+
+        outcome = await engine.compress(shape)
+        if outcome.was_compressed:
+            context.messages = outcome.shape.messages
+            logger.info(
+                "[ORCH] %s context compression: %d -> %d messages, "
+                "%d -> %d tokens (%s)",
+                phase,
+                outcome.messages_before,
+                outcome.messages_after,
+                outcome.tokens_before,
+                outcome.tokens_after,
+                outcome.reason,
+            )
+        # Calibrate against the shape actually sent — the compacted one.
+        record_estimate(outcome.shape)
 
     async def _should_stop(self, state: "ExecutionState") -> bool:
         """Check safety conditions."""
@@ -2272,6 +2390,11 @@ class ReActOrchestrator:
                     tokens_used = chunk.usage.total_tokens
                     output_tokens = getattr(chunk.usage, "completion_tokens", None)
                     input_tokens = getattr(chunk.usage, "prompt_tokens", None)
+                    # Ground the context engine's estimate in what the provider
+                    # actually counted. This is the only place with both halves
+                    # of the comparison, and it costs nothing — the number
+                    # already came back on the response.
+                    self._reconcile_context_usage(chunk.usage, state)
                 if hasattr(chunk, "cost"):
                     cost += chunk.cost
                 if getattr(chunk, "finish_reason", None):

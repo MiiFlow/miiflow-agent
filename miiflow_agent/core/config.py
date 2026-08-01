@@ -75,8 +75,16 @@ class AgentConfig:
         context_compression: When True (and `agent_type` is a multi-step
             mode), enables on-the-fly transcript compression once the
             context budget is exceeded. Default True.
-        max_context_tokens: Token budget for the compressor. ``None`` =
-            provider's default model window minus a safety margin.
+        max_context_tokens: Override for the model's context window. ``None``
+            (the default) resolves the real window from the model registry —
+            leave it unset unless you deliberately want a *smaller* working
+            window than the model supports (to bound cost, or to reserve room
+            for a large output).
+        context_engine: Name of the context-management policy to use. See
+            ``core.context.registry``. ``"compressor"`` (default) is
+            threshold-triggered conversation compaction; ``"none"`` disables
+            context management without disabling the sizing/observability
+            events.
 
     The constructor keeps signatures aligned with Agent.__init__: anything
     you can pass to `Agent(client, **kwargs)` you can pass to
@@ -95,6 +103,7 @@ class AgentConfig:
     json_schema: Optional[Dict[str, Any]] = None
     context_compression: bool = True
     max_context_tokens: Optional[int] = None
+    context_engine: str = "compressor"
 
     # Identifier the synthesized dispatcher tool uses as
     # ``parent_assistant_id`` in event payloads. When ``None``, the
@@ -171,6 +180,7 @@ class AgentConfig:
             "json_schema": self.json_schema,
             "context_compression": self.context_compression,
             "max_context_tokens": self.max_context_tokens,
+            "context_engine": self.context_engine,
         }
 
     def with_overrides(self, **overrides: Any) -> "AgentConfig":

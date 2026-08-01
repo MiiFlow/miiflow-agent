@@ -7,7 +7,7 @@ context window limits, inspired by Claude Code's multi-level compaction system.
 import logging
 from enum import Enum
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from .message import Message, MessageRole
 
@@ -132,6 +132,7 @@ class ContextCompressor:
         max_context_tokens: Optional[int] = None,
         compression_threshold: float = 0.75,
         strategy: CompressionStrategy = CompressionStrategy.AUTO,
+        token_fn: Optional[Callable[[List[Message]], int]] = None,
     ):
         """Initialize context compressor.
 
@@ -140,15 +141,23 @@ class ContextCompressor:
             max_context_tokens: Maximum context tokens. Defaults to 128000.
             compression_threshold: Compress when usage exceeds this fraction (0-1).
             strategy: Compression strategy to use.
+            token_fn: Message-token estimator. Defaults to the local chars/4
+                heuristic so standalone use keeps working unchanged.
+                ``DefaultContextEngine`` injects a calibrated counter here, so
+                the truncation loop converges on the same number the engine
+                used to make the compress/don't-compress decision. Without
+                that, the two disagree and truncation can stop one group short
+                of what the engine needed.
         """
         self.client = client
         self.max_context_tokens = max_context_tokens or 128000
         self.compression_threshold = compression_threshold
         self.strategy = strategy
+        self._token_fn = token_fn or _estimate_tokens
 
     def estimate_tokens(self, messages: List[Message]) -> int:
         """Estimate token count for messages."""
-        return _estimate_tokens(messages)
+        return self._token_fn(messages)
 
     async def compress_if_needed(
         self, messages: List[Message], preserve_recent: int = 4
@@ -162,7 +171,7 @@ class ContextCompressor:
         Returns:
             CompressionResult with compressed messages if needed.
         """
-        estimated_tokens = _estimate_tokens(messages)
+        estimated_tokens = self._token_fn(messages)
         threshold_tokens = int(self.max_context_tokens * self.compression_threshold)
 
         if estimated_tokens <= threshold_tokens:
@@ -212,12 +221,12 @@ class ContextCompressor:
         # contents when we're still over threshold. Runs on every strategy /
         # early-return path, so it's the one place the giant-result case is
         # guaranteed to be handled.
-        if _estimate_tokens(compressed) > threshold_tokens:
+        if self._token_fn(compressed) > threshold_tokens:
             compressed = [
                 _clamp_message(m, _MAX_SINGLE_MESSAGE_CHARS) for m in compressed
             ]
 
-        after_tokens = _estimate_tokens(compressed)
+        after_tokens = self._token_fn(compressed)
         logger.info(
             f"Compressed {len(messages)} messages (~{estimated_tokens} tokens) "
             f"to {len(compressed)} messages (~{after_tokens} tokens)"
@@ -287,7 +296,7 @@ class ContextCompressor:
 
         # If still over budget, progressively drop whole groups from the front
         # (after the boundary marker). Dropping a group keeps pairs intact.
-        while _estimate_tokens(result) > target_tokens and len(kept_groups) > 1:
+        while self._token_fn(result) > target_tokens and len(kept_groups) > 1:
             kept_groups.pop(0)
             while kept_groups and kept_groups[0] and kept_groups[0][0].role == MessageRole.TOOL:
                 kept_groups.pop(0)

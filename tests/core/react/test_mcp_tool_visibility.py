@@ -74,8 +74,16 @@ def test_mcp_tool_enabled_via_tool_search_appears_in_native_schemas():
     Repro for the silent-drop bug at
     ``tool_executor._build_native_tool_schemas`` where ``registry.tools.get``
     skipped every name not in the FunctionTool dict.
+
+    Pinned to the legacy meta-tool path (``tool_bridge_enabled=False``). Under
+    the bridge, a discovered tool is deliberately NOT added to the array — it
+    is invoked through ``tool_call`` — so the bridge's equivalent invariant
+    (reachable, and present in the catalog) is asserted separately in
+    ``test_mcp_tool_reachable_under_bridge``.
     """
-    registry = ToolRegistry(tool_search_enabled=True, tool_search_threshold=0)
+    registry = ToolRegistry(
+        tool_search_enabled=True, tool_search_threshold=0, tool_bridge_enabled=False
+    )
     mcp_tool = _make_stub_mcp_tool(
         server_name="Supabase",
         tool_name="execute_sql",
@@ -104,13 +112,74 @@ def test_mcp_tool_enabled_via_tool_search_appears_in_native_schemas():
     )
 
 
+def test_mcp_tool_reachable_under_bridge():
+    """The bridge's version of the silent-drop invariant.
+
+    Under the bridge an MCP tool is deliberately absent from the tools array —
+    that absence is the point, since a growing array is what invalidated the
+    prompt cache. What must hold instead is that the tool is (a) listed in the
+    catalog so the model knows it exists, and (b) reachable, i.e. a
+    ``tool_call`` naming it unwraps to a real dispatch.
+    """
+    from miiflow_agent.core.tools.tool_bridge import (
+        TOOL_SEARCH_NAME,
+        unwrap_bridge_call,
+    )
+
+    registry = ToolRegistry(
+        tool_search_enabled=True, tool_search_threshold=0, tool_bridge_enabled=True
+    )
+    mcp_tool = _make_stub_mcp_tool(
+        server_name="Supabase",
+        tool_name="execute_sql",
+        description="Executes raw SQL in the Postgres database.",
+    )
+    registry.register_mcp_tool(mcp_tool)
+    namespaced = mcp_tool.name
+
+    agent = _make_mock_agent_with_registry(registry)
+    executor = AgentToolExecutor(agent)
+    schemas = executor._build_native_tool_schemas()
+
+    surfaced = {
+        s.get("name") or (s.get("function") or {}).get("name") for s in schemas
+    }
+    # Absent from the array...
+    assert namespaced not in surfaced
+    # ...but the bridge is present...
+    assert TOOL_SEARCH_NAME in surfaced
+    # ...the catalog names it...
+    catalog = next(
+        s for s in schemas
+        if (s.get("name") or (s.get("function") or {}).get("name")) == TOOL_SEARCH_NAME
+    )
+    description = s_description(catalog)
+    assert namespaced in description, (
+        f"MCP tool '{namespaced}' is hidden behind the bridge but missing from "
+        "the catalog, so the model has no way to discover it."
+    )
+    # ...and it unwraps to a real dispatch.
+    assert unwrap_bridge_call(
+        "tool_call", {"name": namespaced, "arguments": {"sql": "select 1"}}
+    ) == (namespaced, {"sql": "select 1"})
+
+
+def s_description(schema: dict) -> str:
+    """Read a tool description out of either provider schema shape."""
+    return schema.get("description") or (schema.get("function") or {}).get(
+        "description", ""
+    )
+
+
 def test_unenabled_mcp_tool_stays_hidden_under_tool_search():
     """Counter-test: tool_search gating still works after the fix.
 
     Without ``mark_tools_enabled``, the MCP tool must NOT appear in the
     schemas — only the meta-tool plus any ``always_load`` entries should.
     """
-    registry = ToolRegistry(tool_search_enabled=True, tool_search_threshold=0)
+    registry = ToolRegistry(
+        tool_search_enabled=True, tool_search_threshold=0, tool_bridge_enabled=False
+    )
     mcp_tool = _make_stub_mcp_tool(
         server_name="Supabase",
         tool_name="execute_sql",

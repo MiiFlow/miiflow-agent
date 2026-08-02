@@ -89,8 +89,8 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
         from .config import ObservabilityConfig
         config = ObservabilityConfig.from_env()
 
-    if not config.phoenix_endpoint:
-        logger.warning("No Phoenix endpoint configured")
+    if not config.arize_enabled and not config.phoenix_endpoint:
+        logger.warning("No tracing endpoint configured (Arize or Phoenix)")
         return False
 
     try:
@@ -107,6 +107,52 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
 
         # Configure OpenTelemetry to send traces to Phoenix
         tracer_provider = trace_sdk.TracerProvider()
+
+        # ── Arize AX ─────────────────────────────────────────────────
+        # Checked FIRST: if AX credentials are present that is an explicit
+        # choice of backend, and Phoenix defaults (e.g. localhost:6006 when
+        # PHOENIX_ENABLED is set with no endpoint) must not win over it.
+        if config.arize_enabled:
+            from opentelemetry.sdk.resources import Resource
+
+            tracer_provider = trace_sdk.TracerProvider(
+                # AX groups traces by this resource attribute; without it
+                # everything lands in "default" and separate services are
+                # indistinguishable in the UI.
+                resource=Resource.create(
+                    {
+                        "openinference.project.name": config.arize_project_name,
+                        "service.name": config.arize_project_name,
+                    }
+                )
+            )
+            tracer_provider.add_span_processor(
+                BatchSpanProcessor(
+                    OTLPSpanExporter(
+                        endpoint=config.arize_traces_url,
+                        # Literal lowercase header names — AX does not use
+                        # `Authorization: Bearer`, which is the Phoenix shape
+                        # below.
+                        headers={
+                            "space_id": config.arize_space_id,
+                            "api_key": config.arize_api_key,
+                        },
+                    )
+                )
+            )
+            trace.set_tracer_provider(tracer_provider)
+            # stdlib logging (see `logger` at module top), NOT structlog —
+            # keyword args raise TypeError here, and this whole function is
+            # wrapped in a try/except that logs and returns False. A structlog
+            # call therefore silently disabled tracing entirely: the exporter
+            # was never installed, force_flush still returned True on the
+            # default provider, and the smoke test reported success.
+            logger.info(
+                "OpenTelemetry configured for Arize AX at %s (project=%s)",
+                config.arize_traces_url,
+                config.arize_project_name,
+            )
+            return True
 
         # Build authentication headers for Phoenix Cloud
         headers = {}

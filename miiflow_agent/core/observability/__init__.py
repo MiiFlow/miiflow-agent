@@ -11,6 +11,7 @@ from .auto_instrumentation import (
     uninstrument_all,
 )
 from .logging import get_logger, configure_structured_logging
+from .spans import agent_span
 
 __all__ = [
     # Core configuration
@@ -27,6 +28,7 @@ __all__ = [
     "check_instrumentation_status",
     "uninstrument_all",
     # Logging utilities
+    "agent_span",
     "get_logger",
     "configure_structured_logging",
 ]

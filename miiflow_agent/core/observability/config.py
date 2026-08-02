@@ -17,6 +17,17 @@ class ObservabilityConfig:
     phoenix_client_headers: Optional[str] = None
     structured_logging: bool = True
 
+    # ── Arize AX ─────────────────────────────────────────────────────────
+    # A DIFFERENT backend from Phoenix, not a cloud flavour of it: AX
+    # collects at otlp.arize.com and authenticates with `space_id`+`api_key`
+    # headers, where Phoenix Cloud uses `Authorization: Bearer`. Both speak
+    # OTLP and both accept OpenInference spans, so the instrumentation is
+    # shared and only the exporter differs.
+    arize_space_id: Optional[str] = None
+    arize_api_key: Optional[str] = None
+    arize_endpoint: Optional[str] = None
+    arize_project_name: str = "miiflow-agent"
+
     @classmethod
     def from_env(cls) -> "ObservabilityConfig":
         """Create configuration from environment variables.
@@ -51,7 +62,43 @@ class ObservabilityConfig:
             phoenix_api_key=phoenix_api_key,
             phoenix_client_headers=phoenix_client_headers,
             structured_logging=os.getenv("STRUCTURED_LOGGING", "true").lower() == "true",
+            arize_space_id=os.getenv("ARIZE_SPACE_ID"),
+            arize_api_key=os.getenv("ARIZE_API_KEY"),
+            # Arize's own onboarding hands out ".../v1"; the OTLP traces path
+            # is ".../v1/traces". `arize_traces_url` normalises whichever form
+            # is set, so pasting the value from the console just works.
+            arize_endpoint=os.getenv("ARIZE_OTLP_ENDPOINT") or os.getenv(
+                "ARIZE_COLLECTOR_ENDPOINT"
+            ),
+            arize_project_name=os.getenv("ARIZE_PROJECT_NAME", "miiflow-agent"),
         )
+
+    @property
+    def arize_enabled(self) -> bool:
+        """Arize AX needs no separate on/off flag — credentials ARE the flag.
+
+        Deliberate: the Phoenix path is gated by `PHOENIX_ENABLED`, and a
+        second flag to forget would mean setting three env vars correctly and
+        still getting silence. Nothing is exported unless both a space id and
+        an api key are present.
+        """
+        return bool(self.arize_space_id and self.arize_api_key)
+
+    @property
+    def arize_traces_url(self) -> str:
+        """Full OTLP traces URL, tolerant of how the endpoint was written.
+
+        Accepts ``https://otlp.arize.com``, ``.../v1`` (what the console
+        shows) or ``.../v1/traces``, and always yields ``.../v1/traces``.
+        The Phoenix path's blind ``f"{endpoint}/v1/traces"`` would turn the
+        console value into ``/v1/v1/traces`` and drop every span.
+        """
+        base = (self.arize_endpoint or "https://otlp.arize.com").rstrip("/")
+        if base.endswith("/v1/traces"):
+            return base
+        if base.endswith("/v1"):
+            return f"{base}/traces"
+        return f"{base}/v1/traces"
 
     @classmethod
     def for_local(cls, project_name: str = "miiflow-agent") -> "ObservabilityConfig":

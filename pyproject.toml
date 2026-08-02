@@ -24,9 +24,21 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.9,<3.13"
-openai = "^1.50.0"
-anthropic = "^0.74.0"
+# Floor raised 3.9 -> 3.10 for openai 2.x, which requires >=3.10. The server
+# runs 3.11, so nothing here regressed; this only narrows who else could
+# install the package.
+python = ">=3.10,<3.13"
+# 2.x: the only documented breaking change in v2.0.0 is
+# ResponseFunctionToolCallOutputItem.output / ResponseCustomToolCallOutput.output
+# widening from `str` to `str | list[...]`. This package never reads those
+# types — the streaming path reads `response.output_text.delta` — so the
+# migration is a version bump, not a code change.
+openai = "^2.52.0"
+# >=0.84 is required by openinference-instrumentation-anthropic 1.x; below
+# that the instrumentor silently declines to attach (DependencyConflict) and
+# NO LLM spans are captured. Kept as a caret on 0.x semantics deliberately —
+# a pre-1.0 SDK, so widen only with a test run.
+anthropic = ">=0.120.2,<0.121.0"
 pydantic = "^2.0.0"
 tiktoken = "^0.8.0"
 tenacity = "^9.0.0"
@@ -102,7 +114,7 @@ profile = "black"
 line_length = 100
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

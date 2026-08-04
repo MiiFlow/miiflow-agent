@@ -474,3 +474,103 @@ def test_native_tool_search_off_below_threshold():
     schemas = ex._build_native_tool_schemas()
     assert not any(isinstance(s, dict) and s.get("defer_loading") for s in schemas)
     assert not any(isinstance(s, dict) and s.get("type", "").startswith("tool_search_tool") for s in schemas)
+
+
+def _executor_with_keywords(provider="anthropic", threshold=2):
+    """Corpus where the user's wording appears ONLY in search_keywords —
+    the case the native path could not find at all."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from miiflow_agent.core.agent import Agent, AgentType
+    from miiflow_agent.core.client import LLMClient
+    from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+    from miiflow_agent.core.tools.decorators import get_tool_from_function
+
+    provider_client = MagicMock()
+    provider_client.provider_name = provider
+    provider_client.achat = AsyncMock()
+    provider_client.convert_schema_to_provider_format = MagicMock(
+        side_effect=lambda s: {"name": s["name"], "description": s.get("description", ""),
+                               "input_schema": s.get("parameters", {})}
+    )
+
+    def _ask(x: int = 0):
+        return x
+
+    _ask.__name__ = "ask"
+
+    def _core(x: int = 0):
+        return x
+
+    _core.__name__ = "core"
+
+    tools = [
+        get_tool_from_function(
+            tool(name="ask", description="Ask a question.",
+                 search_keywords=["web search", "browse"])(_ask)
+        ),
+        get_tool_from_function(
+            tool(name="core", description="Core tool.", always_load=True,
+                 search_keywords=["resident"])(_core)
+        ),
+    ]
+    # Filler so the corpus EXCEEDS the threshold; deferral does not engage at or
+    # below it, and without this the test would assert against a non-deferred
+    # array and pass for the wrong reason.
+    for i in range(4):
+        def _filler(x: int = 0, _i=i):
+            return x
+        _filler.__name__ = f"filler_{i}"
+        tools.append(get_tool_from_function(
+            tool(name=f"filler_{i}", description=f"Filler {i}.")(_filler)
+        ))
+    agent = Agent(client=LLMClient(provider_client), agent_type=AgentType.REACT,
+                  tools=tools, tool_search_threshold=threshold)
+    return AgentToolExecutor(agent)
+
+
+def test_deferred_tool_carries_its_search_keywords_in_the_description():
+    """Anthropic's server-side search matches a regex against the definitions it
+    was SENT — name and description only. `search_keywords` lives in schema
+    metadata that only the in-process searcher reads, so without folding it into
+    the description a deferred tool whose wording differs from the user's is
+    undiscoverable on the native path."""
+    ex = _executor_with_keywords()
+    by_name = {s["name"]: s for s in ex._build_native_tool_schemas() if "name" in s}
+
+    assert by_name["ask"].get("defer_loading") is True
+    assert "web search" in by_name["ask"]["description"]
+    assert "browse" in by_name["ask"]["description"]
+    # The original description survives; keywords are appended, not substituted.
+    assert by_name["ask"]["description"].startswith("Ask a question.")
+
+
+def test_resident_tools_do_not_get_a_keyword_suffix():
+    # A non-deferred tool is already fully visible; appending keywords would be
+    # pure prompt bloat.
+    ex = _executor_with_keywords()
+    by_name = {s["name"]: s for s in ex._build_native_tool_schemas() if "name" in s}
+    assert "defer_loading" not in by_name["core"]
+    assert "Keywords:" not in by_name["core"]["description"]
+
+
+def test_keyword_suffix_is_byte_stable_across_assemblies():
+    """The tools array is the first thing the provider hashes for prompt
+    caching, and this text lands inside it. Compounding the suffix (mutating a
+    shared schema dict) or reordering the terms would bust the tools tier on
+    every iteration — cascading to system and messages."""
+    ex = _executor_with_keywords()
+    first = ex._build_native_tool_schemas()
+    second = ex._build_native_tool_schemas()
+    third = ex._build_native_tool_schemas()
+    assert first == second == third
+    desc = {s["name"]: s.get("description", "") for s in third if "name" in s}["ask"]
+    assert desc.count("Keywords:") == 1
+
+
+def test_no_keyword_suffix_on_non_anthropic_providers():
+    # The bridge path reads search_keywords from metadata directly, so the
+    # description must stay clean there.
+    ex = _executor_with_keywords(provider="openai")
+    by_name = {s["name"]: s for s in ex._build_native_tool_schemas() if "name" in s}
+    assert "Keywords:" not in by_name["ask"]["description"]

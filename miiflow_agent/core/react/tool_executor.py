@@ -715,6 +715,24 @@ class AgentToolExecutor:
 
         native_schemas: List = []
 
+        def _keyword_suffix(tool) -> str:
+            """Deterministic ``Keywords: …`` line, or "" when there are none.
+
+            Sorted and de-duplicated on purpose: this text lands in the tools
+            array, which is the first thing the provider hashes for prompt
+            caching. A listing that reorders between assemblies would break the
+            cache it sits inside.
+            """
+            schema_obj = getattr(tool, "schema", None)
+            metadata = getattr(schema_obj, "metadata", None) or {}
+            terms = set()
+            for key in ("search_keywords", "tags"):
+                for value in metadata.get(key) or []:
+                    text = str(value).strip()
+                    if text:
+                        terms.add(text)
+            return f" Keywords: {', '.join(sorted(terms))}." if terms else ""
+
         for tool_name in tool_names:
             tool = self._lookup_any_tool(tool_name)
             if not tool:
@@ -733,6 +751,27 @@ class AgentToolExecutor:
             # Filter out context parameters from schema
             # (context is injected, not exposed to LLM)
             filtered_schema = self._filter_context_params(tool_name, universal_schema)
+
+            # Fold intent synonyms into the DESCRIPTION for native deferral.
+            #
+            # `search_keywords` lives in schema metadata, which only the
+            # in-process searcher reads (`build_searchable_text`). Anthropic's
+            # server-side tool search matches a regex against the tool
+            # definitions it was sent — name and description — so on that path
+            # the keywords are invisible and a tool whose wording differs from
+            # the user's ("web search" vs a Perplexity tool named `ask`) cannot
+            # be found at all. Deferred tools are exactly the ones that must be
+            # findable, so the keywords go where the searcher can see them.
+            suffix = _keyword_suffix(tool) if (native_search and tool_name not in keep_loaded) else ""
+            if suffix:
+                # Copy: `filtered_schema` may alias the tool's own schema dict,
+                # and appending in place would compound the suffix on every
+                # iteration of the run — growing the tools array and busting the
+                # very cache tier deferral exists to protect.
+                filtered_schema = {
+                    **filtered_schema,
+                    "description": f"{filtered_schema.get('description', '') or ''}{suffix}",
+                }
 
             # Inject __description parameter for LLM to provide human-readable descriptions
             filtered_schema = self._inject_description_param(filtered_schema)

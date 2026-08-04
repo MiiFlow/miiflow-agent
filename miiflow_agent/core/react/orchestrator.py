@@ -608,6 +608,57 @@ def _extract_failure_metadata(
     return payload
 
 
+def _extract_partial_results(
+    steps: List[ReActStep],
+    *,
+    max_results: int = 12,
+    excerpt: int = 400,
+    input_truncation: int = 300,
+) -> List[Dict[str, Any]]:
+    """The successful half of `_extract_failure_metadata`.
+
+    Walks the step history for tool invocations that SUCCEEDED and returns a
+    bounded description of each: what was called, with what, the durable
+    `observation_ref`, and a short excerpt.
+
+    This exists because a run that ends without an answer was, until now,
+    reported as if it had done nothing. On 2026-08-02 a `google_ads_specialist`
+    dispatch ran 738s, completed six `google_ads_query` calls holding the entire
+    dataset its parent asked for, then force-stopped on consecutive empty model
+    turns and returned a fixed apology — three times in a row, until the parent
+    exhausted its dispatch budget. The data was retrieved and then discarded at
+    the exit. The refs are durable rows, so naming them lets the caller
+    `read_observation` the full payload rather than re-fetching from the vendor.
+
+    Oldest-first, because a caller reconstructing what happened wants the
+    sequence in the order it ran. Bounded on every axis (`observation_policy`
+    rules apply to anything the model will be shown).
+    """
+    results: List[Dict[str, Any]] = []
+    for step in steps:
+        for inv in step.all_invocations:
+            if inv.error is not None or _observation_looks_like_error(inv.observation):
+                continue
+            if not inv.name:
+                continue
+            entry: Dict[str, Any] = {"tool": inv.name}
+            if inv.description:
+                entry["description"] = inv.description
+            if inv.inputs:
+                entry["inputs"] = _truncate_input(inv.inputs, input_truncation)
+            if inv.observation_ref:
+                entry["observation_ref"] = inv.observation_ref
+            if inv.observation:
+                entry["excerpt"] = inv.observation[:excerpt]
+            results.append(entry)
+
+    # Keep the most recent when a long run overflows: later calls are the ones
+    # that refined earlier ones, and the caller is trying to finish the job.
+    if len(results) > max_results:
+        results = results[-max_results:]
+    return results
+
+
 def _observation_looks_like_error(observation: Optional[str]) -> bool:
     """Heuristic: tool observations that carry a soft error.
 
@@ -1166,6 +1217,7 @@ class ReActOrchestrator:
                 stop_condition.get_stop_reason().value,
                 stop_condition.get_description(),
                 failure=failure,
+                partial_results=_extract_partial_results(state.steps),
             )
             await self.event_bus.publish(event)
             return True
@@ -2912,26 +2964,41 @@ class ReActOrchestrator:
                 # the safety condition that exists for exactly this: the loop
                 # ended before the condition was ever consulted.
                 #
-                # Nudge and continue instead. EmptyResponseCondition (2
-                # consecutive) and MaxStepsCondition bound the retries, and
-                # stopping through a safety condition means the run reports a
-                # real cause.
+                # Nudge and continue instead. EmptyResponseCondition and
+                # MaxStepsCondition bound the retries, and stopping through a
+                # safety condition means the run reports a real cause.
+                #
+                # There is nothing of the model's turn to replay here: the
+                # buffer is empty by definition of this branch, and any
+                # extended-thinking blocks arrived on `thinking_delta` without
+                # the signature Anthropic requires to send them back. So the
+                # nudge instead NAMES what the run already retrieved. Without
+                # that the model re-derives its plan from the raw transcript
+                # every retry, which is why empty turns cluster rather than
+                # occurring singly.
                 logger.warning(
                     "Step %d - LLM returned an empty response (no tool calls, "
                     "finish_reason=%s); nudging and continuing",
                     state.current_step,
                     finish_reason,
                 )
-                context.messages.append(
-                    Message(
-                        role=MessageRole.USER,
-                        content=(
-                            "Your last response was empty. Provide your answer "
-                            "from the data you already have, or call a tool. If "
-                            "you cannot complete the request, say what blocked "
-                            "you and what you did retrieve."
-                        ),
+                nudge = (
+                    "Your last response was empty. Provide your answer from the "
+                    "data you already have, or call a tool. If you cannot "
+                    "complete the request, say what blocked you and what you "
+                    "did retrieve."
+                )
+                completed = _extract_partial_results(state.steps, excerpt=0)
+                if completed:
+                    done = "\n".join(
+                        f"- {e.get('description') or e['tool']}" for e in completed
                     )
+                    nudge += (
+                        "\n\nYou have already completed these calls; their results "
+                        f"are in this conversation and do not need re-running:\n{done}"
+                    )
+                context.messages.append(
+                    Message(role=MessageRole.USER, content=nudge)
                 )
                 # Don't set step.answer — loop will continue
 
@@ -3422,6 +3489,10 @@ class ReActOrchestrator:
                 # message — write the bounded form back so N parallel calls
                 # can't each paste an unbounded result into one request.
                 inv.observation = recorded.observation
+            # Keep the ref on the invocation, not just on the event: a run
+            # that force-stops still has to hand its caller a pointer to what
+            # it retrieved, and the event stream is not readable from there.
+            inv.observation_ref = observation_ref
             try:
                 await self.event_bus.publish(
                     EventFactory.observation(
@@ -3851,6 +3922,12 @@ class ReActOrchestrator:
                 # below, step.observation on the transcript) reads this — one
                 # assignment bounds them all.
                 step.observation = recorded.observation
+            # This path has no ToolInvocation to hold the ref (`all_invocations`
+            # synthesizes one from the legacy fields), so stash it where that
+            # accessor can find it. Same reason as the batch path above: a
+            # force-stopped run must be able to name what it retrieved.
+            if observation_ref:
+                step.metadata["observation_ref"] = observation_ref
             await self.event_bus.publish(
                 EventFactory.observation(
                     state.current_step,
@@ -4301,6 +4378,16 @@ class ReActOrchestrator:
         if state.failure_metadata is not None:
             result.metadata["failure"] = state.failure_metadata
 
+        # ...and its counterpart: what the run DID retrieve. A parent that
+        # dispatched this child should be able to finish from the child's work
+        # instead of re-dispatching into the same wall until its per-handle
+        # budget is gone. Only attached when the run ended without an answer of
+        # its own — a successful run's answer already carries its findings.
+        if stop_reason is not StopReason.ANSWER_COMPLETE:
+            partial = _extract_partial_results(state.steps)
+            if partial:
+                result.metadata["partial_results"] = partial
+
         return result
 
     def _build_error_result(
@@ -4314,30 +4401,53 @@ class ReActOrchestrator:
         )
 
     def _generate_fallback_answer(self, steps) -> str:
-        """Generate fallback answer when no explicit answer is provided."""
+        """Compose an answer for a run that stopped without producing one.
+
+        A run that force-stops has almost always DONE something first — the
+        2026-08-02 incident lost six completed `google_ads_query` calls holding
+        the whole requested dataset because this method returned a constant. So
+        the work comes first and the apology second, on BOTH branches: the
+        error-tail case leaks raw tool-error text if you let it, but that is an
+        argument for withholding the *error*, never for withholding the results.
+        The structured cause travels separately in `result.metadata["failure"]`.
+        """
         if not steps:
             return "No reasoning steps were completed."
 
         last_step = steps[-1]
 
-        # Detect the "halted on consecutive tool errors" case. If the tail of
-        # the step history is made of error steps, the last observation is a
-        # raw tool-execution error string — leaking that to the user surfaces
-        # internals like parameter names and schema mismatches. Return a
-        # user-facing apology instead, keeping any successful observations
-        # out of the leak path too.
+        # The "halted on consecutive tool errors" case. The last observation is
+        # a raw tool-execution error string; surfacing it exposes internals like
+        # parameter names and schema mismatches, so the apology stays generic.
         recent_errors = [s for s in steps[-3:] if getattr(s, "is_error_step", False)]
         if recent_errors and getattr(last_step, "is_error_step", False):
-            return (
-                "I ran into repeated issues while trying to fulfill this request and "
-                "wasn't able to produce a complete answer. Please try rephrasing your "
+            apology = (
+                "I ran into repeated issues while trying to fulfill this request "
+                "and wasn't able to finish it. Please try rephrasing your "
                 "question, or try again in a moment."
             )
+        else:
+            apology = (
+                "I wasn't able to finish this run. Please try again, or narrow "
+                "the request if it involves a lot of work."
+            )
 
-        return (
-            "I wasn't able to produce a complete answer from this run. "
-            "Please try again, or narrow the request if it involves a lot of work."
-        )
+        partial = _extract_partial_results(steps)
+        if not partial:
+            return apology
+
+        lines = [
+            apology,
+            "",
+            "Before stopping I did complete the following, so this work does not "
+            "need to be redone:",
+        ]
+        for entry in partial:
+            label = entry.get("description") or entry["tool"]
+            ref = entry.get("observation_ref")
+            suffix = f' — read_observation(ref="{ref}") for the full result' if ref else ""
+            lines.append(f"- {label}{suffix}")
+        return "\n".join(lines)
 
     def _find_similar_tool(self, requested_name: str) -> Optional[str]:
         """Find a similar tool name using fuzzy matching.

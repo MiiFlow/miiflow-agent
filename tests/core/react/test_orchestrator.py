@@ -1258,7 +1258,7 @@ class TestResultBuilding:
 
         assert result.stop_reason == StopReason.FORCED_STOP
         assert "Some observation" not in result.final_answer
-        assert "complete answer" in result.final_answer
+        assert "wasn't able to finish" in result.final_answer
 
     def test_build_error_result(self, orchestrator):
         """Test building error result."""
@@ -1279,7 +1279,27 @@ class TestResultBuilding:
         fallback = orchestrator._generate_fallback_answer(steps)
 
         assert "The data shows X" not in fallback
-        assert "complete answer" in fallback
+        assert "wasn't able to finish" in fallback
+
+    def test_generate_fallback_answer_does_not_leak_observation_of_a_real_call(
+        self, orchestrator
+    ):
+        """The interesting case: the run DID complete a tool call, so the answer
+        now names it. It must name the call — never paste back its payload."""
+        step = ReActStep(
+            step_number=1,
+            thought="T",
+            action="google_ads_query",
+            action_input={"query": "SELECT ..."},
+            observation="Revenue was $412,000 across 9 campaigns",
+        )
+        step.metadata["observation_ref"] = "agent_obs_abc"
+
+        fallback = orchestrator._generate_fallback_answer([step])
+
+        assert "google_ads_query" in fallback
+        assert "agent_obs_abc" in fallback
+        assert "412,000" not in fallback
 
     def test_generate_fallback_answer_does_not_leak_thought(self, orchestrator):
         """Fallback answer must not expose internal reasoning as final text."""
@@ -1288,7 +1308,7 @@ class TestResultBuilding:
         fallback = orchestrator._generate_fallback_answer(steps)
 
         assert "My analysis is complete" not in fallback
-        assert "complete answer" in fallback
+        assert "wasn't able to finish" in fallback
 
     def test_generate_fallback_answer_empty_steps(self, orchestrator):
         """Test fallback answer for empty steps."""

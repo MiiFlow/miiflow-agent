@@ -478,6 +478,7 @@ class EventFactory:
         stop_reason: str,
         description: str,
         failure: Optional[Dict[str, Any]] = None,
+        partial_results: Optional[List[Dict[str, Any]]] = None,
     ) -> ReActEvent:
         """Create stop condition event.
 
@@ -487,10 +488,18 @@ class EventFactory:
         dispatch envelope — propagate a real cause to the parent agent
         instead of swallowing it as an opaque "I ran into repeated issues"
         fallback answer.
+
+        ``partial_results`` is its counterpart: the tool calls that SUCCEEDED
+        before the halt, with their durable observation refs. A halted run has
+        usually done real work, and reporting only the cause invites the caller
+        to redo it — which is exactly how one production turn spent 29 minutes
+        re-dispatching a child that had already retrieved everything it needed.
         """
         data: Dict[str, Any] = {"stop_reason": stop_reason, "description": description}
         if failure is not None:
             data["failure"] = failure
+        if partial_results:
+            data["partial_results"] = partial_results
         return ReActEvent(
             event_type=ReActEventType.STOP_CONDITION,
             step_number=step_number,

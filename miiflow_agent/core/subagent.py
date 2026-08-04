@@ -135,6 +135,11 @@ class SubAgentResult:
             attempt. ``None`` for successful runs and for failures
             that don't go through a stop condition (e.g. raised
             exceptions, which set ``error`` instead).
+        partial_results: The successful counterpart to ``failure`` — the
+            tool calls the child completed before halting, each with the
+            durable ``observation_ref`` the parent can ``read_observation``
+            to get the full payload. A halted child has usually done real
+            work; without this the parent sees only a cause and redoes it.
     """
 
     answer: str
@@ -144,6 +149,7 @@ class SubAgentResult:
     child_run_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     failure: Optional[Dict[str, Any]] = None
+    partial_results: Optional[List[Dict[str, Any]]] = None
 
 
 @runtime_checkable

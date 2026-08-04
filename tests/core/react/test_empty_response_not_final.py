@@ -17,14 +17,28 @@ data could not be retrieved this turn".
 
 It also made ``EmptyResponseCondition`` unreachable: the condition counts
 steps with no thought/action/answer, but the loop had already ended.
+
+Production fingerprint (2026-08-02), the SEQUEL: the fix above landed and the
+condition became reachable — the traces now say ``forced_stop: LLM returned 2
+consecutive empty responses`` with a full ``failure`` envelope. The user-visible
+outcome did not change, because labelling the stop and answering from the run's
+work are different code paths. ``thread_Pc8FLSWfGlukiiTWQdrCt60p`` spent 1771s
+across three ``google_ads_specialist`` dispatches; the first alone ran 738s and
+completed six ``google_ads_query`` calls holding the entire requested dataset,
+then returned the fixed apology because ``_generate_fallback_answer`` ignores
+``steps``. So the second half of this file guards the other direction: a halted
+run must REPORT what it retrieved, to the user and to its dispatching parent.
 """
 
 import asyncio
 from types import SimpleNamespace
 
 from miiflow_agent.core.message import MessageRole
-from miiflow_agent.core.react.models import ReActStep
-from miiflow_agent.core.react.orchestrator import ReActOrchestrator
+from miiflow_agent.core.react.models import ReActStep, ToolInvocation
+from miiflow_agent.core.react.orchestrator import (
+    ReActOrchestrator,
+    _extract_partial_results,
+)
 from miiflow_agent.core.react.safety import EmptyResponseCondition
 
 
@@ -127,22 +141,174 @@ class TestEmptyTurnDoesNotEndTheRun:
         assert ctx.messages[-1].role == MessageRole.ASSISTANT
 
 
-class TestEmptyResponseConditionIsNowReachable:
-    def test_fires_after_two_consecutive_empty_steps(self):
-        condition = EmptyResponseCondition()
-        steps = [ReActStep(step_number=1, thought=""), ReActStep(step_number=2, thought="")]
+def _step(number, invocations):
+    step = ReActStep(step_number=number, thought="")
+    step.tool_invocations = invocations
+    return step
 
-        assert condition.should_stop(steps, current_step=2) is True
+
+def _google_ads_run():
+    """The 2026-08-02 shape: real pulls, one rejected query, then empty turns."""
+    return [
+        _step(
+            1,
+            [
+                ToolInvocation(
+                    name="google_ads_query",
+                    inputs={"customer_id": "4447141884", "query": "SELECT ..."},
+                    observation="{'results': [{'metrics': {'cost_micros': 1044.27}}]}",
+                    observation_ref="agent_obs_YWiV6QkDmOXaCCYShe6eDDYn",
+                    description="Pull account totals for June-July 2026",
+                ),
+                ToolInvocation(
+                    name="google_ads_query",
+                    inputs={"customer_id": "4447141884", "query": "SELECT ..."},
+                    error="Tool 'google_ads_query' failed: API error: "
+                    "PROHIBITED_SEGMENT_WITH_METRIC_IN_SELECT_OR_WHERE_CLAUSE",
+                ),
+            ],
+        ),
+        _step(
+            2,
+            [
+                ToolInvocation(
+                    name="google_ads_query",
+                    inputs={"customer_id": "4447141884", "query": "SELECT ..."},
+                    observation="{'results': [{'segments': "
+                    "{'conversion_action_name': 'Paid subscription'}}]}",
+                    observation_ref="agent_obs_paidsubs",
+                )
+            ],
+        ),
+        # The turns that killed the run: no thought, no action, no answer.
+        ReActStep(step_number=3, thought=""),
+        ReActStep(step_number=4, thought=""),
+    ]
+
+
+class TestPartialResultsSurviveAHaltedRun:
+    def test_successful_invocations_are_extracted_with_their_refs(self):
+        partial = _extract_partial_results(_google_ads_run())
+
+        assert [e["tool"] for e in partial] == ["google_ads_query"] * 2
+        assert [e.get("observation_ref") for e in partial] == [
+            "agent_obs_YWiV6QkDmOXaCCYShe6eDDYn",
+            "agent_obs_paidsubs",
+        ]
+
+    def test_the_failed_invocation_is_not_reported_as_work_done(self):
+        """Telling a parent a rejected query succeeded is worse than silence."""
+        partial = _extract_partial_results(_google_ads_run())
+
+        assert len(partial) == 2
+        assert not any("PROHIBITED_SEGMENT" in str(e) for e in partial)
+
+    def test_soft_error_observations_are_excluded_too(self):
+        """A tool that reports failure in its payload rather than via `error`."""
+        steps = [
+            _step(
+                1,
+                [
+                    ToolInvocation(
+                        name="google_ads_query",
+                        observation="Tool execution failed: API error: nope",
+                    )
+                ],
+            )
+        ]
+
+        assert _extract_partial_results(steps) == []
+
+    def test_fallback_answer_names_the_work_instead_of_apologizing_only(self):
+        orch = SimpleNamespace()
+        answer = ReActOrchestrator._generate_fallback_answer(
+            orch, _google_ads_run()
+        )
+
+        assert "agent_obs_YWiV6QkDmOXaCCYShe6eDDYn" in answer
+        assert "Pull account totals for June-July 2026" in answer
+        assert "read_observation" in answer
+
+    def test_fallback_probe_a_run_with_no_successes_still_apologizes(self):
+        """The negative case. Without this, the assertion above could pass on a
+        method that always emitted the same boilerplate section."""
+        steps = [
+            _step(
+                1,
+                [ToolInvocation(name="google_ads_query", error="API error: nope")],
+            )
+        ]
+        answer = ReActOrchestrator._generate_fallback_answer(SimpleNamespace(), steps)
+
+        assert "read_observation" not in answer
+        assert "wasn't able to finish" in answer
+
+    def test_error_tail_branch_also_reports_the_work(self):
+        """Both branches, not just the one that fired in production. The
+        error-tail branch withholds raw tool-error TEXT; that was never a reason
+        to withhold the results."""
+        steps = _google_ads_run()
+        steps[-1].error = "recovery exhausted"
+        steps[-2].error = "recovery exhausted"
+
+        answer = ReActOrchestrator._generate_fallback_answer(SimpleNamespace(), steps)
+
+        assert "repeated issues" in answer
+        assert "agent_obs_paidsubs" in answer
+        # The raw tool error must not ride along.
+        assert "PROHIBITED_SEGMENT" not in answer
+
+    def test_results_are_bounded(self):
+        many = [
+            _step(
+                i,
+                [
+                    ToolInvocation(
+                        name="google_ads_query",
+                        inputs={"query": "S" * 5000},
+                        observation="x" * 10_000,
+                    )
+                ],
+            )
+            for i in range(30)
+        ]
+        partial = _extract_partial_results(many)
+
+        assert len(partial) == 12
+        assert all(len(e["excerpt"]) <= 400 for e in partial)
+        assert all(len(e["inputs"]["query"]) < 400 for e in partial)
+
+
+class TestEmptyResponseConditionIsNowReachable:
+    def test_fires_once_the_budget_of_consecutive_empty_steps_is_spent(self):
+        """Derived from the condition's own budget, not a pinned literal — the
+        default is a tuning knob (raised 2 → 4 after 2026-08-02, since each
+        empty turn gets a nudge and N allows only N-1 recoveries) and a test
+        that hardcodes it fails on every retune without finding a defect."""
+        condition = EmptyResponseCondition()
+        budget = condition.max_empty_responses
+        steps = [ReActStep(step_number=i, thought="") for i in range(1, budget + 1)]
+
+        assert condition.should_stop(steps, current_step=budget) is True
         assert "empty" in condition.get_description().lower()
+
+    def test_does_not_fire_while_retries_remain(self):
+        condition = EmptyResponseCondition()
+        one_short = [
+            ReActStep(step_number=i, thought="")
+            for i in range(1, condition.max_empty_responses)
+        ]
+
+        assert condition.should_stop(one_short, len(one_short)) is False
 
     def test_does_not_fire_once_the_model_answers(self):
         condition = EmptyResponseCondition()
-        answered = ReActStep(step_number=2, thought="")
+        steps = [
+            ReActStep(step_number=i, thought="")
+            for i in range(1, condition.max_empty_responses)
+        ]
+        answered = ReActStep(step_number=condition.max_empty_responses, thought="")
         answered.answer = "Spend was £405.77."
+        steps.append(answered)
 
-        assert (
-            condition.should_stop(
-                [ReActStep(step_number=1, thought=""), answered], 2
-            )
-            is False
-        )
+        assert condition.should_stop(steps, len(steps)) is False

@@ -23,6 +23,13 @@ class ToolInvocation:
     observation: Optional[str] = None
     error: Optional[str] = None
     description: Optional[str] = None  # LLM-supplied __description for status UI
+    # Durable storage ref for the canonical observation (see
+    # `_record_tool_observation`). `observation` above is the BOUNDED excerpt
+    # the model was shown; the ref addresses the full row, so a run that ends
+    # without answering can hand its parent a pointer to real data instead of
+    # only the truncated tail. Populated on both the single-tool and parallel
+    # batch paths; None for pre-execution failures that never reached the sink.
+    observation_ref: Optional[str] = None
     # True when the underlying exception declared `is_tool_validation_error`
     # (e.g. GAQL preflight). The orchestrator uses this to classify an
     # all-failed parallel step as schema-kind so recovery_manager skips the
@@ -140,6 +147,10 @@ class ReActStep:
                     inputs=self.action_input,
                     observation=self.observation,
                     error=self.error,
+                    # The single-tool path has no ToolInvocation to write to,
+                    # so it stashes the ref here; carry it through or the
+                    # synthesized invocation would look ref-less.
+                    observation_ref=self.metadata.get("observation_ref"),
                 )
             ]
         return []
@@ -159,6 +170,7 @@ class ReActStep:
                     "name": inv.name,
                     "inputs": inv.inputs,
                     "observation": inv.observation,
+                    "observation_ref": inv.observation_ref,
                     "error": inv.error,
                     "description": inv.description,
                 }

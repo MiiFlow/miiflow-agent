@@ -453,9 +453,17 @@ class ThinkingOnlyCondition(StopCondition):
 
 @dataclass
 class EmptyResponseCondition(StopCondition):
-    """Stop when LLM repeatedly returns completely empty responses."""
+    """Stop when LLM repeatedly returns completely empty responses.
 
-    max_empty_responses: int = 2
+    ``max_empty_responses`` is a retry budget, not just a detector: the loop
+    appends a nudge after each empty turn, so N here allows N-1 recoveries. At
+    2 that was a single retry, and it fired routinely on long report runs
+    (2026-08-02: it ended three consecutive `google_ads_specialist` dispatches
+    that had already retrieved their data). 4 leaves room for the model to
+    recover while still bounding a genuinely stuck loop well inside max_steps.
+    """
+
+    max_empty_responses: int = 4
 
     def should_stop(self, steps: List[ReActStep], current_step: int) -> bool:
         if len(steps) < self.max_empty_responses:
@@ -491,7 +499,7 @@ class SafetyManager:
         max_consecutive_errors: int = 3,
         max_repeated_tool_errors: int = 3,
         max_thinking_only_steps: int = 3,
-        max_empty_responses: int = 2,
+        max_empty_responses: int = 4,
         enable_loop_detection: bool = True,
     ):
         self.conditions: List[StopCondition] = []

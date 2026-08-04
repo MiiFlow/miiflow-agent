@@ -64,6 +64,12 @@ class ExecutionState:
     # repeated issues" fallback answer and has nothing to act on.
     failure_metadata: Optional[Dict[str, Any]] = None
 
+    # Human-readable description of the safety condition that halted the loop,
+    # set alongside failure_metadata. Read by the closing wrap-up turn so the
+    # model is told WHY it must answer now — "you have used your tool budget"
+    # produces a materially better closing message than a bare "answer now".
+    halt_description: Optional[str] = None
+
     # Interrupt ids recorded by THIS run (_record_interrupt). When a second
     # interrupt arrives in the same run (parallel dispatch_assistant batch),
     # the previously-active one is demoted into the checkpoint's

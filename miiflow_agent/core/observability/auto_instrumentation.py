@@ -3,6 +3,15 @@
 import logging
 from typing import Optional, Dict, Any
 
+# The attribute-size contract has ONE owner (`spans.py`), consumed here so the
+# SDK enforces the same bound on spans this package does not author — above all
+# the OpenInference LLM spans, which carry the entire prompt in `input.value`
+# AND again across `llm.input_messages.*`. On a 64k-token turn that is roughly
+# a megabyte per span and ~10 MB per turn, and an OTLP exporter does not raise
+# when a collector refuses an oversized payload: the spans are simply absent,
+# which reads as "instrumentation is broken" rather than "the span was too big".
+from .spans import span_limits as _span_limits
+
 logger = logging.getLogger(__name__)
 
 
@@ -105,8 +114,10 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
             logger.debug("OpenTelemetry tracer provider already configured")
             return True
 
+        span_limits = _span_limits()
+
         # Configure OpenTelemetry to send traces to Phoenix
-        tracer_provider = trace_sdk.TracerProvider()
+        tracer_provider = trace_sdk.TracerProvider(span_limits=span_limits)
 
         # ── Arize AX ─────────────────────────────────────────────────
         # Checked FIRST: if AX credentials are present that is an explicit
@@ -124,7 +135,8 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
                         "openinference.project.name": config.arize_project_name,
                         "service.name": config.arize_project_name,
                     }
-                )
+                ),
+                span_limits=span_limits,
             )
             tracer_provider.add_span_processor(
                 BatchSpanProcessor(
@@ -148,9 +160,11 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
             # was never installed, force_flush still returned True on the
             # default provider, and the smoke test reported success.
             logger.info(
-                "OpenTelemetry configured for Arize AX at %s (project=%s)",
+                "OpenTelemetry configured for Arize AX at %s (project=%s, "
+                "max_attribute_length=%s)",
                 config.arize_traces_url,
                 config.arize_project_name,
+                getattr(span_limits, "max_attribute_length", None),
             )
             return True
 

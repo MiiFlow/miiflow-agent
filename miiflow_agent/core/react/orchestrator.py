@@ -1,5 +1,6 @@
 """Focused ReAct orchestrator with clean separation of concerns."""
 
+import asyncio
 import json
 import logging
 import os
@@ -865,6 +866,10 @@ class ReActOrchestrator:
                         execution_state.final_answer,
                         len(execution_state.steps),
                     )
+                    # Convert the work already in hand into an answer before
+                    # leaving. Without this, EVERY safety halt discards the
+                    # whole run — see _answer_after_halt.
+                    await self._answer_after_halt(context, execution_state)
                     break
 
                 # Execute reasoning step with native tool calling.
@@ -1212,6 +1217,7 @@ class ReActOrchestrator:
             # both paths are wired so neither side has to know about
             # the other).
             state.failure_metadata = failure
+            state.halt_description = stop_condition.get_description()
             event = EventFactory.stop_condition(
                 state.current_step,
                 stop_condition.get_stop_reason().value,
@@ -4399,6 +4405,128 @@ class ReActOrchestrator:
             final_answer=f"Error occurred during execution: {str(error)}",
             stop_reason=StopReason.FORCED_STOP,
         )
+
+    async def _answer_after_halt(
+        self, context: RunContext, state: "ExecutionState"
+    ) -> bool:
+        """One tool-free LLM turn, so a safety halt reports instead of discarding.
+
+        A safety condition halting the loop says "stop doing work", NOT "throw the
+        work away" — but that is what happened: the loop broke with no
+        `final_answer`, `_build_result` fell through to `_generate_fallback_answer`,
+        and the user got a canned apology. Production 2026-08-04
+        (thread_tzYBJVGhXe2LaRVV9gjj5idL): 11 turns, 22 successful tool calls, the
+        answer already assembled in the transcript, ~100s of user wait — all
+        replaced by "I wasn't able to produce a complete answer from this run."
+        The same is true of the error-shaped halts: the model explaining WHICH
+        tool failed and what would unblock it beats a generic apology, which is
+        what the platform prompt's Rule 17 asks for and could never deliver while
+        the string was generated in Python.
+
+        Tools are withheld by passing an EMPTY schema list — every provider client
+        here skips the `tools` key when it is falsy — rather than by asking nicely
+        or by sending `tool_choice: "none"`, whose spelling differs per provider.
+        The model therefore *cannot* call anything, which is also why the deltas
+        stream unconditionally: no tool_use block can arrive to retract them.
+
+        Cost: an empty tools array is a different array, so this one call re-bills
+        the prompt uncached (~$0.2 at a 64k-token context on Sonnet). It buys back
+        a turn that was otherwise 100% waste, and only ever runs on a halt.
+
+        Returns True when it produced an answer. On any failure the caller still
+        has `_generate_fallback_answer`, so this degrades to the old behaviour.
+        """
+        if context is None or state.final_answer or not state.steps:
+            return False
+        if state.needs_clarification or context.is_cancelled:
+            return False
+
+        reason = state.halt_description or "a safety limit was reached"
+        context.messages.append(
+            Message(
+                role=MessageRole.USER,
+                content=(
+                    f"SYSTEM: This run has been halted — {reason}. No further tool "
+                    "calls are possible; none are available to you on this turn.\n\n"
+                    "Write your final answer NOW, using only what is already in "
+                    "this conversation. Report everything you did establish, with "
+                    "the concrete numbers and findings from the tool results above "
+                    "— partial results are valuable and must not be withheld. Then "
+                    "state plainly what you could not finish and what would let you "
+                    "finish it. Do not apologise generically, do not claim you were "
+                    "unable to produce an answer, and do not ask to try again."
+                ),
+            )
+        )
+
+        step = ReActStep(step_number=state.current_step, thought="")
+        started = time.time()
+        buffer = ""
+        try:
+            await self.event_bus.publish(
+                EventFactory.step_started(state.current_step)
+            )
+            async for chunk in self.tool_executor.stream_with_tools(
+                messages=context.messages, prebuilt_tools=[]
+            ):
+                if getattr(chunk, "thinking_delta", None):
+                    await self.event_bus.publish(
+                        EventFactory.thinking_chunk(
+                            state.current_step, chunk.thinking_delta, buffer
+                        )
+                    )
+                if chunk.delta:
+                    buffer += chunk.delta
+                    await self.event_bus.publish(
+                        EventFactory.final_answer_chunk(
+                            state.current_step, chunk.delta, buffer
+                        )
+                    )
+                if getattr(chunk, "usage", None):
+                    # Assigned, not accumulated — usage chunks carry the running
+                    # total for the call, as `_execute_reasoning_step_native` does.
+                    step.tokens_used = chunk.usage.total_tokens or 0
+        except asyncio.CancelledError:
+            # Cancellation is not a failed wrap-up: it must reach the caller,
+            # or a cancelled turn looks like one that merely had nothing to say.
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Deliberately broad and deliberately terminal: only result-building
+            # remains after this, so absorbing even a Celery soft-time-limit
+            # here costs milliseconds rather than the whole answer.
+            logger.warning(
+                "[ORCH] wrap-up turn after halt (%s) failed: %s — falling back to "
+                "the canned answer",
+                reason,
+                exc,
+            )
+            return False
+
+        answer = buffer.strip()
+        # Log the OUTCOME, not just the exception path: "the wrap-up ran and the
+        # model said nothing" and "the wrap-up never ran" are different bugs and
+        # must not look identical in the logs.
+        if not answer:
+            logger.warning(
+                "[ORCH] wrap-up turn after halt (%s) returned empty text; "
+                "falling back to the canned answer",
+                reason,
+            )
+            return False
+
+        step.answer = answer
+        step.execution_time = time.time() - started
+        state.steps.append(step)
+        state.final_answer = answer
+        logger.info(
+            "[ORCH] wrap-up turn after halt (%s) produced an answer: %s",
+            reason,
+            _preview(answer, 300),
+        )
+        await self.event_bus.publish(
+            EventFactory.final_answer(state.current_step, answer)
+        )
+        return True
 
     def _generate_fallback_answer(self, steps) -> str:
         """Compose an answer for a run that stopped without producing one.

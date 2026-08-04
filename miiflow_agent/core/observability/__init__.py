@@ -11,7 +11,7 @@ from .auto_instrumentation import (
     uninstrument_all,
 )
 from .logging import get_logger, configure_structured_logging
-from .spans import agent_span
+from .spans import agent_span, set_span_attribute, set_span_output, traced_stream
 
 __all__ = [
     # Core configuration
@@ -27,8 +27,12 @@ __all__ = [
     "setup_openinference_instrumentation",
     "check_instrumentation_status",
     "uninstrument_all",
-    # Logging utilities
+    # Agent spans
     "agent_span",
+    "set_span_attribute",
+    "set_span_output",
+    "traced_stream",
+    # Logging utilities
     "get_logger",
     "configure_structured_logging",
 ]

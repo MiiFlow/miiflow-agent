@@ -26,6 +26,28 @@ _TRUTHY_ERROR_VALUE_PATTERN = re.compile(
 )
 
 
+def invocation_names(step: ReActStep) -> List[str]:
+    """Every tool this step called, not just the first one.
+
+    ``step.action`` is a BACK-COMPAT MIRROR of ``tool_invocations[0]``
+    (orchestrator ``_finalize_batch_step``), so a counting condition reading it
+    sees one call per LLM turn no matter how many tools the turn actually ran.
+    Frontier models emit parallel ``tool_use`` blocks routinely — 2-3 per turn
+    is normal — so a cap expressed in calls was silently enforced in turns, at
+    roughly a third of its nominal value and blind to the rest.
+
+    Use this in any condition that COUNTS calls. Conditions that reason about
+    the SEQUENCE of turns (``RepeatedActionsCondition``, ``InfiniteLoopDetector``)
+    are deliberately left on the mirror: for them a batch step is one unit of
+    model behaviour, and flattening it would change what "the same action twice
+    in a row" means.
+    """
+    invocations = getattr(step, "all_invocations", None)
+    if invocations:
+        return [inv.name for inv in invocations if inv.name]
+    return [step.action] if step.action else []
+
+
 def make_hashable(obj: Any) -> Any:
     """
     Recursively convert an object to a hashable type.
@@ -191,20 +213,33 @@ class ExcessiveSameToolCondition(StopCondition):
     all fruitless — slips past it, burns the turn, and then tends to echo the last (empty)
     tool result as its final answer. This caps any single non-exempt tool's per-turn call
     count so the flail is halted early instead of running away.
+
+    The cap counts CALLS, via ``invocation_names``. It used to read ``step.action``,
+    which is the first-invocation mirror, so the nominal 8 was really "8 turns whose
+    first tool was X" and every other tool in a parallel batch was uncounted. Both
+    halves of that were wrong in production on 2026-08-04: a `postgres_run_query`
+    exploration of an unfamiliar schema made 14 calls across 11 turns, the guard
+    counted 8, halted the turn, and discarded 22 successful tool results and the
+    answer the model had already assembled.
+
+    Hence 20 rather than 8: accurate counting alone would have halted that run
+    *earlier*, so the cap had to move with it. 20 leaves room for a real
+    multi-query investigation (14 observed) while still bounding the ~20-call
+    flail this exists for — and it now also catches flails the old counting could
+    not see at all, since 3 parallel searches × 7 turns registered as 7.
     """
 
-    max_same_tool: int = 8
+    max_same_tool: int = 20
 
     def should_stop(self, steps: List[ReActStep], current_step: int) -> bool:
         counts: Dict[str, int] = {}
         for s in steps:
-            if not s.is_action_step or not s.action:
-                continue
-            if s.action in _EXCESSIVE_TOOL_EXEMPT:
-                continue
-            counts[s.action] = counts.get(s.action, 0) + 1
-            if counts[s.action] >= self.max_same_tool:
-                return True
+            for name in invocation_names(s):
+                if name in _EXCESSIVE_TOOL_EXEMPT:
+                    continue
+                counts[name] = counts.get(name, 0) + 1
+                if counts[name] >= self.max_same_tool:
+                    return True
         return False
 
     def get_stop_reason(self) -> StopReason:
@@ -495,7 +530,7 @@ class SafetyManager:
         max_budget: Optional[float] = None,
         max_time_seconds: Optional[float] = None,
         max_repeated_actions: int = 3,
-        max_same_tool_calls: int = 8,
+        max_same_tool_calls: int = 20,
         max_consecutive_errors: int = 3,
         max_repeated_tool_errors: int = 3,
         max_thinking_only_steps: int = 3,

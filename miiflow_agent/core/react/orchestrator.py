@@ -211,6 +211,32 @@ def _attach_search_blocks(
     return False
 
 
+def visualization_observation(viz_data: Dict[str, Any]) -> str:
+    """What the model is told after a tool returned a visualization.
+
+    A bare ``[VIZ:id]`` marker is right for a chart: the picture went to the
+    user and the model needs only a handle for it. It is wrong for an
+    ``auth_prompt``, where the marker is the ONLY record that the tool did no
+    work — read back as "visualization generated", it reports a blocked call as
+    a success, and the model carries on as though it had data.
+
+    Shared because the two result paths had drifted: the single-tool path
+    spelled the auth case out while the batch path emitted the bare marker, so
+    the same blocked tool explained itself or didn't depending on whether the
+    model happened to call it alongside another one.
+    """
+    marker = f"[VIZ:{viz_data.get('id', 'unknown')}]"
+    if viz_data.get("type") != "auth_prompt":
+        return marker
+    provider_name = (viz_data.get("data") or {}).get("providerName") or "the provider"
+    return (
+        f"{marker} No data was returned: {provider_name} is not connected. "
+        f"A connect prompt has been shown to the user. Do not retry this or any "
+        f"other {provider_name} tool in this run — tell the user what you needed "
+        f"{provider_name} for, and continue with anything that does not need it."
+    )
+
+
 def _sanitize_error_message(error_msg: str) -> str:
     """Sanitize error messages by removing stack traces and technical details.
 
@@ -3457,7 +3483,7 @@ class ReActOrchestrator:
                             logger.debug(
                                 "Failed to publish visualization event: %s", evt_err
                             )
-                        inv.observation = f"[VIZ:{viz_data['id']}]"
+                        inv.observation = visualization_observation(viz_data)
                     else:
                         inv.observation = _observation_with_citation_ref(result.output)
                 else:
@@ -3719,20 +3745,10 @@ class ReActOrchestrator:
                                 state.current_step, viz_data, step.action
                             )
                         )
-                        # Store marker for observation (what gets sent to LLM context)
-                        # For auth_prompt visualizations, include context so LLM knows tool was blocked
-                        if viz_data.get("type") == "auth_prompt":
-                            provider_name = viz_data.get("data", {}).get(
-                                "providerName", "the provider"
-                            )
-                            step.observation = (
-                                f"[VIZ:{viz_data['id']}] "
-                                f"Tool was blocked: authentication required for {provider_name}. "
-                                f"A connect prompt has been shown to the user. "
-                                f"Do not proceed with this provider's tools until the user connects their account."
-                            )
-                        else:
-                            step.observation = f"[VIZ:{viz_data['id']}]"
+                        # Store marker for observation (what gets sent to LLM
+                        # context). auth_prompt spells out that nothing ran —
+                        # see visualization_observation.
+                        step.observation = visualization_observation(viz_data)
                         logger.info(
                             f"Step {state.current_step} - Emitted visualization event: "
                             f"type={viz_data.get('type')}, id={viz_data.get('id')}"

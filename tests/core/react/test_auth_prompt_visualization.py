@@ -180,12 +180,16 @@ class TestReActAuthPromptVisualization:
         assert viz_data["type"] == "auth_prompt"
         assert viz_data["data"]["providerName"] == "Google Ads"
 
-        # Observation should be the VIZ marker with auth block context
-        assert step.observation == (
-            "[VIZ:test-viz-id] Tool was blocked: authentication required for Google Ads. "
-            "A connect prompt has been shown to the user. "
-            "Do not proceed with this provider's tools until the user connects their account."
-        )
+        # Observation is the VIZ marker plus auth-block context. Asserted
+        # through the shared helper rather than as a literal: the batch path
+        # produces the same string, and pinning the copy here is what let the
+        # two drift (see test_visualization_observation.py for the wording's
+        # own contract).
+        from miiflow_agent.core.react.orchestrator import visualization_observation
+
+        assert step.observation == visualization_observation(viz_data)
+        assert step.observation.startswith("[VIZ:test-viz-id]")
+        assert "Google Ads" in step.observation
 
     @pytest.mark.asyncio
     async def test_non_viz_tool_result_does_not_emit_visualization(

@@ -9,13 +9,13 @@ pip install "miiflow-agent[observability]"
 ```
 
 ```python
-from miiflow_agent.core.observability import setup_phoenix_for_miiflow
+from miiflow_agent.core.observability import ObservabilityConfig, enable_phoenix_tracing
 
-setup_phoenix_for_miiflow()
+enable_phoenix_tracing(ObservabilityConfig.for_local())
 
 # Use normally - all calls are traced
 from miiflow_agent import LLMClient, Message
-client = LLMClient.create("openai", model="gpt-4o-mini")
+client = LLMClient.create("openai", model="gpt-5.6-luna")
 response = await client.achat([Message.user("Hello")])
 
 # View traces at http://localhost:6006
@@ -26,24 +26,46 @@ response = await client.achat([Message.user("Hello")])
 ### Environment Variables
 
 ```bash
+# Phoenix (flag-gated)
 export PHOENIX_ENABLED=true
-export PHOENIX_ENDPOINT=http://localhost:6006
-export TRACE_SAMPLE_RATE=1.0  # 0.0-1.0, lower for high volume
+export PHOENIX_ENDPOINT=http://localhost:6006   # or PHOENIX_COLLECTOR_ENDPOINT
+export PHOENIX_PROJECT_NAME=my-app              # default: miiflow-agent
+
+# Arize AX (credential-gated — the credentials ARE the switch)
+export ARIZE_SPACE_ID=...
+export ARIZE_API_KEY=...
+export ARIZE_PROJECT_NAME=my-app                # default: miiflow-agent
 ```
 
 ### Programmatic Setup
 
 ```python
-from miiflow_agent.core.observability import setup_phoenix_for_miiflow
-
-# With custom endpoint
-result = setup_phoenix_for_miiflow(
-    endpoint="https://phoenix.yourcompany.com"
+from miiflow_agent.core.observability import (
+    ObservabilityConfig,
+    enable_phoenix_tracing,
+    setup_opentelemetry_tracing,
 )
 
-# Check status
-if result["phoenix_enabled"]:
-    print(f"Phoenix ready: {result.get('phoenix_session', {}).get('url')}")
+# From environment (recommended)
+enable_phoenix_tracing(ObservabilityConfig.from_env())
+
+# Or point at a specific Phoenix instance
+config = ObservabilityConfig.from_env()
+config.phoenix_enabled = True
+config.phoenix_endpoint = "https://phoenix.yourcompany.com"
+enable_phoenix_tracing(config)
+
+# Arize AX (reads ARIZE_* env vars)
+setup_opentelemetry_tracing()
+```
+
+### Wrapping your own spans
+
+```python
+from miiflow_agent.core.observability import agent_span
+
+with agent_span("my-run", input_value=prompt, session_id=thread_id):
+    result = await agent.run(prompt)
 ```
 
 ## What Gets Traced
@@ -85,7 +107,7 @@ def calculate(expr: str) -> str:
     return str(eval(expr))
 
 async def main():
-    client = LLMClient.create("openai", model="gpt-4o-mini")
+    client = LLMClient.create("openai", model="gpt-5.6-luna")
     agent = Agent(client=client)
     agent.add_tool(calculate)
 
@@ -107,15 +129,11 @@ pip install "miiflow-agent[observability]"
 python -c "import phoenix; print('Phoenix OK')"
 ```
 
-**Manual startup:**
+**Launch a local Phoenix session (development only):**
 ```python
-from miiflow_agent.core.observability.auto_instrumentation import setup_phoenix_session
+from miiflow_agent.core.observability import ObservabilityConfig, enable_phoenix_tracing
 
-session = setup_phoenix_session()
-if session:
-    print(f"Phoenix at: {session.url}")
-else:
-    print("Failed - check dependencies")
+enable_phoenix_tracing(ObservabilityConfig.for_local(), launch_local=True)
 ```
 
 ### No Traces Appearing
@@ -153,107 +171,5 @@ pip install arize-phoenix
 ```
 
 **Traces delayed or missing**
-- Check `TRACE_SAMPLE_RATE` (default 1.0 = 100%)
 - Verify Phoenix endpoint is accessible
 - Check firewall/network settings
-
-
-
-## Agent Evaluation
-
-### Quick Start
-
-Automatically evaluate agent responses:
-
-```python
-from miiflow_agent.core.observability.evaluation import create_evaluated_agent
-
-# Wrap agent with evaluation
-evaluated_agent = create_evaluated_agent(agent)
-
-# Run normally - evaluation happens automatically
-result = await evaluated_agent.run("What is the capital of France?")
-
-# Access evaluation results
-evaluation = result.metadata["evaluation"]
-print(f"Metrics: {evaluation['metrics']}")
-# Output: {'relevance': 0.95, 'helpfulness': True, 'response_time': True, 'safety': True}
-```
-
-### Default Metrics
-
-**Relevance (0.0-1.0):** Keyword overlap between query and response
-**Helpfulness (bool):** Response is substantial and useful
-**Response Time (bool):** Generated within acceptable time
-**Safety (bool):** No unsafe or inappropriate content
-
-### Custom Metrics
-
-Add your own evaluation logic:
-
-```python
-from miiflow_agent.core.observability.evaluation import AgentEvaluator, EvaluationMetric
-
-evaluator = AgentEvaluator()
-
-# Add custom metric
-def check_conciseness(response: str, context: dict) -> bool:
-    """Response should be under 100 words."""
-    return len(response.split()) <= 100
-
-evaluator.add_metric(EvaluationMetric(
-    name="conciseness",
-    description="Response is under 100 words",
-    evaluator=check_conciseness
-))
-
-# Add accuracy metric with ground truth
-ground_truth = {
-    "What is the capital of France?": "Paris",
-    "What's 2 + 2?": "4"
-}
-
-def check_accuracy(response: str, context: dict) -> bool:
-    query = context.get("user_query", "")
-    expected = ground_truth.get(query)
-    return expected and expected.lower() in response.lower()
-
-evaluator.add_metric(EvaluationMetric(
-    name="accuracy",
-    description="Response contains correct answer",
-    evaluator=check_accuracy
-))
-
-# Use custom evaluator
-from miiflow_agent.core.observability.evaluation import EvaluatedAgent
-evaluated_agent = EvaluatedAgent(agent, evaluator)
-
-result = await evaluated_agent.run("What is the capital of France?")
-print(result.metadata["evaluation"]["metrics"])
-# Output: {'relevance': 0.95, 'helpfulness': True, 'response_time': True,
-#          'safety': True, 'conciseness': True, 'accuracy': True}
-```
-
-### Evaluation Summary
-
-Track performance across multiple queries:
-
-```python
-# Run multiple evaluations
-for query in ["Query 1", "Query 2", "Query 3"]:
-    result = await evaluated_agent.run(query)
-
-# Get aggregate statistics
-summary = evaluated_agent.get_evaluation_summary()
-print(f"Total evaluations: {summary['total_evaluations']}")
-
-# Per-metric stats
-for metric_name, stats in summary["metric_summaries"].items():
-    if stats["type"] == "boolean":
-        print(f"{metric_name}: {stats['success_rate']:.1%} success rate")
-    elif stats["type"] == "numeric":
-        print(f"{metric_name}: {stats['mean']:.2f} average")
-```
-
-See [examples/agent_evaluation_example.py](../examples/agent_evaluation_example.py) for more patterns.
-

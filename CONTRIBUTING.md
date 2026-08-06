@@ -14,7 +14,8 @@ Thanks for your interest in miiflow-agent. We welcome contributions.
 3. Install dependencies:
    ```bash
    pip install -e ".[all]"
-   pip install -e ".[dev]"
+   # dev tooling (black, isort, flake8, mypy) is a poetry group, not an extra:
+   poetry install --with dev
    ```
 
 4. Create a branch:

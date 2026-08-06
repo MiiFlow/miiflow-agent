@@ -13,17 +13,17 @@
 
 ---
 
-**miiflow-agent** gives you a unified API across LLM providers, with built-in support for ReAct agents, tool calling, and streaming — all in ~15K lines of focused code.
+**miiflow-agent** gives you a unified API across LLM providers, with built-in support for ReAct agents, tool calling, and streaming — all in ~39K lines of focused code.
 
 ```python
 from miiflow_agent import LLMClient, Message
 
 # Same interface for any provider
-client = LLMClient.create("openai", model="gpt-4o-mini")
+client = LLMClient.create("openai", model="gpt-5.6-luna")
 response = client.chat([Message.user("Hello!")])
 
 # Switch providers with one line
-client = LLMClient.create("anthropic", model="claude-sonnet-4-20250514")
+client = LLMClient.create("anthropic", model="claude-sonnet-5")
 ```
 
 **Demo of an Agentic Run**
@@ -36,8 +36,8 @@ https://github.com/user-attachments/assets/0b5c870a-f9b2-4d55-a829-9d7c000be907
 
 | | miiflow-agent | LangChain | LiteLLM |
 |---|:---:|:---:|:---:|
-| **Codebase size** | ~15K lines | ~500K lines | ~50K lines |
-| **Dependencies** | 8 core | 50+ | 20+ |
+| **Codebase size** | ~39K lines | ~500K lines | ~50K lines |
+| **Dependencies** | 9 core | 50+ | 20+ |
 | **Built-in agents** | ReAct + sub-agent hand-off | Requires setup | None |
 | **Tool system** | @tool decorator | Chains | None |
 | **Learning curve** | Hours | Weeks | Hours |
@@ -70,9 +70,14 @@ pip install miiflow-agent
 # With optional providers
 pip install miiflow-agent[groq,google]
 
+# Tracing support (Phoenix / Arize AX)
+pip install miiflow-agent[observability]
+
 # Everything
 pip install miiflow-agent[all]
 ```
+
+Requires **Python 3.10+** (the 1.15.0 release dropped 3.9, forced by the `openai` 2.x floor — stay on `1.14.0` if you're pinned to 3.9).
 
 ## Quick Start
 
@@ -81,13 +86,15 @@ pip install miiflow-agent[all]
 ```python
 from miiflow_agent import LLMClient, Message
 
-client = LLMClient.create("openai", model="gpt-4o-mini")
+client = LLMClient.create("openai", model="gpt-5.6-luna")
 response = client.chat([
     Message.system("You are a helpful assistant."),
     Message.user("What is Python?")
 ])
 print(response.message.content)
 ```
+
+> `client.chat()` is a sync convenience that calls `asyncio.run()` internally — inside an already-running event loop (Jupyter, an async app), use `await client.achat(...)` instead.
 
 ### Streaming
 
@@ -111,7 +118,7 @@ def search(query: str) -> str:
 
 # Create agent
 agent = Agent(
-    LLMClient.create("openai", model="gpt-4o"),
+    LLMClient.create("openai", model="gpt-5.6-sol"),
     agent_type=AgentType.REACT,
     max_iterations=10
 )
@@ -141,7 +148,7 @@ def get_user_data(ctx: RunContext[UserContext], field: str) -> str:
         return "Permission denied"
     return f"User {ctx.deps.user_id} data for {field}"
 
-agent = Agent(client, deps_type=UserContext)
+agent: Agent[UserContext, str] = Agent(client, agent_type=AgentType.REACT)
 agent.add_tool(get_user_data)
 
 result = await agent.run(
@@ -149,6 +156,8 @@ result = await agent.run(
     deps=UserContext(user_id="alice", permissions=["read"])
 )
 ```
+
+`Agent` is generic over its deps — annotate the variable (`Agent[UserContext, str]`) and pass the runtime value via `run(deps=...)`.
 
 ## Architecture
 
@@ -210,6 +219,8 @@ result = await agent.run(
 
 > **Stable** providers are production-tested with full feature support. **Beta** providers are functional but may have edge cases.
 
+> Provider keys for `LLMClient.create()`: `openai`, `anthropic`, `gemini` (not `google` — that's only the pip extra's name), `groq`, `bedrock`, `mistral`, `openrouter`, `ollama`, `xai`.
+
 ## Agentic Patterns
 
 miiflow-agent runs a **single, unified ReAct loop**. Each turn the model emits
@@ -223,7 +234,7 @@ turns and dispatch work to sub-agents as normal tool calls.
 > `MultiAgentOrchestrator`, and the `AgentType.PLAN_AND_EXECUTE` / `PARALLEL_PLAN` /
 > `MULTI_AGENT` enum values have been removed. Express the same outcomes with a single
 > `Agent` plus `sub_agents=[SubAgent(...)]` — see [Sub-agent hand-off](#sub-agent-hand-off)
-> below. `AgentType.REACT` (the default) and `AgentType.SINGLE_HOP` are the only modes.
+> below. `AgentType.SINGLE_HOP` (the default) and `AgentType.REACT` are the only modes.
 
 ### ReAct (Reasoning + Acting)
 
@@ -259,6 +270,7 @@ from miiflow_agent.core.config import AgentConfig
 # `when_to_use`, `handoff_schema`, and `clarification_policy`.
 lead = Agent(config=AgentConfig(
     client=client,
+    agent_type=AgentType.REACT,  # AgentConfig defaults to SINGLE_HOP
     system_prompt="Coordinate research and writing.",
     sub_agents=[researcher_subagent, writer_subagent],
 ))
@@ -269,9 +281,11 @@ result = await lead.run(
 # The ReAct loop plans, dispatches to each specialist, and synthesizes the result.
 ```
 
-> See [`examples/subagents.py`](examples/subagents.py) for a complete, runnable
-> hand-off example, and `miiflow_agent/core/subagent.py` for the `SubAgent`
-> protocol and its per-edge policy fields.
+> When constructing with `config=`, pass everything through `AgentConfig` — mixing
+> `config=` with sibling kwargs like `system_prompt=` raises a `ValueError`.
+> See `miiflow_agent/core/subagent.py` for the `SubAgent` protocol and its
+> per-edge policy fields, and [`examples/subagents.py`](examples/subagents.py)
+> for reusable sub-agent config templates and a registry-based dispatch example.
 
 ## Event Streaming
 
@@ -284,12 +298,12 @@ from miiflow_agent.core.react import ReActEventType
 agent = Agent(client, agent_type=AgentType.REACT)
 context = RunContext(deps=None)
 
-async for event in agent.stream_react("What is 2+2?", context):
+async for event in agent.stream("What is 2+2?", context):
     match event.event_type:
         case ReActEventType.THINKING_CHUNK:
             print(event.data.get("delta", ""), end="")
-        case ReActEventType.TOOL_START:
-            print(f"\nCalling: {event.data['tool_name']}")
+        case ReActEventType.ACTION_PLANNED:
+            print(f"\nCalling: {event.data['action']}")
         case ReActEventType.OBSERVATION:
             print(f"Result: {event.data['observation']}")
         case ReActEventType.FINAL_ANSWER:
@@ -298,15 +312,31 @@ async for event in agent.stream_react("What is 2+2?", context):
 
 ## Observability
 
-Built-in Phoenix tracing support:
+Built-in OpenInference tracing for [Phoenix](https://phoenix.arize.com/) and Arize AX. Requires the `observability` extra:
+
+```bash
+pip install "miiflow-agent[observability]"
+```
 
 ```python
-from miiflow_agent.core import setup_tracing
+# Local / self-hosted Phoenix
+from miiflow_agent.core.observability import ObservabilityConfig, enable_phoenix_tracing
 
-setup_tracing(phoenix_endpoint="http://localhost:6006")
+enable_phoenix_tracing(ObservabilityConfig.for_local())  # or ObservabilityConfig.from_env()
 
-# All LLM calls are now traced
+# Arize AX — credentials are the switch, no flag needed:
+#   export ARIZE_SPACE_ID=...  ARIZE_API_KEY=...  [ARIZE_PROJECT_NAME=my-app]
+from miiflow_agent.core.observability import setup_opentelemetry_tracing
+setup_opentelemetry_tracing()
+
+# All LLM calls are now traced. Wrap your own units of work in an agent span:
+from miiflow_agent.core.observability import agent_span
+
+with agent_span("my-run", input_value=prompt, session_id=thread_id):
+    result = await agent.run(prompt)
 ```
+
+The legacy `setup_tracing(phoenix_endpoint=...)` helper still exists but is gated on the `PHOENIX_ENABLED=true` env var — pass `force=True` to bypass the gate.
 
 ## Error Handling
 
@@ -332,7 +362,9 @@ except ProviderError as e:
     print(f"{e.provider} error: {e.message}")
 ```
 
-## Error Handling
+`RateLimitError.retry_after` is populated automatically from provider `Retry-After` headers. `ModelError` and `ParsingError` are also exported.
+
+## Documentation
 
 - [Quickstart Guide](docs/quickstart.md) — Get started in 5 minutes
 - [API Reference](docs/api.md) — Complete API documentation

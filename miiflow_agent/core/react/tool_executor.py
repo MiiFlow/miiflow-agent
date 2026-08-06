@@ -7,9 +7,10 @@ import time
 from dataclasses import dataclass, is_dataclass, replace
 from typing import Any, Dict, List, Optional
 
-from ..callbacks import CallbackEvent, CallbackEventType, get_global_registry
+from ..callbacks import CallbackEvent, CallbackEventType, get_active_registry
 from ..callback_context import get_callback_context
 from ..tools import ToolResult
+from .adaptive_concurrency import looks_like_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,20 @@ class ToolCall:
 class AgentToolExecutor:
     """Tool execution adapter following Django Manager pattern."""
 
+    #: Framework tools whose "result" is a control-flow exception
+    #: (PlanApprovalRequired). They must run on the serial path, where those
+    #: exceptions propagate to the orchestrator's pause handlers, never inside
+    #: a gather that flattens exceptions into failed ToolResults.
+    _CONTROL_FLOW_TOOL_NAMES = frozenset({"enter_plan_mode", "exit_plan_mode"})
+
+    #: Class-level defaults for feature flags read in hot paths. __init__
+    #: overrides them from the environment; keeping defaults on the class
+    #: means an instance built without __init__ (tests use __new__) still
+    #: behaves safely.
+    _readonly_parallel = False
+    _emit_post_tool_use = False
+    _max_parallel_tools = DEFAULT_MAX_PARALLEL_TOOLS
+
     def __init__(self, agent, tool_filter=None):
         self.agent = agent
         self._tool_registry = agent.tool_registry
@@ -75,6 +90,25 @@ class AgentToolExecutor:
         # DEFAULT_MAX_PARALLEL_TOOLS). Instance attribute so tests / callers can
         # override without touching the module constant.
         self._max_parallel_tools = DEFAULT_MAX_PARALLEL_TOOLS
+        # OPT-IN: treat is_read_only tools as safe to overlap (kimi-code's
+        # insight: reads don't conflict). Off by default because
+        # ``is_read_only`` was declared for the plan-mode gate, not as a
+        # concurrency contract — tools carrying it may share
+        # non-thread/task-safe client state, and a library must not widen a
+        # flag's meaning under existing callers at upgrade time. Explicit
+        # ``parallelizable=True`` members of a mixed batch still overlap
+        # (that flag IS a declared concurrency contract).
+        self._readonly_parallel = (
+            os.getenv("MIIFLOW_READONLY_PARALLEL", "0") == "1"
+        )
+        # Framework-level POST_TOOL_USE emission. Deliberately OPT-IN:
+        # adapter frameworks that wrap tool bodies and emit POST_TOOL_USE
+        # themselves (miiflow-web's DynamicFunctionBuilder does) would
+        # double-fire their output-transforming callbacks if the executor
+        # also emitted — enable only when no wrapper-level emission exists.
+        self._emit_post_tool_use = (
+            os.getenv("MIIFLOW_EMIT_POST_TOOL_USE", "0") == "1"
+        )
 
     async def execute_tool(self, tool_name: str, inputs: dict, context=None) -> ToolResult:
         """Execute tool with context injection if context is provided.
@@ -217,6 +251,25 @@ class AgentToolExecutor:
             execution_time_ms=execution_time_ms,
         )
 
+        # Framework POST_TOOL_USE (opt-in — see __init__). Callbacks may
+        # transform the output; the transformed value is what the model sees.
+        if self._emit_post_tool_use:
+            try:
+                event = CallbackEvent(
+                    event_type=CallbackEventType.POST_TOOL_USE,
+                    tool_name=tool_name,
+                    tool_inputs=inputs,
+                    tool_output=result.output,
+                    tool_execution_time_ms=execution_time_ms,
+                    context=get_callback_context(),
+                    success=result.success,
+                )
+                await get_active_registry().emit(event)
+                if event.output_transformed and event.transformed_output is not None:
+                    result.output = event.transformed_output
+            except Exception as exc:  # noqa: BLE001 — hooks must not fail the run
+                logger.warning("POST_TOOL_USE emission failed: %s", exc)
+
         return result
 
     def is_batch_parallelizable(self, tool_calls: List[ToolCall]) -> bool:
@@ -249,9 +302,11 @@ class AgentToolExecutor:
 
         If the batch is fully parallelizable (every tool ``parallelizable=True``
         and ``require_approval=False``), runs concurrently via
-        ``asyncio.gather(return_exceptions=True)``. Otherwise falls back to
-        sequential execution in the input order — same behavior as today's
-        single-tool-per-step orchestrator path, just iterated.
+        ``asyncio.gather(return_exceptions=True)``. A mixed batch runs in
+        ordered stages (``_execute_staged``): consecutive gather-safe calls
+        (parallelizable or read-only) overlap, while writers, unknown tools,
+        approval-required tools, and control-flow tools run serially at their
+        original positions.
 
         Each ``ToolResult`` independently carries ``success=False`` + ``error``
         for failures; raw exceptions from ``asyncio.gather`` are wrapped into
@@ -272,7 +327,85 @@ class AgentToolExecutor:
 
         if self.is_batch_parallelizable(tool_calls):
             return await self._execute_parallel(tool_calls, context)
-        return await self._execute_serial(tool_calls, context)
+        return await self._execute_staged(tool_calls, context)
+
+    def _ensure_parallel_limiter(self):
+        """Per-run adaptive concurrency gate for parallel batches.
+
+        Built lazily so a test override of ``_max_parallel_tools`` after
+        construction is respected; rebuilt if the cap changes. Living on the
+        executor (one per run) means rate-limit pressure learned in one step
+        carries to later steps of the same run, but never across runs.
+        """
+        from .adaptive_concurrency import AdaptiveConcurrencyLimiter
+
+        limiter = getattr(self, "_parallel_limiter", None)
+        if limiter is None or limiter._max != self._max_parallel_tools:
+            limiter = AdaptiveConcurrencyLimiter(self._max_parallel_tools)
+            self._parallel_limiter = limiter
+        return limiter
+
+    def _is_gather_safe(self, tc: ToolCall) -> bool:
+        """Whether this call may overlap with its gather-safe neighbors.
+
+        ``parallelizable=True`` is the explicit opt-in; ``is_read_only=True``
+        is the implicit one — a read cannot conflict with another read, which
+        is the common batch shape (the model fans out lookups) that the old
+        all-or-nothing rule serialized whenever one member was a writer.
+        Approval-required and control-flow tools always run serially: their
+        pause exceptions must reach the orchestrator, not a gather wrapper.
+        """
+        schema = self._get_tool_schema_obj(tc.name)
+        if schema is None:
+            return False
+        if getattr(schema, "require_approval", False):
+            return False
+        if tc.name in self._CONTROL_FLOW_TOOL_NAMES:
+            return False
+        if getattr(schema, "parallelizable", False):
+            return True
+        return self._readonly_parallel and getattr(schema, "is_read_only", False)
+
+    async def _execute_staged(
+        self,
+        tool_calls: List[ToolCall],
+        context,
+    ) -> List[ToolResult]:
+        """Run a mixed batch as ordered stages: maximal runs of consecutive
+        gather-safe calls overlap; every other call runs serially at its
+        position. Writers therefore keep their exact ordering relative to
+        everything before and after them — only calls that cannot conflict
+        trade order for latency. Results come back in input order regardless.
+
+        Replaces pure-serial fallback for mixed batches. The previous rule
+        (one writer serializes the whole batch) was correct but pessimal:
+        the dominant real batch is N reads + 1 write.
+        """
+        results: List[ToolResult] = []
+        run: List[ToolCall] = []
+
+        async def flush_run() -> None:
+            if not run:
+                return
+            if len(run) == 1:
+                results.append(
+                    await self.execute_tool(run[0].name, run[0].inputs, context=context)
+                )
+            else:
+                results.extend(await self._execute_parallel(run, context))
+            run.clear()
+
+        for tc in tool_calls:
+            if self._is_gather_safe(tc):
+                run.append(tc)
+                continue
+            await flush_run()
+            # Serial call at its original position; control-flow exceptions
+            # (ToolApprovalRequired, PlanApprovalRequired) propagate from
+            # here exactly as they do on the single-tool path.
+            results.append(await self.execute_tool(tc.name, tc.inputs, context=context))
+        await flush_run()
+        return results
 
     async def _execute_serial(
         self,
@@ -321,11 +454,24 @@ class AgentToolExecutor:
         rate limits / downstream APIs when the model emits a very wide batch
         (e.g. one ``dispatch_assistant`` per platform, each a full sub-agent).
         """
-        semaphore = asyncio.Semaphore(self._max_parallel_tools)
+        limiter = self._ensure_parallel_limiter()
 
         async def _run(tc: ToolCall) -> ToolResult:
-            async with semaphore:
-                return await self.execute_tool(tc.name, tc.inputs, context=context)
+            await limiter.acquire()
+            try:
+                result = await self.execute_tool(tc.name, tc.inputs, context=context)
+            except BaseException as exc:
+                if looks_like_rate_limit(exc):
+                    limiter.report_rate_limit()
+                raise
+            finally:
+                await limiter.release()
+            # A branch that hit a provider rate limit (flattened into a
+            # failed ToolResult) shrinks the pool so the remaining branches
+            # don't convert one 429 into many.
+            if looks_like_rate_limit(result):
+                limiter.report_rate_limit()
+            return result
 
         tasks = [
             asyncio.create_task(
@@ -335,6 +481,16 @@ class AgentToolExecutor:
             for tc in tool_calls
         ]
         raw = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Control-flow exceptions are pauses, not failures — flattening one
+        # into a failed ToolResult would silently discard an approval or plan
+        # pause. Scheduling keeps these tools off the parallel path; this
+        # re-raise is the backstop if one ever lands here anyway.
+        from .exceptions import PlanApprovalRequired, ToolApprovalRequired
+
+        for item in raw:
+            if isinstance(item, (ToolApprovalRequired, PlanApprovalRequired)):
+                raise item
 
         results: List[ToolResult] = []
         for tc, item in zip(tool_calls, raw):
@@ -470,7 +626,7 @@ class AgentToolExecutor:
         )
 
         try:
-            registry = get_global_registry()
+            registry = get_active_registry()
             await registry.emit(event)
         except Exception as e:
             logger.warning(f"Failed to emit PRE_TOOL_USE callback: {e}")
@@ -527,7 +683,7 @@ class AgentToolExecutor:
         )
 
         try:
-            registry = get_global_registry()
+            registry = get_active_registry()
             await registry.emit(event)
         except Exception as e:
             logger.warning(f"Failed to emit TOOL_EXECUTED callback: {e}")
@@ -835,12 +991,16 @@ class AgentToolExecutor:
             f"meta_tool_search={use_tool_search})"
         )
 
-        # Debug: Log the actual schemas being sent
-        import json
+        # Debug: log the actual schemas being sent. Guarded — as an f-string
+        # argument the json.dumps of a 50-tool array ran on EVERY step even
+        # with DEBUG disabled.
+        if logger.isEnabledFor(logging.DEBUG):
+            import json
 
-        logger.debug(
-            f"Tool schemas being sent to provider:\n{json.dumps(native_schemas, indent=2, default=str)}"
-        )
+            logger.debug(
+                "Tool schemas being sent to provider:\n%s",
+                json.dumps(native_schemas, indent=2, default=str),
+            )
 
         return native_schemas
 

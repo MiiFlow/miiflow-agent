@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import openai
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..core.client import ChatResponse, ModelClient
 from ..core.exceptions import (
@@ -13,6 +13,7 @@ from ..core.exceptions import (
     ProviderError,
     RateLimitError,
     TimeoutError as MiiflowTimeoutError,
+    is_retryable_error,
 )
 from ..core.message import Message, MessageRole
 from ..core.metrics import TokenCount, UsageData
@@ -51,7 +52,8 @@ class XAIClient(ModelClient):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
-        reraise=True
+        retry=retry_if_exception(is_retryable_error),
+        reraise=True,
     )
     async def achat(
         self,
@@ -124,8 +126,7 @@ class XAIClient(ModelClient):
         except openai.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)
         except openai.RateLimitError as e:
-            retry_after = getattr(e.response.headers, 'retry-after', None)
-            raise RateLimitError(str(e), self.provider_name, retry_after=retry_after, original_error=e)
+            raise RateLimitError(str(e), self.provider_name, original_error=e)
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
@@ -198,8 +199,7 @@ class XAIClient(ModelClient):
         except openai.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)
         except openai.RateLimitError as e:
-            retry_after = getattr(e.response.headers, 'retry-after', None)
-            raise RateLimitError(str(e), self.provider_name, retry_after=retry_after, original_error=e)
+            raise RateLimitError(str(e), self.provider_name, original_error=e)
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:

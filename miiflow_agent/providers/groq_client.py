@@ -5,10 +5,10 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import groq
 from groq import AsyncGroq, Groq
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..core.client import ChatResponse, ModelClient
-from ..core.exceptions import AuthenticationError, ModelError, ProviderError, RateLimitError
+from ..core.exceptions import AuthenticationError, ModelError, ProviderError, RateLimitError, is_retryable_error
 from ..core.exceptions import TimeoutError as MiiflowTimeoutError
 from ..core.message import Message, MessageRole
 from ..core.metrics import TokenCount, UsageData
@@ -38,7 +38,10 @@ class GroqClient(ModelClient):
         return OpenAIClient.convert_message_to_openai_format(message)
 
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10), reraise=True
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception(is_retryable_error),
+        reraise=True,
     )
     async def achat(
         self,
@@ -104,9 +107,8 @@ class GroqClient(ModelClient):
         except groq.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)
         except groq.RateLimitError as e:
-            retry_after = getattr(e.response.headers, "retry-after", None)
             raise RateLimitError(
-                str(e), self.provider_name, retry_after=retry_after, original_error=e
+                str(e), self.provider_name, original_error=e
             )
         except groq.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
@@ -131,9 +133,10 @@ class GroqClient(ModelClient):
         except Exception as e:
             raise ProviderError(f"Groq API error: {str(e)}", self.provider_name, original_error=e)
 
-    @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10), reraise=True
-    )
+    # NOTE: no @retry here — astream_chat is an async *generator*, so a
+    # decorator can only retry creating the generator object (which never
+    # raises), not the streaming itself. Transport retry lives in
+    # LLMClient.astream_chat, before the first chunk.
     async def astream_chat(
         self,
         messages: List[Message],
@@ -195,9 +198,8 @@ class GroqClient(ModelClient):
         except groq.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)
         except groq.RateLimitError as e:
-            retry_after = getattr(e.response.headers, "retry-after", None)
             raise RateLimitError(
-                str(e), self.provider_name, retry_after=retry_after, original_error=e
+                str(e), self.provider_name, original_error=e
             )
         except groq.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)

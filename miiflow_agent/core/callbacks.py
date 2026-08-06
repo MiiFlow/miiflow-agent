@@ -20,6 +20,7 @@ Usage:
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -87,6 +88,19 @@ class CallbackEvent:
     # Usage information (for POST_CALL)
     tokens: Optional[TokenCount] = None
     latency_ms: Optional[float] = None
+
+    # Streaming latency decomposition (for POST_CALL / ON_ERROR on the
+    # astream path). latency_ms alone cannot tell "our request assembly is
+    # slow" from "the provider queued us" from "the answer was long":
+    #   request_build_ms — message normalization + tool formatting, local
+    #   ttft_ms          — last stream-open → first chunk (network + server;
+    #                      excludes transport-retry backoff)
+    #   stream_ms        — first chunk → stream close (token generation)
+    #   transport_retries — stream-open attempts that failed before a chunk
+    request_build_ms: Optional[float] = None
+    ttft_ms: Optional[float] = None
+    stream_ms: Optional[float] = None
+    transport_retries: int = 0
 
     # Error information (for ON_ERROR)
     error: Optional[Exception] = None
@@ -157,11 +171,25 @@ class CallbackRegistry:
         callbacks.unregister(CallbackEventType.POST_CALL, my_callback)
     """
 
-    def __init__(self):
+    def __init__(self, parent: Optional["CallbackRegistry"] = None):
         self._callbacks: Dict[CallbackEventType, List[CallbackFn]] = {
             event_type: [] for event_type in CallbackEventType
         }
         self._lock = Lock()
+        # A scoped registry chains to its parent (the enclosing scope, or the
+        # global one): emissions reach the parent's listeners too, resolved
+        # at emit time so late registrations on the parent are still seen.
+        # Registration and clear() only ever touch THIS registry — a scoped
+        # clear cannot wipe process-wide billing/telemetry callbacks.
+        self._parent = parent
+        # Event types this scope has SHADOWED from its parent chain via
+        # clear(). Shadowing is how a nested run replaces an inherited
+        # policy instead of stacking on top of it: a dispatched child that
+        # clears PRE_TOOL_USE and registers its own approval gate must not
+        # have the parent's gate fire for its tools — while its POST_CALL
+        # events still reach the parent's token tracking (child LLM cost
+        # bills to the parent's turn). Meaningless without a parent.
+        self._shadowed: set = set()
 
     def register(self, event_type: CallbackEventType, callback: CallbackFn) -> None:
         """Register a callback for an event type."""
@@ -180,18 +208,41 @@ class CallbackRegistry:
             return False
 
     def clear(self, event_type: Optional[CallbackEventType] = None) -> None:
-        """Clear all callbacks, or callbacks for a specific event type."""
+        """Clear callbacks for one event type, or all of them.
+
+        On a parented (scoped) registry, clearing also SHADOWS the cleared
+        type(s): the parent chain stops contributing listeners for them.
+        "Clear then register my own" therefore means the same thing inside a
+        scope that it always meant on the global registry — replace the
+        policy — instead of leaving the inherited one active underneath.
+        """
         with self._lock:
             if event_type:
                 self._callbacks[event_type] = []
+                if self._parent is not None:
+                    self._shadowed.add(event_type)
             else:
                 for et in CallbackEventType:
                     self._callbacks[et] = []
+                if self._parent is not None:
+                    self._shadowed.update(CallbackEventType)
 
     def get_callbacks(self, event_type: CallbackEventType) -> List[CallbackFn]:
-        """Get all registered callbacks for an event type."""
+        """Get all registered callbacks for an event type.
+
+        Parent listeners run first (process-wide policy before run-local
+        additions), then this registry's own. Types this scope shadowed via
+        clear() skip the parent chain entirely.
+        """
         with self._lock:
-            return self._callbacks[event_type].copy()
+            own = self._callbacks[event_type].copy()
+            shadowed = event_type in self._shadowed
+        inherited: List[CallbackFn] = (
+            self._parent.get_callbacks(event_type)
+            if self._parent is not None and not shadowed
+            else []
+        )
+        return inherited + [cb for cb in own if cb not in inherited]
 
     @contextlib.contextmanager
     def isolated_scope(self):
@@ -252,7 +303,12 @@ class CallbackRegistry:
         """Emit an event synchronously (for sync LLM calls).
 
         Async callbacks are run via asyncio.run() if no event loop is running,
-        or scheduled on the existing loop.
+        or scheduled on the existing loop. Scheduled tasks are held by strong
+        reference until done — a bare ``create_task`` result can be garbage
+        collected mid-flight, which silently dropped billing events emitted
+        from streaming ``finally`` blocks. (A task still in flight when the
+        loop itself shuts down remains best-effort; callers on the async path
+        should prefer ``await emit()``.)
         """
         callbacks = self.get_callbacks(event.event_type)
 
@@ -262,8 +318,9 @@ class CallbackRegistry:
                 if asyncio.iscoroutine(result):
                     try:
                         loop = asyncio.get_running_loop()
-                        # If there's a running loop, create a task
-                        loop.create_task(result)
+                        task = loop.create_task(result)
+                        _background_emit_tasks.add(task)
+                        task.add_done_callback(_reap_background_emit_task)
                     except RuntimeError:
                         # No running loop, run synchronously
                         asyncio.run(result)
@@ -274,8 +331,122 @@ class CallbackRegistry:
                 )
 
 
+# Strong references to tasks spawned by emit_sync — without these, a task
+# whose only reference is the create_task return value can be GC'd before it
+# runs (documented CPython behavior), losing the event.
+_background_emit_tasks: set = set()
+
+
+def _reap_background_emit_task(task: "asyncio.Task") -> None:
+    _background_emit_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Background callback task failed", exc_info=task.exception())
+
+
 # Global registry instance
 _global_registry = CallbackRegistry()
+
+# Run-scoped registry override. Set via scoped_callbacks(); resolved by
+# get_active_registry() at every emission site. ContextVar-based, so
+# concurrent ASGI requests (and parallel tool branches, which run in their
+# own Context copies) each see only their own scope — registering a
+# run-local approval gate no longer makes it visible to every other request
+# in the process.
+_active_registry_var: "contextvars.ContextVar[Optional[CallbackRegistry]]" = (
+    contextvars.ContextVar("miiflow_active_callback_registry", default=None)
+)
+
+
+def get_active_registry() -> CallbackRegistry:
+    """The registry emission sites should use: the innermost scoped registry
+    when one is active on this Context, else the global one."""
+    return _active_registry_var.get() or _global_registry
+
+
+@contextlib.contextmanager
+def scoped_callbacks(registry: Optional[CallbackRegistry] = None):
+    """Activate a run-scoped callback registry on the current Context.
+
+    Yields a registry whose registrations are visible only inside this scope
+    (and in tasks forked from it), while emissions still reach the enclosing
+    listeners via the parent chain. This is the concurrency-safe alternative
+    to registering run-specific callbacks on the global registry and relying
+    on isolated_scope() — which protects nesting, not concurrent requests.
+
+    The parent is the *currently active* registry, not the global one, so
+    scopes nest: a dispatched child that enters its own scope inherits the
+    parent turn's listeners (token tracking keeps billing child LLM calls to
+    the parent turn) and can shadow the ones it replaces via ``clear()``
+    (the parent's approval gate must not fire for the child's tools).
+
+        with scoped_callbacks() as cbs:
+            cbs.register(CallbackEventType.PRE_TOOL_USE, approval_gate)
+            result = await agent.run(query)
+    """
+    scoped = registry or CallbackRegistry(parent=get_active_registry())
+    token = _active_registry_var.set(scoped)
+    try:
+        yield scoped
+    finally:
+        _active_registry_var.reset(token)
+
+
+async def scoped_callbacks_stream(source, registry: Optional[CallbackRegistry] = None):
+    """Drive async generator ``source`` with a callback scope active during
+    each advancement.
+
+    The safe form of ``with scoped_callbacks(): async for ... yield`` inside
+    an async generator. That shape sets the ContextVar during the first
+    ``__anext__`` and resets it during a later one — and contextvars are
+    per-TASK, not per-generator, so a stream advanced from a different task
+    (a pump task, an ASGI server handing off the response body) resets a
+    token created in another Context (ValueError) or leaves the scope active
+    on the wrong task. Same failure shape as the 2026-08-04 orphaned-span
+    incident; see ``observability.traced_stream``, whose mechanics this
+    mirrors: the registry is activated and deactivated INSIDE each
+    advancement, in the same call frame, so nothing straddles a suspension.
+
+    Registrations made while the body runs land on the scoped registry;
+    between yields (and in the consumer's frames) the previous registry is
+    active. Tasks forked while the body runs snapshot the scope via their
+    Context copy. Pass ``registry`` to activate a caller-owned registry —
+    e.g. one the caller registered listeners on before the stream started.
+    """
+    scoped = (
+        registry
+        if registry is not None
+        else CallbackRegistry(parent=get_active_registry())
+    )
+    iterator = source.__aiter__()
+    try:
+        while True:
+            token = _active_registry_var.set(scoped)
+            try:
+                item = await iterator.__anext__()
+            except StopAsyncIteration:
+                break
+            finally:
+                # Same call frame as the set(), so this can never run in a
+                # different task than the one that set it.
+                _active_registry_var.reset(token)
+            yield item
+    finally:
+        # Deterministic close of the inner generator (its finally blocks may
+        # hold real resources — usage sessions, unsubscribes) even when the
+        # consumer abandons this wrapper early. The scope must be ACTIVE for
+        # the close: inner finally blocks emit real events — notably
+        # LLMClient.astream_chat's POST_CALL/ON_ERROR with the partial usage
+        # of an interrupted call — and a scope-less aclose would route them
+        # to the global registry, past every run-scoped listener (billing).
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            token = _active_registry_var.set(scoped)
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001 — already unwinding
+                pass
+            finally:
+                _active_registry_var.reset(token)
 
 
 # Convenience functions for global registry

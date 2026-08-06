@@ -125,11 +125,22 @@ def test_react_step_step_level_error_is_error_step():
 # ── Executor batch eligibility (the all-or-nothing rule) ─────────────────
 
 
-def _fake_tool(parallelizable: bool, require_approval: bool = False):
-    """Build a minimal mock with a `schema` carrying the relevant flags."""
+def _fake_tool(
+    parallelizable: bool,
+    require_approval: bool = False,
+    is_read_only: bool = False,
+):
+    """Build a minimal mock with a `schema` carrying the relevant flags.
+
+    ``is_read_only`` must be set explicitly: a bare MagicMock auto-attribute
+    is truthy, which would silently opt every fake tool into the read-aware
+    parallel path and mask serial-ordering regressions.
+    """
     mock = MagicMock()
     mock.schema = MagicMock(
-        parallelizable=parallelizable, require_approval=require_approval
+        parallelizable=parallelizable,
+        require_approval=require_approval,
+        is_read_only=is_read_only,
     )
     return mock
 

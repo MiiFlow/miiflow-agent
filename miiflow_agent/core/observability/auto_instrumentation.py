@@ -1,7 +1,10 @@
 """OpenInference auto-instrumentation setup for Phoenix compatibility."""
 
 import logging
-from typing import Optional, Dict, Any
+from typing import TYPE_CHECKING, Optional, Dict, Any
+
+if TYPE_CHECKING:
+    from .config import ObservabilityConfig
 
 # The attribute-size contract has ONE owner (`spans.py`), consumed here so the
 # SDK enforces the same bound on spans this package does not author — above all

@@ -87,15 +87,53 @@ class DefaultContextEngine(ContextEngine):
         self._provider: Optional[str] = None
         self._model: Optional[str] = None
 
+        # Learned ceiling from provider size-rejections; see observe_overflow.
+        self._observed_window: Optional[int] = None
+
     # -- budgeting -------------------------------------------------------
 
     def _budget_for(self, shape: RequestShape) -> ContextBudget:
-        return ContextBudget.resolve(
+        budget = ContextBudget.resolve(
             provider=shape.provider or self._provider,
             model=shape.model or self._model,
             max_context_tokens=self._explicit_window,
             threshold_ratio=self._threshold_ratio,
         )
+        if self._observed_window and self._observed_window < budget.window:
+            budget = ContextBudget(
+                window=self._observed_window,
+                threshold_ratio=self._threshold_ratio,
+                source="observed_overflow",
+            )
+        return budget
+
+    def observe_overflow(self, shape: RequestShape) -> None:
+        """The provider rejected ``shape`` as too large — learn from it.
+
+        The local estimate for a rejected request is a *proven* upper bound on
+        the usable window, which outranks whatever the registry or fallback
+        table claimed. Recording 85% of it (margin for estimate error) makes
+        the compaction trigger self-correct within the session; without this,
+        a too-optimistic window overflows on every turn and each recovery
+        pass has to re-discover the same wall. Only ever ratchets down.
+        """
+        try:
+            estimated = self._counter(shape).breakdown(shape).total
+        except Exception:  # noqa: BLE001 — learning must not fail recovery
+            return
+        if estimated <= 0:
+            return
+        observed = max(1_000, int(estimated * 0.85))
+        if self._observed_window is None or observed < self._observed_window:
+            previous = self._budget_for(shape).window
+            self._observed_window = observed
+            logger.warning(
+                "[CONTEXT] provider rejected a ~%d-token request; capping the "
+                "window at %d (source=observed_overflow, was %d)",
+                estimated,
+                observed,
+                previous,
+            )
 
     def _counter(self, shape: RequestShape):
         return get_counter(
@@ -161,7 +199,9 @@ class DefaultContextEngine(ContextEngine):
 
     # -- compaction ------------------------------------------------------
 
-    async def compress(self, shape: RequestShape) -> CompressionOutcome:
+    async def compress(
+        self, shape: RequestShape, *, force: bool = False
+    ) -> CompressionOutcome:
         budget = self._budget_for(shape)
         counter = self._counter(shape)
         before = counter.breakdown(shape)
@@ -172,6 +212,15 @@ class DefaultContextEngine(ContextEngine):
         # what the old code passed and why compaction under-delivered on
         # tool-heavy assistants.
         message_budget = max(0, budget.threshold - before.floor)
+
+        if force:
+            # The provider rejected the request as too large, which means the
+            # local estimate is wrong by at least the gap it failed to see.
+            # Compacting toward a budget the estimate already says we're under
+            # would be a no-op, so target half of the *estimated current*
+            # conversation instead — guaranteeing the pass actually removes
+            # material rather than re-validating the broken estimate.
+            message_budget = min(message_budget, max(1, before.messages // 2))
 
         compressor = ContextCompressor(
             client=self.client,
@@ -315,6 +364,8 @@ class DefaultContextEngine(ContextEngine):
         self._remember_identity(shape)
         # A new session gets a clean anti-thrash slate: the latch is a
         # statement about one conversation's shape, not about the deployment.
+        # The observed window is deliberately NOT reset — a provider's real
+        # size limit is a property of the model, not of one conversation.
         self._awaiting_verdict = False
         self._consecutive_ineffective = 0
         self._latched_off = False
@@ -329,6 +380,7 @@ class DefaultContextEngine(ContextEngine):
             "stats": self._stats.to_dict(),
             "latched_off": self._latched_off,
             "consecutive_ineffective": self._consecutive_ineffective,
+            "observed_window": self._observed_window,
         }
         if shape is not None:
             snapshot["tokens"] = self.breakdown(shape).to_dict()

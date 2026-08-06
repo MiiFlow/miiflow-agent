@@ -91,3 +91,48 @@ def callback_context(context: CallbackContext):
         yield context
     finally:
         reset_callback_context(token)
+
+
+async def callback_context_stream(context: CallbackContext, source):
+    """Drive async generator ``source`` with ``context`` bound during each
+    advancement.
+
+    The async-generator-safe form of ``with callback_context(ctx)``. That
+    shape sets the ContextVar during the first ``__anext__`` and resets it in
+    a later one — and contextvars are per-TASK, so a stream advanced or
+    closed from a different task (a pump task, an ASGI server handing off
+    the response body) resets a token created in another Context (ValueError
+    during teardown) or leaves attribution active on the wrong task, so LLM
+    callback events fire with a stale or missing CallbackContext and usage
+    rows are misattributed. Same failure shape as the 2026-08-04
+    orphaned-span incident; mirrors ``observability.traced_stream`` and
+    ``callbacks.scoped_callbacks_stream``: bind and unbind INSIDE each
+    advancement, in the same call frame.
+
+    The context is also bound around the deterministic close of the inner
+    generator, so teardown-time emissions (an interrupted LLM call's
+    POST_CALL from a ``finally``) still carry attribution.
+    """
+    iterator = source.__aiter__()
+    try:
+        while True:
+            token = _callback_context.set(context)
+            try:
+                item = await iterator.__anext__()
+            except StopAsyncIteration:
+                break
+            finally:
+                # Same call frame as the set(), so this can never run in a
+                # different task than the one that set it.
+                _callback_context.reset(token)
+            yield item
+    finally:
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            token = _callback_context.set(context)
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001 — already unwinding
+                pass
+            finally:
+                _callback_context.reset(token)

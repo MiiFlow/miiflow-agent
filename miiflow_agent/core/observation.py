@@ -47,13 +47,22 @@ OBSERVATION_SINK_DEPS_KEY = "observation_sink"
 # should override via ``llm_excerpt`` and keep the two numbers equal.
 LLM_OBSERVATION_MAX_CHARS = 200_000
 
-# No ref to point at (no sink wired), so the guidance is "re-run narrower"
-# rather than "read the rest" — telling the model to follow a ref that cannot
-# resolve is worse than telling it the data is gone.
+# No ref to point at (no sink wired / write failed), so the guidance is
+# "re-run narrower" rather than "read the rest" — telling the model to follow
+# a ref that cannot resolve is worse than telling it the data is gone.
 _FALLBACK_TRUNCATION_MARKER = (
     "\n…[truncated {omitted} chars to fit the context window. Re-run the tool "
     "with a narrower scope — fewer rows, a shorter date range, or fewer "
     "fields — if you need the rest.]"
+)
+
+# A ref exists (the sink stored the full output) but the sink declares no
+# excerpt policy of its own: the framework bound applies, and the marker
+# points at the stored copy instead of telling the model to re-run the tool
+# and pay for data that is already persisted.
+_FALLBACK_TRUNCATION_MARKER_WITH_REF = (
+    "\n…[truncated {omitted} chars to fit the context window. The full output "
+    'is stored — call read_observation(ref="{ref}") to fetch it.]'
 )
 
 
@@ -162,6 +171,10 @@ def bound_observation_for_llm(
     if len(text) <= LLM_OBSERVATION_MAX_CHARS:
         return text
     omitted = len(text) - LLM_OBSERVATION_MAX_CHARS
+    if ref:
+        return text[:LLM_OBSERVATION_MAX_CHARS] + (
+            _FALLBACK_TRUNCATION_MARKER_WITH_REF.format(omitted=omitted, ref=ref)
+        )
     return text[:LLM_OBSERVATION_MAX_CHARS] + _FALLBACK_TRUNCATION_MARKER.format(
         omitted=omitted
     )

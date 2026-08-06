@@ -37,14 +37,15 @@ jobs:
         # Install the project with all extras
         pip install -e ".[all]"
         # Install additional test dependencies
-        pip install python-dotenv pytest pytest-asyncio
+        pip install python-dotenv pytest pytest-asyncio pytest-cov
 
     - name: Run unit tests
       run: |
-        # Run all tests in the tests directory
-        python -m pytest tests/ -v --tb=short
-        
-   
+        # Coverage is reported (source fixed from the stale `miiflow_llm`
+        # package name, which measured nothing) but not yet gated — add a
+        # --cov-fail-under floor once a baseline is agreed.
+        python -m pytest tests/ -v --tb=short --cov=miiflow_agent --cov-report=term
+
 
   lint:
     runs-on: ubuntu-latest
@@ -61,14 +62,24 @@ jobs:
         python -m pip install --upgrade pip
         pip install flake8 black isort
         
-    - name: Check code formatting with Black
+    # Advisory only: the codebase predates black/isort enforcement, so a
+    # blocking check would require a whole-package reformat. continue-on-error
+    # keeps the signal visible on the step without failing the build — unlike
+    # the previous `|| echo`, which silently swallowed the exit code and made
+    # the checks look enforced when they never were.
+    - name: Check code formatting with Black (advisory)
+      continue-on-error: true
       run: |
-        black --check --diff miiflow_agent/ tests/ || echo "Code formatting check completed"
-        
-    - name: Check import sorting with isort
+        black --check --diff miiflow_agent/ tests/
+
+    - name: Check import sorting with isort (advisory)
+      continue-on-error: true
       run: |
-        isort --check-only --diff miiflow_agent/ tests/ || echo "Import sorting check completed"
-        
-    - name: Lint with flake8
+        isort --check-only --diff miiflow_agent/ tests/
+
+    # BLOCKING: these flake8 selections are real-bug classes (syntax errors,
+    # undefined names, misused comparisons) — a failure here is a broken
+    # module, not a style opinion.
+    - name: Lint with flake8 (blocking)
       run: |
-        flake8 miiflow_agent/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics || echo "Linting check completed"
+        flake8 miiflow_agent/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics

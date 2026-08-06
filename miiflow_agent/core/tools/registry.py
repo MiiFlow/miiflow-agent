@@ -63,6 +63,8 @@ class ToolRegistry:
         self.allowlist = set(allowlist) if allowlist else None
         self.enable_logging = enable_logging
         self.execution_stats: Dict[str, Dict[str, Any]] = {}
+        # Memoized _schema_size results; invalidated on any registration.
+        self._schema_size_cache: Dict[str, int] = {}
         # Map sanitized names back to original names for provider compatibility
         self._sanitized_to_original: Dict[str, str] = {}
         # Native MCP servers (for provider-side execution)
@@ -145,6 +147,7 @@ class ToolRegistry:
             raise ToolPreparationError(f"Tool '{tool_name}' not in allowlist: {self.allowlist}")
 
         self.tools[tool_name] = tool
+        self._schema_size_cache.clear()
         self.execution_stats[tool_name] = {
             "calls": 0,
             "successes": 0,
@@ -178,6 +181,7 @@ class ToolRegistry:
 
         http_tool = HTTPTool(schema)
         self.http_tools[schema.name] = http_tool
+        self._schema_size_cache.clear()
         self.execution_stats[schema.name] = {
             "calls": 0,
             "successes": 0,
@@ -237,6 +241,7 @@ class ToolRegistry:
             )
 
         self.mcp_tools[tool.name] = tool
+        self._schema_size_cache.clear()
         self.execution_stats[tool.name] = {
             "calls": 0,
             "successes": 0,
@@ -484,14 +489,24 @@ class ToolRegistry:
         return name in self.tools or name in self.http_tools or name in self.mcp_tools
 
     def _schema_size(self, name: str) -> int:
-        """Approximate JSON-schema size (bytes) of a tool, for the size cap."""
+        """Approximate JSON-schema size (bytes) of a tool, for the size cap.
+
+        Memoized: get_filtered_schemas calls this per tool per step, and each
+        call re-serialized the schema with json.dumps. Schemas only change on
+        (re-)registration, which invalidates the cache.
+        """
+        cached = self._schema_size_cache.get(name)
+        if cached is not None:
+            return cached
         schema = self._get_universal_schema(name)
         if not schema:
             return 0
         try:
-            return len(json.dumps(schema, default=str))
+            size = len(json.dumps(schema, default=str))
         except Exception:  # noqa: BLE001 — never let sizing break schema emission
-            return _TYPICAL_TOOL_SCHEMA_BYTES
+            size = _TYPICAL_TOOL_SCHEMA_BYTES
+        self._schema_size_cache[name] = size
+        return size
 
     def _get_universal_schema(self, name: str) -> Optional[Dict[str, Any]]:
         """Return the universal-format schema for any registered tool by name."""
@@ -963,8 +978,10 @@ class ToolRegistry:
                 if asyncio.iscoroutinefunction(tool.fn):
                     result = await tool.fn(context, **kwargs)
                 else:
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: tool.fn(context, **kwargs)
+                    # to_thread over the deprecated get_event_loop() pattern;
+                    # also propagates contextvars into the worker thread.
+                    result = await asyncio.to_thread(
+                        lambda: tool.fn(context, **kwargs)
                     )
             else:
                 kwargs["context"] = context

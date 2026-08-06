@@ -106,27 +106,60 @@ class TestReActOrchestratorSetup:
 
         assert resolved["image"] == "https://cdn.example.com/generated.png"
 
-    def test_media_refs_preserved_for_ref_consuming_tools(self, orchestrator):
-        """Workspace and Creative Studio tools need symbolic refs to find assets."""
+    def test_media_refs_preserved_for_schema_declared_passthrough(self, orchestrator):
+        """Tools that consume symbolic refs declare it on their schema
+        (ParameterSchema.media_ref_passthrough=True); the orchestrator reads
+        the declaration instead of a hardcoded name table. The application's
+        five ref-consuming tools are pinned server-side in
+        assistant/tests/test_media_ref_passthrough_declarations.py."""
+        from unittest.mock import MagicMock
+
+        from miiflow_agent.core.tools.schemas import ParameterSchema
+        from miiflow_agent.core.tools.types import ParameterType
+
         state = ExecutionState()
         state.media_store = {"gen_1": "https://cdn.example.com/generated.png"}
 
-        cases = [
-            ("save_file", "source", "media_ref:gen_1"),
-            ("generate_ad_image", "reference_media_ref", "media_ref:gen_1"),
-            ("save_generated_creative", "image_media_ref", "media_ref:gen_1"),
-            ("view_media", "media_refs", '["media_ref:gen_1"]'),
-            ("analyze_creative", "media_refs", '["media_ref:gen_1"]'),
-        ]
+        schema = MagicMock()
+        schema.parameters = {
+            "source": ParameterSchema(
+                name="source",
+                type=ParameterType.STRING,
+                description="ref consumer",
+                media_ref_passthrough=True,
+            ),
+            "prompt": ParameterSchema(
+                name="prompt", type=ParameterType.STRING, description="p"
+            ),
+        }
+        orchestrator.tool_executor._get_tool_schema_obj = MagicMock(
+            return_value=schema
+        )
 
-        for tool_name, param, value in cases:
-            resolved = orchestrator._resolve_media_refs(
-                {param: value, "prompt": "look at this"},
-                state,
-                tool_name=tool_name,
-            )
-            assert resolved[param] == value
-            assert resolved["prompt"] == "look at this"
+        resolved = orchestrator._resolve_media_refs(
+            {"source": "media_ref:gen_1", "prompt": "media_ref:gen_1"},
+            state,
+            tool_name="save_file",
+        )
+        # Declared passthrough keeps the symbolic ref...
+        assert resolved["source"] == "media_ref:gen_1"
+        # ...while an undeclared sibling resolves to the stored URL.
+        assert resolved["prompt"] == "https://cdn.example.com/generated.png"
+
+    def test_media_refs_resolve_when_tool_declares_nothing(self, orchestrator):
+        """No declaration → every symbolic ref resolves (the default)."""
+        from unittest.mock import MagicMock
+
+        state = ExecutionState()
+        state.media_store = {"gen_1": "https://cdn.example.com/generated.png"}
+        orchestrator.tool_executor._get_tool_schema_obj = MagicMock(
+            return_value=None
+        )
+
+        resolved = orchestrator._resolve_media_refs(
+            {"image": "media_ref:gen_1"}, state, tool_name="edit_image"
+        )
+        assert resolved["image"] == "https://cdn.example.com/generated.png"
 
     def test_context_setup_with_empty_query(self, orchestrator):
         """Test that empty query raises error when no user message exists."""

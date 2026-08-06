@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -19,14 +20,19 @@ from typing import (
     runtime_checkable,
 )
 
-from .exceptions import MiiflowLLMError, TimeoutError
+from .exceptions import (
+    MiiflowLLMError,
+    TimeoutError,
+    is_retryable_error,
+    retry_delay_seconds,
+)
 from .message import Message, MessageRole
 from .metrics import MetricsCollector, TokenCount, UsageData
 from .streaming import StreamChunk
 from .tools import FunctionTool, ToolRegistry
 
 if TYPE_CHECKING:
-    from .callbacks import CallbackRegistry
+    from .callbacks import CallbackEvent, CallbackRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +236,30 @@ class LLMClient:
         self.client.metrics_collector = self.metrics_collector
         self.tool_registry = tool_registry or ToolRegistry()
 
+        # Retries for astream_chat, applied only until the first chunk
+        # arrives (see astream_chat). 0 disables.
+        try:
+            self._max_stream_retries = max(
+                0, int(os.getenv("MIIFLOW_STREAM_RETRY_ATTEMPTS", "3"))
+            )
+        except ValueError:
+            self._max_stream_retries = 3
+
+        # Per-chunk inactivity deadline for astream_chat. The providers'
+        # own timeout guards stream *open* only, so a connection that opened
+        # and then stalled mid-token used to hang the run forever — the
+        # loop-level MaxTimeCondition only runs between steps and cannot
+        # interrupt a hung await. Default 300s (matching ModelClient.timeout):
+        # reasoning-heavy models can legitimately emit nothing for minutes
+        # before the first token, and a tighter default turned those silent
+        # periods into failures with re-billed retries. <=0 disables.
+        try:
+            self._stream_inactivity_timeout = float(
+                os.getenv("MIIFLOW_STREAM_INACTIVITY_TIMEOUT", "300")
+            )
+        except ValueError:
+            self._stream_inactivity_timeout = 300.0
+
         # Callback support - uses instance registry or falls back to global
         self._callback_registry = callback_registry
 
@@ -258,9 +288,9 @@ class LLMClient:
         """Get the callback registry (instance-level or global)."""
         if self._callback_registry:
             return self._callback_registry
-        from .callbacks import get_global_registry
+        from .callbacks import get_active_registry
 
-        return get_global_registry()
+        return get_active_registry()
 
     async def _emit_callback(self, event: "CallbackEvent") -> None:
         """Emit a callback event."""
@@ -432,6 +462,45 @@ class LLMClient:
         """Send sync chat completion request."""
         return asyncio.run(self.achat(messages, tools=tools, **kwargs))
 
+    async def _guard_stream_inactivity(
+        self, stream: AsyncIterator[StreamChunk]
+    ) -> AsyncIterator[StreamChunk]:
+        """Yield from ``stream``, bounding the wait for each chunk.
+
+        A stall before the first chunk raises a retryable TimeoutError (the
+        retry loop in astream_chat reopens the stream); a stall after content
+        has flowed surfaces the same error to the caller instead of hanging
+        the run forever.
+        """
+        timeout = self._stream_inactivity_timeout
+        if not timeout or timeout <= 0:
+            async for chunk in stream:
+                yield chunk
+            return
+
+        iterator = stream.__aiter__()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError:
+                # Release the underlying HTTP resources before surfacing;
+                # the generator was cancelled mid-__anext__ by wait_for.
+                aclose = getattr(iterator, "aclose", None)
+                if aclose is not None:
+                    try:
+                        await aclose()
+                    except Exception:  # noqa: BLE001 — already failing
+                        pass
+                raise TimeoutError(
+                    f"LLM stream produced no data for {timeout:.0f}s "
+                    f"(provider={self.client.provider_name}, "
+                    f"model={self.client.model})",
+                    timeout,
+                )
+            yield chunk
+
     async def astream_chat(
         self,
         messages: Union[List[Dict[str, Any]], List[Message]],
@@ -498,13 +567,64 @@ class LLMClient:
         callback_emitted = False
         error_occurred = None
 
+        # Timing decomposition (kimi-code's StreamDecodeStats insight): a slow
+        # step is only diagnosable when the wait splits into build (local
+        # serialization before the request), TTFT (network + server queue to
+        # first token, excluding retry backoff), and stream (token
+        # generation). One latency_ms number cannot tell "our schemas are
+        # huge" from "the provider is overloaded" from "the answer was long".
+        first_open_at: Optional[float] = None
+        open_at: Optional[float] = None
+        first_chunk_at: Optional[float] = None
+        attempts_used = 0
+
         try:
-            async for chunk in self.client.astream_chat(
-                normalized_messages, tools=formatted_tools, **kwargs
-            ):
-                if chunk.usage:
-                    total_tokens += chunk.usage
-                yield chunk
+            # Transport retry, but ONLY until the first chunk arrives. Before
+            # that point no tokens have been produced and no deltas have
+            # reached the consumer, so reopening the stream is free; after it,
+            # a blind retry would replay content the consumer already saw.
+            # This is the loop's only hot path (achat has tenacity; this had
+            # nothing), so a transient 429/529/5xx used to kill the whole run.
+            attempt = 0
+            while True:
+                saw_first_chunk = False
+                open_at = time.time()
+                if first_open_at is None:
+                    first_open_at = open_at
+                try:
+                    provider_stream = self.client.astream_chat(
+                        normalized_messages, tools=formatted_tools, **kwargs
+                    )
+                    async for chunk in self._guard_stream_inactivity(provider_stream):
+                        if not saw_first_chunk:
+                            saw_first_chunk = True
+                            first_chunk_at = time.time()
+                        if chunk.usage:
+                            total_tokens += chunk.usage
+                        yield chunk
+                    break
+                except Exception as stream_error:
+                    attempt += 1
+                    attempts_used = attempt
+                    if (
+                        saw_first_chunk
+                        or attempt > self._max_stream_retries
+                        or not is_retryable_error(stream_error)
+                    ):
+                        raise
+                    delay = retry_delay_seconds(stream_error, attempt)
+                    logger.warning(
+                        "[LLM_CALL] provider=%s model=%s stream open failed "
+                        "(%s: %s); retry %d/%d in %.1fs",
+                        self.client.provider_name,
+                        self.client.model,
+                        type(stream_error).__name__,
+                        str(stream_error)[:200],
+                        attempt,
+                        self._max_stream_retries,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
 
         except Exception as e:
             error_occurred = e
@@ -513,23 +633,47 @@ class LLMClient:
         finally:
             # Always emit callback when generator closes (success, break, or error)
             if not callback_emitted:
-                latency_ms = (time.time() - start_time) * 1000
+                now = time.time()
+                latency_ms = (now - start_time) * 1000
+
+                # The decomposition (see the tracking vars above). build =
+                # normalization + tool formatting before the first open; ttft
+                # is measured from the LAST open so retry backoff doesn't
+                # pollute it; stream = first chunk → close.
+                build_ms = (
+                    (first_open_at - start_time) * 1000 if first_open_at else None
+                )
+                ttft_ms = (
+                    (first_chunk_at - open_at) * 1000
+                    if first_chunk_at and open_at
+                    else None
+                )
+                stream_ms = (now - first_chunk_at) * 1000 if first_chunk_at else None
+
+                def _ms(value: Optional[float]) -> str:
+                    return f"{value:.0f}" if value is not None else "na"
+
+                timing_suffix = (
+                    f" build_ms={_ms(build_ms)} ttft_ms={_ms(ttft_ms)} "
+                    f"stream_ms={_ms(stream_ms)} retries={attempts_used}"
+                )
 
                 if error_occurred:
                     logger.warning(
                         "[LLM_CALL] provider=%s model=%s mode=astream status=error "
-                        "latency_ms=%.0f tokens=%s error=%s tools=%d",
+                        "latency_ms=%.0f tokens=%s error=%s tools=%d%s",
                         self.client.provider_name,
                         self.client.model,
                         latency_ms,
                         _format_tokens(total_tokens),
                         type(error_occurred).__name__,
                         len(formatted_tools or []),
+                        timing_suffix,
                     )
 
                     # Record failed streaming usage
                     self._record_usage(
-                        normalized_messages, total_tokens, time.time() - start_time, success=False
+                        normalized_messages, total_tokens, now - start_time, success=False
                     )
 
                     # Emit ON_ERROR callback
@@ -541,6 +685,10 @@ class LLMClient:
                         error=error_occurred,
                         error_type=type(error_occurred).__name__,
                         latency_ms=latency_ms,
+                        ttft_ms=ttft_ms,
+                        stream_ms=stream_ms,
+                        request_build_ms=build_ms,
+                        transport_retries=attempts_used,
                         context=ctx,
                         success=False,
                     )
@@ -549,17 +697,18 @@ class LLMClient:
                 else:
                     logger.info(
                         "[LLM_CALL] provider=%s model=%s mode=astream status=ok "
-                        "latency_ms=%.0f tokens=%s tools=%d",
+                        "latency_ms=%.0f tokens=%s tools=%d%s",
                         self.client.provider_name,
                         self.client.model,
                         latency_ms,
                         _format_tokens(total_tokens),
                         len(formatted_tools or []),
+                        timing_suffix,
                     )
 
                     # Record successful streaming usage
                     self._record_usage(
-                        normalized_messages, total_tokens, time.time() - start_time, success=True
+                        normalized_messages, total_tokens, now - start_time, success=True
                     )
 
                     # Emit POST_CALL callback
@@ -569,6 +718,10 @@ class LLMClient:
                         model=self.client.model,
                         tokens=total_tokens,
                         latency_ms=latency_ms,
+                        ttft_ms=ttft_ms,
+                        stream_ms=stream_ms,
+                        request_build_ms=build_ms,
+                        transport_retries=attempts_used,
                         context=ctx,
                         success=True,
                     )

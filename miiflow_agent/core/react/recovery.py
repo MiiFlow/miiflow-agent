@@ -136,31 +136,51 @@ class RecoveryManager:
         max_recovery_attempts: int = 3,
         strategies: Optional[List[RecoveryStrategy]] = None,
         context_compressor=None,
+        compress_fn=None,
     ):
         """Initialize recovery manager.
 
         Args:
             max_recovery_attempts: Maximum recovery attempts before stopping.
             strategies: Ordered list of strategies to try. Defaults to all three.
-            context_compressor: Optional ContextCompressor for COMPRESS_AND_RETRY.
+            context_compressor: Optional legacy ContextCompressor for
+                COMPRESS_AND_RETRY. Must expose ``compress_if_needed``; a
+                ``ContextEngine`` passed here is rejected loudly (the engine
+                needs the full request shape, which only the orchestrator can
+                build — wire ``compress_fn`` instead).
+            compress_fn: Optional ``async (context) -> bool`` that performs the
+                actual compaction. The orchestrator injects its own forced-
+                compaction routine here so recovery decides *policy* while the
+                component that knows the wire shape owns the *mechanism*.
+                Takes precedence over ``context_compressor``.
         """
         self.max_recovery_attempts = max_recovery_attempts
         self.strategies = strategies or DEFAULT_STRATEGIES
         self.context_compressor = context_compressor
+        self.compress_fn = compress_fn
+
+        # The overflow fast path bypasses the normal attempt ladder (see
+        # attempt_recovery), so it needs its own cap: when compaction cannot
+        # bring the request under the wall, overflow → compact → overflow
+        # would otherwise loop forever, burning a summarization call per turn.
+        self.max_overflow_attempts = 3
 
         # Track state across attempts
         self._attempt_count: int = 0
+        self._overflow_attempts: int = 0
         self._tool_error_counts: Dict[str, int] = {}
         self._excluded_tools: Set[str] = set()
 
     def reset(self):
         """Reset recovery state (call when a step succeeds)."""
         self._attempt_count = 0
+        self._overflow_attempts = 0
         # Don't reset tool error counts - they accumulate across the session
 
     def record_success(self):
         """Record a successful step, resetting the attempt counter."""
         self._attempt_count = 0
+        self._overflow_attempts = 0
 
     async def attempt_recovery(
         self,
@@ -225,7 +245,22 @@ class RecoveryManager:
         # response is to compact the conversation. Jump straight to the
         # compression strategy regardless of attempt index, so we don't waste
         # an attempt on RETRY_WITH_GUIDANCE that will hit the same wall.
-        if is_context_overflow_error(error) and self.context_compressor is not None:
+        if is_context_overflow_error(error) and (
+            self.compress_fn is not None or self.context_compressor is not None
+        ):
+            self._overflow_attempts += 1
+            if self._overflow_attempts > self.max_overflow_attempts:
+                logger.warning(
+                    "Context-overflow recovery exhausted after %d compaction "
+                    "attempts; compaction cannot bring the request under the "
+                    "provider's limit. Stopping.",
+                    self._overflow_attempts - 1,
+                )
+                return RecoveryAction(
+                    strategy_used=RecoveryStrategy.COMPRESS_AND_RETRY,
+                    should_continue=False,
+                    attempt_number=self._attempt_count,
+                )
             logger.info(
                 "Detected context-overflow error; routing recovery to COMPRESS_AND_RETRY"
             )
@@ -293,26 +328,61 @@ class RecoveryManager:
         self, error: Exception, context, tool_name: Optional[str]
     ) -> RecoveryAction:
         """Compress context and retry."""
-        if self.context_compressor and hasattr(context, "messages"):
+        overflow = is_context_overflow_error(error)
+        compressed = False
+        if self.compress_fn is not None:
             try:
-                result = await self.context_compressor.compress_if_needed(
-                    context.messages, preserve_recent=6
-                )
-                if result.was_compressed:
-                    context.messages = result.messages
-                    logger.info(
-                        f"Recovery compressed context: {result.original_count} -> "
-                        f"{result.compressed_count} messages"
-                    )
+                import inspect
+
+                if "overflow" in inspect.signature(self.compress_fn).parameters:
+                    compressed = bool(await self.compress_fn(context, overflow=overflow))
+                else:
+                    compressed = bool(await self.compress_fn(context))
             except Exception as compress_error:
                 logger.warning(f"Recovery compression failed: {compress_error}")
+        elif self.context_compressor is not None and hasattr(context, "messages"):
+            if hasattr(self.context_compressor, "compress_if_needed"):
+                try:
+                    result = await self.context_compressor.compress_if_needed(
+                        context.messages, preserve_recent=6
+                    )
+                    if result.was_compressed:
+                        compressed = True
+                        context.messages = result.messages
+                        logger.info(
+                            f"Recovery compressed context: {result.original_count} -> "
+                            f"{result.compressed_count} messages"
+                        )
+                except Exception as compress_error:
+                    logger.warning(f"Recovery compression failed: {compress_error}")
+            else:
+                # A ContextEngine landed here. It cannot compress from messages
+                # alone (it sizes the full request shape, which recovery does
+                # not have), so without a wired compress_fn this strategy is a
+                # no-op. Say so loudly — this exact mismatch previously hid
+                # behind a blanket `except Exception` for months and silently
+                # disabled the COMPRESS_AND_RETRY leg in the default config.
+                logger.error(
+                    "COMPRESS_AND_RETRY cannot run: context_compressor %s has no "
+                    "compress_if_needed and no compress_fn was wired. Recovery "
+                    "will retry without compaction.",
+                    type(self.context_compressor).__name__,
+                )
 
-        # Still add guidance even with compression
+        # Only claim a refresh actually happened when it did — telling the
+        # model the context changed when nothing did invites it to repeat the
+        # exact request that just failed.
         error_msg = str(error)[:200]
-        guidance = (
-            f"Context has been refreshed. Previous error: {error_msg}. "
-            f"Please try again with a fresh approach."
-        )
+        if compressed:
+            guidance = (
+                f"Context has been refreshed. Previous error: {error_msg}. "
+                f"Please try again with a fresh approach."
+            )
+        else:
+            guidance = (
+                f"Previous error: {error_msg}. "
+                f"Please try a different, more focused approach."
+            )
 
         return RecoveryAction(
             strategy_used=RecoveryStrategy.COMPRESS_AND_RETRY,

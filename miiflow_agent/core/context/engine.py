@@ -199,8 +199,16 @@ class ContextEngine(ABC):
         """Decide whether ``shape`` needs compaction before going on the wire."""
 
     @abstractmethod
-    async def compress(self, shape: RequestShape) -> CompressionOutcome:
-        """Compact ``shape``. Only called when ``should_compress`` says so."""
+    async def compress(
+        self, shape: RequestShape, *, force: bool = False
+    ) -> CompressionOutcome:
+        """Compact ``shape``. Only called when ``should_compress`` says so.
+
+        ``force=True`` means the provider itself rejected the request as too
+        large. That signal outranks any local estimate — a forced pass must
+        actually shrink the conversation even when the engine's own sizing
+        says the request fits, because the sizing has just been proven wrong.
+        """
 
     # -- optional -------------------------------------------------------
 
@@ -255,7 +263,9 @@ class NullContextEngine(ContextEngine):
             reason="context engine disabled",
         )
 
-    async def compress(self, shape: RequestShape) -> CompressionOutcome:
+    async def compress(
+        self, shape: RequestShape, *, force: bool = False
+    ) -> CompressionOutcome:
         return CompressionOutcome(
             shape=shape,
             was_compressed=False,

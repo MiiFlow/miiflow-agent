@@ -113,6 +113,9 @@ target-version = ['py39']
 profile = "black"
 line_length = 100
 
+# NOTE: aspirational — mypy is not wired into CI and the codebase does not
+# pass strict mode today. Kept for local/incremental use; wiring it into CI
+# requires paying down the typing debt module by module first.
 [tool.mypy]
 python_version = "3.10"
 strict = true

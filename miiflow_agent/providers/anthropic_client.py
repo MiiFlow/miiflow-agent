@@ -6,10 +6,10 @@ import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
 
 import anthropic
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..core.client import ChatResponse, ModelClient
-from ..core.exceptions import AuthenticationError, ModelError, ProviderError, RateLimitError
+from ..core.exceptions import AuthenticationError, ModelError, ProviderError, RateLimitError, is_retryable_error
 from ..core.exceptions import TimeoutError as MiiflowTimeoutError
 from ..core.message import Message, MessageRole
 from ..core.metrics import TokenCount, UsageData
@@ -834,7 +834,10 @@ class AnthropicClient(ModelClient):
         request_params["messages"] = new_messages
 
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10), reraise=True
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception(is_retryable_error),
+        reraise=True,
     )
     async def achat(
         self,

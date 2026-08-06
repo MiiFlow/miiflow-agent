@@ -508,7 +508,7 @@ class Agent(Generic[Deps, Result]):
     ) -> RunResult[Result]:
         """Run the agent with dependency injection (stateless)."""
         from .callback_context import get_callback_context
-        from .callbacks import CallbackEvent, CallbackEventType, get_global_registry
+        from .callbacks import CallbackEvent, CallbackEventType, get_active_registry
         from .tools.tool_search import tool_search_session
 
         # Open a per-run ToolSearch session so the registry can hide most tool
@@ -527,7 +527,7 @@ class Agent(Generic[Deps, Result]):
         message_history: Optional[List[Message]] = None,
     ) -> RunResult[Result]:
         from .callback_context import get_callback_context
-        from .callbacks import CallbackEvent, CallbackEventType, get_global_registry
+        from .callbacks import CallbackEvent, CallbackEventType, get_active_registry
 
         context = RunContext(deps=deps, messages=message_history or [])
 
@@ -554,7 +554,7 @@ class Agent(Generic[Deps, Result]):
             query=user_prompt,
             context=ctx,
         )
-        await get_global_registry().emit(start_event)
+        await get_active_registry().emit(start_event)
 
         # Execute with retries
         success = False
@@ -572,7 +572,7 @@ class Agent(Generic[Deps, Result]):
                     context=ctx,
                     success=True,
                 )
-                await get_global_registry().emit(end_event)
+                await get_active_registry().emit(end_event)
 
                 return RunResult(
                     data=result, messages=context.messages, all_messages=context.messages.copy()
@@ -590,10 +590,18 @@ class Agent(Generic[Deps, Result]):
                         error=e,
                         error_type=type(e).__name__,
                     )
-                    await get_global_registry().emit(end_event)
+                    await get_active_registry().emit(end_event)
+                    # A typed error keeps its type: collapsing RateLimitError /
+                    # AuthenticationError / TimeoutError into a generic
+                    # MODEL_ERROR forced every caller to parse message strings
+                    # to decide whether to retry, back off, or re-auth.
+                    if isinstance(e, MiiflowLLMError):
+                        raise
                     raise MiiflowLLMError(
-                        f"Agent failed after {self.retries} retries: {e}", ErrorType.MODEL_ERROR
-                    )
+                        f"Agent failed after {self.retries} retries: {e}",
+                        ErrorType.MODEL_ERROR,
+                        original_error=e,
+                    ) from e
                 continue
 
         raise MiiflowLLMError("Agent execution failed", ErrorType.MODEL_ERROR)
@@ -792,7 +800,7 @@ class Agent(Generic[Deps, Result]):
             In "agui" mode: AG-UI protocol events (TextMessageContentEvent, etc.)
         """
         from .callback_context import get_callback_context
-        from .callbacks import CallbackEvent, CallbackEventType, get_global_registry
+        from .callbacks import CallbackEvent, CallbackEventType, get_active_registry
         from .tools.tool_search import tool_search_session, is_session_active
 
         # Open a per-run ToolSearch session if none is active. We use a
@@ -827,7 +835,7 @@ class Agent(Generic[Deps, Result]):
             query=query,
             context=ctx,
         )
-        await get_global_registry().emit(start_event)
+        await get_active_registry().emit(start_event)
 
         # Import AG-UI factory if needed for lifecycle events
         agui_factory = None
@@ -880,7 +888,7 @@ class Agent(Generic[Deps, Result]):
                     context=ctx,
                     success=True,
                 )
-                await get_global_registry().emit(end_event)
+                await get_active_registry().emit(end_event)
 
             except Exception as e:
                 # Emit run_error event for AG-UI mode
@@ -897,7 +905,7 @@ class Agent(Generic[Deps, Result]):
                     error=e,
                     error_type=type(e).__name__,
                 )
-                await get_global_registry().emit(end_event)
+                await get_active_registry().emit(end_event)
 
                 raise
 
@@ -935,37 +943,31 @@ class Agent(Generic[Deps, Result]):
             context_compressor=self._context_compressor,
         )
 
-        # Real-time streaming setup
+        # Real-time streaming setup. The queue is unbounded, so put_nowait
+        # cannot fail; a sentinel enqueued when execution finishes terminates
+        # the pump. Every event is published (awaited) inside execute(), so
+        # FIFO ordering guarantees the sentinel lands after the last event —
+        # no drain pass needed. The previous implementation polled with a
+        # 100ms wait_for timeout, adding up to 100ms of latency to every
+        # quiet interval and ten wakeups a second for the whole run.
         event_queue = asyncio.Queue()
+        _sentinel = object()
 
         def real_time_stream(event):
             """Stream events immediately as they're published."""
-            try:
-                event_queue.put_nowait(event)
-            except asyncio.QueueFull:
-                import logging
-
-                logging.getLogger(__name__).warning("Event queue full, dropping event")
+            event_queue.put_nowait(event)
 
         orchestrator.event_bus.subscribe(real_time_stream)
         execution_task = asyncio.create_task(orchestrator.execute(query, context))
+        execution_task.add_done_callback(lambda _t: event_queue.put_nowait(_sentinel))
 
         try:
-            while not execution_task.done():
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
-                    yield event
-                    event_queue.task_done()
-                except asyncio.TimeoutError:
-                    continue
-
-            while not event_queue.empty():
-                try:
-                    event = event_queue.get_nowait()
-                    yield event
-                    event_queue.task_done()
-                except asyncio.QueueEmpty:
+            while True:
+                event = await event_queue.get()
+                if event is _sentinel:
                     break
+                yield event
+            # Propagate the run's result or exception.
             await execution_task
 
         finally:

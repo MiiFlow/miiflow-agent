@@ -78,22 +78,32 @@ class FunctionTool:
         return self.definition.to_provider_format(provider)
     
     def validate_inputs(self, **kwargs) -> Dict[str, Any]:
-        """Validate inputs against schema."""
+        """Validate inputs against the schema.
+
+        Always enforced (base behavior): presence of required parameters,
+        and unknown parameters are DROPPED before the call — models
+        routinely hallucinate stray kwargs, and ``fn(**validated)`` would
+        turn a working call into a TypeError. Type/enum/range/pattern
+        checks run in warn-only mode unless the deployment opts into
+        enforcement with ``MIIFLOW_STRICT_TOOL_VALIDATION=1`` (deployed
+        schemas carry constraints that were never enforced; hard-failing
+        them at upgrade time rejects calls that worked yesterday). Under
+        enforcement, every problem is collected into ONE model-readable
+        error so the model fixes all of them in a single retry.
+        """
+        from ..input_validation import validate_inputs_against
+
         parameters = self.definition.parameters
-        validated = {}
-        
-        for param_name, param_schema in parameters.items():
-            if param_schema.required and param_name not in kwargs:
-                raise ToolExecutionError(f"Missing required parameter: {param_name}")
-            if param_name in kwargs:
-                validated[param_name] = kwargs[param_name]
-        
-        for param_name, value in kwargs.items():
+        validated, errors = validate_inputs_against(parameters, kwargs)
+        if errors:
+            raise ToolExecutionError(
+                f"Invalid arguments for '{self.name}': " + "; ".join(errors)
+            )
+
+        for param_name in kwargs:
             if param_name not in parameters and param_name != 'context':
                 logger.warning(f"Unknown parameter '{param_name}' for tool '{self.name}'")
-            elif param_name != 'context': 
-                validated[param_name] = value
-        
+
         return validated
 
     async def acall(self, **kwargs) -> ToolResult:
@@ -120,9 +130,12 @@ class FunctionTool:
             if self.function_type == FunctionType.ASYNC:
                 result = await self.fn(**validated_inputs)
             elif self.function_type == FunctionType.SYNC:
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: self.fn(**validated_inputs)
-                )
+                # asyncio.to_thread, not get_event_loop().run_in_executor:
+                # get_event_loop() is deprecated outside a running loop
+                # (3.10+), and to_thread propagates contextvars to the worker
+                # thread — a sync tool body reading callback context keeps
+                # working.
+                result = await asyncio.to_thread(lambda: self.fn(**validated_inputs))
             elif self.function_type == FunctionType.ASYNC_GENERATOR:
                 results = []
                 async for item in self.fn(**validated_inputs):
@@ -131,7 +144,7 @@ class FunctionTool:
             elif self.function_type == FunctionType.SYNC_GENERATOR:
                 def run_sync_gen():
                     return list(self.fn(**validated_inputs))
-                result = await asyncio.get_event_loop().run_in_executor(None, run_sync_gen)
+                result = await asyncio.to_thread(run_sync_gen)
             else:
                 raise ToolExecutionError(f"Unsupported function type: {self.function_type}")
 

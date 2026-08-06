@@ -22,6 +22,11 @@ class ParameterSchema:
     items: Optional[Dict[str, Any]] = None
     properties: Optional[Dict[str, Any]] = None
     additionalProperties: Optional[bool] = None
+    # This parameter consumes symbolic media refs (``media_ref:<id>``)
+    # directly: the orchestrator's pre-execution media resolution leaves it
+    # untouched instead of rewriting the ref to a stored URL. Declare on
+    # params of tools that track/re-emit refs rather than fetch the bytes.
+    media_ref_passthrough: bool = False
     
     def to_json_schema_property(self) -> Dict[str, Any]:
         """Convert to JSON Schema property format."""

@@ -48,6 +48,31 @@ def _estimate_tokens(messages: List[Message]) -> int:
 # message to this many characters (~50k tokens) so the request can fit.
 _MAX_SINGLE_MESSAGE_CHARS = 200_000
 
+# The first USER message is the original task statement — the one thing the
+# model must never lose sight of, and exactly what naive oldest-first dropping
+# removes first. Both strategies preserve it verbatim (clamped to ~2k tokens)
+# ahead of the compaction marker/summary.
+_HEAD_USER_MESSAGE_MAX_CHARS = 8_000
+
+# Per-message clip when formatting history for the summarizer. Large enough to
+# keep a tool result's shape and key numbers, small enough that a long run
+# still fits in the summarizer's own context.
+_SUMMARY_INPUT_CLIP_CHARS = 2_000
+
+# Summary output budget scales with how much is being replaced: a flat cap
+# (formerly 500 tokens) meant a 100-message run compacted into the same space
+# as a 10-message one, discarding almost everything that made the run useful.
+_SUMMARY_MIN_TOKENS = 500
+_SUMMARY_MAX_TOKENS = 2_000
+
+
+def _head_user_message(messages: List[Message]) -> Optional[Message]:
+    """The first USER message — the original task statement, if any."""
+    for m in messages:
+        if m.role == MessageRole.USER:
+            return m
+    return None
+
 
 def _group_with_tool_pairs(messages: List[Message]) -> List[List[Message]]:
     """Group messages into atomic units that must not be split.
@@ -281,18 +306,34 @@ class ContextCompressor:
         while kept_groups and kept_groups[0] and kept_groups[0][0].role == MessageRole.TOOL:
             kept_groups.pop(0)
 
-        dropped_count = len(non_system) - sum(len(g) for g in kept_groups)
+        head_user = _head_user_message(non_system)
 
-        # Build result with boundary marker
-        result = list(system_msgs)
-        result.append(
-            Message(
-                role=MessageRole.USER,
-                content=f"[Context compressed: {dropped_count} earlier messages were removed to fit context limits. Recent conversation follows.]",
+        def build(groups: List[List[Message]], dropped: int) -> List[Message]:
+            kept_ids = {id(m) for g in groups for m in g}
+            result = list(system_msgs)
+            # Re-pin the original task statement when dropping would lose it.
+            # It is a singleton USER message, so re-inserting it cannot sever
+            # a tool_use/tool_result pair.
+            if head_user is not None and id(head_user) not in kept_ids:
+                result.append(
+                    _clamp_message(head_user, _HEAD_USER_MESSAGE_MAX_CHARS)
+                )
+            result.append(
+                Message(
+                    role=MessageRole.USER,
+                    content=(
+                        f"[Context compressed: {dropped} earlier messages were "
+                        "removed to fit context limits. Recent conversation "
+                        "follows.]"
+                    ),
+                )
             )
-        )
-        for group in kept_groups:
-            result.extend(group)
+            for group in groups:
+                result.extend(group)
+            return result
+
+        dropped_count = len(non_system) - sum(len(g) for g in kept_groups)
+        result = build(kept_groups, dropped_count)
 
         # If still over budget, progressively drop whole groups from the front
         # (after the boundary marker). Dropping a group keeps pairs intact.
@@ -300,15 +341,8 @@ class ContextCompressor:
             kept_groups.pop(0)
             while kept_groups and kept_groups[0] and kept_groups[0][0].role == MessageRole.TOOL:
                 kept_groups.pop(0)
-            result = list(system_msgs)
-            result.append(
-                Message(
-                    role=MessageRole.USER,
-                    content=f"[Context compressed: earlier messages were removed to fit context limits. Recent conversation follows.]",
-                )
-            )
-            for group in kept_groups:
-                result.extend(group)
+            dropped_count = len(non_system) - sum(len(g) for g in kept_groups)
+            result = build(kept_groups, dropped_count)
 
         # A single preserved message (usually a giant tool result) may still
         # blow the budget; ``compress_if_needed`` applies the oversized-message
@@ -347,32 +381,69 @@ class ContextCompressor:
             kept_groups.pop(0)
         recent = [m for group in kept_groups for m in group]
         recent_set = {id(m) for m in recent}
-        old_messages = [m for m in non_system if id(m) not in recent_set]
+
+        # The original task statement is preserved verbatim, so it is neither
+        # summarized nor dropped — paraphrasing the one message that defines
+        # success is how compacted runs drift off-goal.
+        head_user = _head_user_message(non_system)
+        if head_user is not None and id(head_user) in recent_set:
+            head_user = None
+        excluded = recent_set | ({id(head_user)} if head_user is not None else set())
+        old_messages = [m for m in non_system if id(m) not in excluded]
 
         # Format old messages for summarization
         formatted = []
         for msg in old_messages:
             role_label = msg.role.value.upper()
-            content = msg.content or ""
-            # Truncate very long individual messages
-            if len(content) > 1000:
-                content = content[:1000] + "..."
+            content = msg.content if isinstance(msg.content, str) else str(msg.content or "")
+            if msg.role == MessageRole.ASSISTANT and msg.tool_calls:
+                calls = ", ".join(
+                    str((c.get("function") or {}).get("name", "?"))
+                    for c in msg.tool_calls
+                    if isinstance(c, dict)
+                )
+                content = f"[called tools: {calls}] {content}"
+            # Clip very long individual messages, keeping enough to retain a
+            # tool result's shape and key numbers.
+            if len(content) > _SUMMARY_INPUT_CLIP_CHARS:
+                content = content[:_SUMMARY_INPUT_CLIP_CHARS] + "..."
             formatted.append(f"{role_label}: {content}")
 
         conversation_text = "\n".join(formatted)
 
+        # A handoff note beats a summary: the model that continues the run is
+        # the audience, and what it needs is exact identifiers and an explicit
+        # settled/open split — not prose about what the conversation covered.
         summary_prompt = (
-            "Summarize this conversation history concisely. "
-            "Preserve key facts, decisions, tool results, and context needed "
-            "to continue the conversation. Be brief but complete.\n\n"
+            "You are the assistant in the conversation below, which is about "
+            "to have its older messages compacted away. Write a handoff note "
+            "to yourself so you can continue seamlessly.\n"
+            "- State the user's goal and the current subtask.\n"
+            "- Record exact identifiers verbatim: file paths, commands, IDs, "
+            "URLs, names, and numbers, including the key results of tool "
+            "calls. Never paraphrase an identifier.\n"
+            "- Separate SETTLED (decisions made, results obtained, questions "
+            "answered) from OPEN (pending work, unverified assumptions, "
+            "unanswered questions).\n"
+            "- End with the immediate next step.\n"
+            "Write in first person. Facts only — no meta commentary about "
+            "summarizing.\n\n"
             f"Conversation ({len(old_messages)} messages):\n{conversation_text}"
+        )
+
+        # Budget scales with how much history the note replaces.
+        dropped_chars = sum(
+            len(m.content) if isinstance(m.content, str) else 0 for m in old_messages
+        )
+        summary_max_tokens = min(
+            _SUMMARY_MAX_TOKENS, max(_SUMMARY_MIN_TOKENS, dropped_chars // 100)
         )
 
         try:
             response = await self.client.achat(
                 messages=[Message(role=MessageRole.USER, content=summary_prompt)],
                 temperature=0.0,
-                max_tokens=500,
+                max_tokens=summary_max_tokens,
             )
             summary = response.message.content or "Previous conversation context unavailable."
         except Exception as e:
@@ -381,10 +452,18 @@ class ContextCompressor:
 
         # Build result
         result = list(system_msgs)
+        if head_user is not None:
+            result.append(_clamp_message(head_user, _HEAD_USER_MESSAGE_MAX_CHARS))
         result.append(
             Message(
                 role=MessageRole.USER,
-                content=f"[Context compressed: {len(old_messages)} messages summarized]\n{summary}",
+                content=(
+                    f"[Context compressed: {len(old_messages)} earlier messages "
+                    "were replaced by this handoff note. Facts and results in "
+                    "it are already established — verify against it instead of "
+                    "re-doing work it records as done.]\n"
+                    f"{summary}"
+                ),
             )
         )
         result.extend(recent)

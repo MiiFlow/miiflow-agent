@@ -662,3 +662,121 @@ def test_resume_command_creates_checkpoint_pending_approved_action():
     assert cp.pending_approved_action.tool_name == "google_ads_mutate"
     assert cp.pending_approved_action.inputs == {"budget": 40}
     assert ctx.deps["pending_approved_action"]["tool_call_id"] == "tc_1"
+
+
+# ── The deterministic resume is GATE-SUBJECT ────────────────────────────────
+#
+# The seam behind the production approve-loop in
+# thread_pyVBItBt6gxh8mkDB3ihSCwk: execute_pending_approved_action completes the
+# approved call via ``tool_executor.execute_tool``, which emits the SAME
+# PRE_TOOL_USE gate that raised the modal. The resume therefore needs the
+# approval handed to it — being control flow does NOT exempt it from the gate.
+#
+# Every test above uses ``_FakeExecutor``, which never emits PRE_TOOL_USE, so
+# the gate and the resume path were never exercised together and the server-side
+# defect (withholding the one-shot pass on exactly this branch) was invisible.
+# These two drive the REAL emission (``AgentToolExecutor.
+# _emit_pre_tool_use_callback``) against a real scoped callback registry.
+
+
+class _GatedExecutor:
+    """Executor that runs the REAL PRE_TOOL_USE emission before executing."""
+
+    def __init__(self, registry, result=None):
+        self._tool_registry = registry
+        self._result = result
+        self.calls = []
+
+    async def execute_tool(self, name, inputs, context=None):
+        from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+
+        emit = AgentToolExecutor._emit_pre_tool_use_callback.__get__(
+            self, _GatedExecutor
+        )
+        inputs = await emit(name, inputs)  # raises ToolApprovalRequired if blocked
+        self.calls.append((name, dict(inputs)))
+        return self._result
+
+
+def _run_resume_under_gate(approved_pass):
+    """Drive the approved action through a gate that admits only
+    ``approved_pass`` — the shape of the server's ``_check_tool_approval``."""
+
+    async def go():
+        from miiflow_agent.core.callbacks import CallbackEventType, scoped_callbacks
+
+        # An operation-less read tool: no mandate can ever cover it, so the
+        # one-shot pass is the ONLY thing that can open the gate.
+        inputs = {"level": "account", "ad_account_id": "act_456"}
+        ex = _GatedExecutor(
+            _FakeRegistry(["meta_ads_get_insights"]),
+            result=SimpleNamespace(success=True, output={"spend": 1234}),
+        )
+        orch = _orch(ex)
+        messages = [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                tool_calls=[
+                    {
+                        "id": "X",
+                        "type": "function",
+                        "function": {
+                            "name": "meta_ads_get_insights",
+                            "arguments": inputs,
+                        },
+                    }
+                ],
+            ),
+            Message(
+                role=MessageRole.TOOL,
+                content="approved — call it again",
+                tool_call_id="X",
+            ),
+        ]
+        deps = {
+            "pending_approved_action": {
+                "tool_name": "meta_ads_get_insights",
+                "tool_call_id": "X",
+                "inputs": inputs,
+            }
+        }
+        ctx = SimpleNamespace(deps=deps, messages=messages)
+        state = SimpleNamespace(
+            current_step=1, is_running=True, final_answer="", failure_metadata=None
+        )
+
+        with scoped_callbacks() as registry:
+
+            async def gate(event):
+                if event.tool_name not in approved_pass:
+                    event.blocked = True
+                    event.block_reason = "Tool requires user approval"
+
+            registry.register(CallbackEventType.PRE_TOOL_USE, gate)
+            await ReActOrchestrator._execute_pending_approved_action(orch, ctx, state)
+
+        return ex, messages
+
+    return asyncio.run(go())
+
+
+def test_resume_without_the_pass_is_blocked_by_the_gate():
+    """The production symptom exactly: the user approved, the resume ran, and
+    the gate refused it — because nothing had granted the pass."""
+    ex, messages = _run_resume_under_gate(approved_pass=set())
+
+    assert ex.calls == []  # never reached the tool
+    assert "requires user approval" in messages[1].content
+
+
+def test_resume_with_the_pass_executes_the_approved_call():
+    """With the pass the server now grants unconditionally, the same resume
+    completes and the real result reaches the transcript."""
+    ex, messages = _run_resume_under_gate(approved_pass={"meta_ads_get_insights"})
+
+    assert ex.calls == [
+        ("meta_ads_get_insights", {"level": "account", "ad_account_id": "act_456"})
+    ]
+    assert "1234" in messages[1].content
+    assert "requires user approval" not in messages[1].content

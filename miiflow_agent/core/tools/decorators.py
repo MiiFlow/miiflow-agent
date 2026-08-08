@@ -28,6 +28,7 @@ def tool(
     search_keywords: Optional[List[str]] = None,
     idempotency_class: str = "none",
     dedupe_scope_dims: Optional[List[str]] = None,
+    writes: Optional[bool] = None,
 ) -> Callable[[F], F]:
     """
     Decorator to mark a function as a tool with optional explicit schema.
@@ -65,6 +66,13 @@ def tool(
             serially (all-or-nothing rule, in the order the model emitted them).
             Mark True only on idempotent reads, pure renderers, and lifecycle-
             isolated dispatchers.
+        writes: Does this tool change state outside the agent's own context?
+            True for anything that mutates product, platform, or third-party
+            state; False for reads. Default None = **not yet classified**, which
+            is deliberately distinguishable from False so a host can fail its
+            own coverage check rather than assume a new tool is harmless.
+            Declaring it also sets `is_read_only` (the plan-mode gate) to its
+            complement, so the two cannot drift apart.
 
     Example with automatic reflection:
         @tool(description="Add two numbers")
@@ -151,6 +159,14 @@ def tool(
             # "none" — the gate never serves a tool that didn't opt in.
             idempotency_class=idempotency_class,
             dedupe_scope_dims=list(dedupe_scope_dims or []),
+            writes=writes,
+            # One fact, one place. `is_read_only` (plan-mode gate) and `writes`
+            # (side-effect declaration) are the same statement, and every
+            # codebase that maintains both by hand eventually has a tool that
+            # says it writes and is still callable in plan mode. Left at its
+            # False default while `writes` is unclassified — an undeclared tool
+            # stays blocked in plan mode, which is the safe direction.
+            is_read_only=(writes is False),
         )
 
         # Add return schema if provided

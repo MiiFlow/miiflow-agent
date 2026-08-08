@@ -113,11 +113,29 @@ class ToolSchema:
     # regardless of this flag (see executor docs).
     parallelizable: bool = False
 
+    # Does this tool change state outside the agent's own context? Three-valued
+    # ON PURPOSE:
+    #   True  — declared write (mutates product/platform/external state)
+    #   False — declared read
+    #   None  — NOT YET CLASSIFIED
+    #
+    # None is not a synonym for False. A host that audits writes, or gates them,
+    # needs to tell "someone decided this is a read" apart from "nobody has
+    # said" — otherwise every new tool defaults into the safe-looking bucket and
+    # the gap is invisible. Hosts are expected to fail their own coverage checks
+    # on None rather than assume. It defaults to None (not False) so adding the
+    # field cannot silently reclassify tools that predate it.
+    writes: Optional[bool] = None
+
     # Plan-mode marker: when True, this tool may execute even while the
     # agent is inside `enter_plan_mode`. Read-only tools (search, list,
     # describe, ToolSearch itself) should set this; anything with side
     # effects (write/edit/send/post) MUST leave it False so the executor
     # synthesizes a "blocked — call exit_plan_mode first" tool result.
+    #
+    # Derived from `writes` by the @tool decorator when `writes` is declared —
+    # the two encode the same fact and hand-maintaining both is how they drift.
+    # Still settable directly for tools that construct a ToolSchema themselves.
     is_read_only: bool = False
 
     # ── Read-through dedupe serve contract ────────────────────────────────

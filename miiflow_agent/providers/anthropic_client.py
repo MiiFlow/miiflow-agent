@@ -233,19 +233,29 @@ class AnthropicClient(ModelClient):
                     result = mcp_results_by_id.get(call_id)
 
                     # Replay the pair only when it can be reconstructed
-                    # completely. A half-formed mcp_tool_use — no id, no
-                    # server_name, or no matching result — is rejected by the
-                    # API, which would 400 every remaining turn of the thread.
-                    # Dropping it instead costs the model the raw payload from
-                    # a turn it already summarized in its own text; that
-                    # degrades grounding, it does not break the conversation.
-                    if not (call_id and server_name and result):
+                    # completely AND this endpoint accepts the blocks at all.
+                    # A half-formed mcp_tool_use — no id, no server_name, or no
+                    # matching result — is rejected by the API, which would 400
+                    # every remaining turn of the thread; so is any mcp_tool_use
+                    # on Bedrock, which refuses the MCP beta outright and whose
+                    # threads can inherit these calls when a model is switched
+                    # mid-conversation. Dropping it instead costs the model the
+                    # raw payload from a turn it already summarized in its own
+                    # text; that degrades grounding, it does not break the
+                    # conversation.
+                    if not (
+                        call_id
+                        and server_name
+                        and result
+                        and self._supports_native_mcp()
+                    ):
                         logger.debug(
                             "Dropping unreplayable native-MCP call from history "
-                            "(id=%s server_name=%s has_result=%s)",
+                            "(id=%s server_name=%s has_result=%s native_mcp=%s)",
                             call_id,
                             server_name,
                             result is not None,
+                            self._supports_native_mcp(),
                         )
                         continue
 

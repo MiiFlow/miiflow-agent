@@ -447,6 +447,15 @@ class GeminiClient(ModelClient):
                 # Add function calls if present (for multi-turn with tool use)
                 if message.tool_calls:
                     for tool_call in message.tool_calls:
+                        # A call another provider executed server-side (native
+                        # MCP) has no Gemini equivalent and no local
+                        # function_response to pair with — a thread whose model
+                        # was switched mid-conversation carries them in its
+                        # history. Drop it rather than replaying it as an
+                        # ordinary function_call, which would teach the model
+                        # the tool is callable here when it is not.
+                        if isinstance(tool_call, dict) and tool_call.get("type") == "mcp_function":
+                            continue
                         if isinstance(tool_call, dict):
                             func_name = tool_call.get("function", {}).get(
                                 "name"

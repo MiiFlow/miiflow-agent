@@ -222,6 +222,17 @@ class OpenAIClient(ModelClient):
             # Sanitize tool names in tool_calls for OpenAI compatibility
             sanitized_tool_calls = []
             for tc in message.tool_calls:
+                # Provider-executed MCP calls (`mcp_call` output items on the
+                # Responses API) have no representation in Chat Completions:
+                # the shape only knows `type: "function"`, and nothing ran on
+                # our side so there is no tool message to answer the call —
+                # which the API rejects. Drop them. Emitting them as ordinary
+                # function calls would be worse than losing the transcript
+                # entry: it tells the model an MCP tool is client-side, so it
+                # reissues it locally and gets "tool not found" from a registry
+                # that never holds native-MCP tools.
+                if isinstance(tc, dict) and tc.get("type") == "mcp_function":
+                    continue
                 sanitized_tc = copy.deepcopy(tc) if isinstance(tc, dict) else tc
                 if isinstance(sanitized_tc, dict) and "function" in sanitized_tc:
                     original_name = sanitized_tc["function"].get("name", "")
@@ -231,7 +242,8 @@ class OpenAIClient(ModelClient):
                     if isinstance(args, dict):
                         sanitized_tc["function"]["arguments"] = json.dumps(args)
                 sanitized_tool_calls.append(sanitized_tc)
-            openai_message["tool_calls"] = sanitized_tool_calls
+            if sanitized_tool_calls:
+                openai_message["tool_calls"] = sanitized_tool_calls
 
         return openai_message
 

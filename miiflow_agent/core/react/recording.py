@@ -198,6 +198,15 @@ class OutcomeRecording:
         the turn is mislabeled `single_hop`. The event pair is the contract —
         keep it whole here rather than teaching every consumer about MCP.
 
+        The pair carries `executor="native_mcp"` and the `server_name` because a
+        consumer that only RENDERS the call can ignore who ran it, but one that
+        REPLAYS it into a later request cannot: a provider-executed call has to
+        go back as an mcp_tool_use/mcp_tool_result pair. Dropping that bit here
+        is what let a host persist the call and replay it as a local `tool_use`,
+        so the model reissued GitHub's `search_code` client-side on the next
+        turn and got "Tool 'search_code' not found" from a registry that never
+        holds native-MCP tools.
+
         Returns the metadata to attach to the assistant message so
         `_convert_message` can replay the mcp_tool_use/mcp_tool_result pairs.
         """
@@ -207,6 +216,7 @@ class OutcomeRecording:
             fn = call.get("function", {}) or {}
             arguments = fn.get("arguments") if isinstance(fn.get("arguments"), dict) else {}
             result = results_by_id.get(call_id) or {}
+            server_name = call.get("server_name")
 
             await self._orch.event_bus.publish(
                 EventFactory.action_planned(
@@ -214,6 +224,8 @@ class OutcomeRecording:
                     fn.get("name"),
                     arguments,
                     tool_call_id=call_id,
+                    executor="native_mcp",
+                    server_name=server_name,
                 )
             )
             # A call with no matching result means the provider never reported
@@ -251,6 +263,8 @@ class OutcomeRecording:
                     not is_error,
                     tool_call_id=call_id,
                     observation_ref=recorded.ref,
+                    executor="native_mcp",
+                    server_name=server_name,
                 )
             )
 

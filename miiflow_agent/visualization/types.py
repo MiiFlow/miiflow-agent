@@ -7,6 +7,8 @@ The SDK does NOT define specific visualization types - that's an application con
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+import hashlib
+import json
 import uuid
 
 
@@ -80,7 +82,14 @@ class VisualizationResult:
         title: Optional title for the visualization
         description: Optional description text
         config: Optional configuration settings
-        id: Unique identifier for the visualization (auto-generated if not provided)
+        id: Identifier for the visualization. Derived from the CONTENT when not
+            given, so rendering the same thing twice yields the same id and the
+            second render replaces the first card instead of stacking another
+            copy of it. A random id made every retry a duplicate: an agent that
+            re-derived a table after second-guessing itself shipped the user two
+            identical tables in one answer. Same reasoning as the stable
+            `mcp-auth-{server_id}` id on the Connect card. Pass an explicit `id`
+            when two identical visualizations really are both wanted.
 
     Example:
         # Create a visualization (type and data structure defined by application)
@@ -103,7 +112,36 @@ class VisualizationResult:
     title: Optional[str] = None
     description: Optional[str] = None
     config: Optional[VisualizationConfig] = None
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            self.id = self._content_id()
+
+    def _content_id(self) -> str:
+        """A stable id for this visualization's content.
+
+        `json.dumps(..., sort_keys=True, default=str)` so two renders of the
+        same table hash alike regardless of dict ordering, and so a payload
+        holding a Decimal/datetime still hashes instead of raising — an id is
+        not worth failing a render over. Any content the encoder cannot
+        distinguish falls back to a random id, which is the old behaviour.
+        """
+        try:
+            payload = json.dumps(
+                {
+                    "type": self.type,
+                    "title": self.title,
+                    "description": self.description,
+                    "data": self.data,
+                    "config": self.config.to_dict() if self.config else {},
+                },
+                sort_keys=True,
+                default=str,
+            )
+        except (TypeError, ValueError):
+            return str(uuid.uuid4())
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
     def to_dict(self) -> Dict[str, Any]:
         """

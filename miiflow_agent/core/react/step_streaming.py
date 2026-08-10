@@ -57,6 +57,15 @@ class StepStreamer:
         # Initialized before the try so the except handler can retract
         # optimistically streamed deltas no matter where the failure hit.
         pending_answer_deltas: List[str] = []
+        # Set when a provider-executed (native MCP) block retracted streamed
+        # answer text. Unlike a local tool call — which makes the whole step an
+        # ACTION step, so the narration correctly rides along with the tool_use
+        # — an MCP-only step is still an ANSWER step, and `buffer` holds the
+        # narration and the real answer concatenated. Answering from the buffer
+        # is how a fabricated "you opened 14 pull requests: #1367, ..." written
+        # BEFORE GitHub was queried ended up persisted as part of the answer,
+        # with the model apologising for it in the same breath.
+        native_mcp_retracted = False
         # Same reason: the finally reads these, and a BaseException (task
         # cancellation on the step_started await) skips `except Exception`
         # entirely — an unbound local would raise from the finally and replace
@@ -182,9 +191,42 @@ class StepStreamer:
                 # placeholder emitted at content_block_start.
                 if chunk.tool_calls:
                     for provider_call in chunk.tool_calls:
-                        if provider_call.get("type") == "mcp_function":
-                            provider_executed_calls[provider_call.get("id") or ""] = (
-                                provider_call
+                        if provider_call.get("type") != "mcp_function":
+                            continue
+                        call_id = provider_call.get("id") or ""
+                        is_new_call = call_id not in provider_executed_calls
+                        provider_executed_calls[call_id] = provider_call
+
+                        # Text streamed BEFORE this block was narration, not the
+                        # answer — exactly as for a local tool call below. The
+                        # retraction used to fire only on the local path, so a
+                        # step whose only tool calls were MCP ones published its
+                        # preamble as the final answer and left it on screen:
+                        # a "here are your 14 pull requests" table written from
+                        # priors, sent before GitHub had been queried at all.
+                        # Retract per mcp_tool_use block start rather than once
+                        # per step, so a turn that interleaves
+                        # text → call → result → text retracts only the text
+                        # that preceded a call. Deliberately NOT added to
+                        # `accumulated_tool_calls`: the provider resumes
+                        # generating after the result, and that trailing text
+                        # IS the final answer.
+                        if is_new_call and pending_answer_deltas:
+                            preamble = "".join(pending_answer_deltas)
+                            pending_answer_deltas = []
+                            native_mcp_retracted = True
+                            if _optimistic_answer_streaming_enabled():
+                                await self._orch.event_bus.publish(
+                                    EventFactory.answer_retracted(
+                                        state.current_step,
+                                        preamble,
+                                        "native_mcp_tool_call",
+                                    )
+                                )
+                            await self._orch.event_bus.publish(
+                                EventFactory.thinking_chunk(
+                                    state.current_step, preamble, buffer
+                                )
                             )
                 if getattr(chunk, "mcp_tool_results", None):
                     provider_tool_results.extend(chunk.mcp_tool_results)
@@ -387,6 +429,15 @@ class StepStreamer:
                 )
 
             assistant_content = buffer.strip()
+            if native_mcp_retracted and not accumulated_tool_calls:
+                # Answer from what survived the retraction, not from the raw
+                # buffer. `pending_answer_deltas` is emptied by each retraction
+                # and refills from the deltas the provider streamed after the
+                # mcp_tool_result, so it is exactly the post-call answer. An
+                # empty result means the turn was narration only — which the
+                # empty-turn branch below turns into another turn rather than a
+                # blank final answer.
+                assistant_content = "".join(pending_answer_deltas).strip()
             if not accumulated_tool_calls and finish_reason != "length":
                 # Stream closed with no tool calls: the buffered deltas ARE the
                 # final answer. With optimistic streaming they already went out

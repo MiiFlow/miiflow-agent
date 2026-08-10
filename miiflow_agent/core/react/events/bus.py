@@ -356,12 +356,22 @@ class EventFactory:
         )
 
     @staticmethod
-    def action_planned(step_number: int, action: str, action_input: dict, tool_description: str = None, tool_call_id: str = None) -> ReActEvent:
+    def action_planned(step_number: int, action: str, action_input: dict, tool_description: str = None, tool_call_id: str = None, executor: str = None, server_name: str = None) -> ReActEvent:
         """Create action planned event.
 
         ``tool_call_id`` lets downstream consumers correlate this plan with its
         observation by id rather than by arrival order — required for parallel
         tool batches, where every action_planned fires before any observation.
+
+        ``executor`` says WHO ran the call: ``None``/``"local"`` for a tool this
+        process dispatched, ``"native_mcp"`` for one the provider executed
+        server-side (``server_name`` then names the MCP server). Consumers that
+        only render a tool row don't care, but anything that REPLAYS the call
+        into a later request does: a provider-executed call must go back as an
+        ``mcp_tool_use``/``mcp_tool_result`` pair, never as a local ``tool_use``
+        — the local registry has no such tool and the call dies with
+        "Tool 'x' not found". Deriving that from the ``mcptoolu_`` id prefix
+        would be a second copy of the fact, so it is carried explicitly.
         """
         return ReActEvent(
             event_type=ReActEventType.ACTION_PLANNED,
@@ -371,6 +381,8 @@ class EventFactory:
                 "action_input": action_input,
                 "tool_description": tool_description,
                 "tool_call_id": tool_call_id,
+                "executor": executor,
+                "server_name": server_name,
             }
         )
 
@@ -390,7 +402,7 @@ class EventFactory:
         )
 
     @staticmethod
-    def observation(step_number: int, observation: str, action: str, success: bool = True, tool_call_id: str = None, observation_ref: str = None, served_from_ledger: bool = False) -> ReActEvent:
+    def observation(step_number: int, observation: str, action: str, success: bool = True, tool_call_id: str = None, observation_ref: str = None, served_from_ledger: bool = False, executor: str = None, server_name: str = None) -> ReActEvent:
         """Create observation event.
 
         ``tool_call_id`` pairs the observation with the action_planned/executing
@@ -402,6 +414,8 @@ class EventFactory:
         (ObservationSink); downstream surfaces persist the ref plus a bounded
         excerpt instead of the full payload. ``served_from_ledger`` marks a
         result served from the dedupe gate without re-executing the tool.
+
+        ``executor``/``server_name`` mirror ``action_planned`` — see there.
         """
         return ReActEvent(
             event_type=ReActEventType.OBSERVATION,
@@ -413,6 +427,8 @@ class EventFactory:
                 "tool_call_id": tool_call_id,
                 "observation_ref": observation_ref,
                 "served_from_ledger": served_from_ledger,
+                "executor": executor,
+                "server_name": server_name,
             }
         )
     
@@ -450,12 +466,18 @@ class EventFactory:
         """Retract optimistically streamed answer text.
 
         Emitted when text that was streamed as FINAL_ANSWER_CHUNK turns out
-        to be preamble narration (a tool call followed), a truncated
-        answer (max_tokens), or the orphaned fragment of a stream that died
+        to be preamble narration (a local tool call followed, or the provider
+        opened a native-MCP call it runs server-side), a truncated answer
+        (max_tokens), or the orphaned fragment of a stream that died
         mid-answer (stream_error). Consumers must clear their accumulated
-        answer buffer; on the tool_call/max_tokens paths the retracted text
-        re-arrives as a THINKING_CHUNK.
-        reason: "tool_call" | "max_tokens" | "stream_error".
+        answer buffer; on the tool_call/native_mcp_tool_call/max_tokens paths
+        the retracted text re-arrives as a THINKING_CHUNK.
+        reason: "tool_call" | "native_mcp_tool_call" | "max_tokens"
+                | "stream_error".
+
+        ``native_mcp_tool_call`` can fire more than once in a step: the
+        provider keeps generating after each mcp_tool_result, so each MCP
+        block start retracts only the text that preceded it.
         """
         return ReActEvent(
             event_type=ReActEventType.ANSWER_RETRACTED,

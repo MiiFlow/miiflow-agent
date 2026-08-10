@@ -87,6 +87,14 @@ class NativeMCPServerConfig:
         headers: Optional HTTP headers for authentication (OpenAI)
         require_approval: Tool approval mode for OpenAI: "never", "always"
         tool_configuration: Additional tool configuration options
+        known_tools: Tool names this server is known to serve, for local
+            DIAGNOSTICS only — never sent to the provider. A native-MCP tool is
+            not in the local registry (the provider connects to the server
+            itself), so `ToolRegistry.execute_safe` would otherwise answer a
+            misrouted call with "not found" plus a list of every *local* tool,
+            which reads as "the integration is gone". Populated by the host
+            from whatever it has cached; an empty/None list only costs the
+            sharper message.
     """
 
     name: str
@@ -96,6 +104,7 @@ class NativeMCPServerConfig:
     headers: Optional[Dict[str, str]] = None
     require_approval: str = "never"  # OpenAI: "never", "always"
     tool_configuration: Optional[Dict[str, Any]] = None
+    known_tools: Optional[List[str]] = None
 
     def to_anthropic_format(self) -> Dict[str, Any]:
         """Convert to Anthropic MCP server format."""

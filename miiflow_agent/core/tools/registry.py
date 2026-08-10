@@ -348,6 +348,20 @@ class ToolRegistry:
         """
         return self._native_mcp_servers
 
+    def native_mcp_server_for_tool(self, name: str) -> Optional[str]:
+        """Name of the registered native MCP server that serves ``name``.
+
+        Native-MCP tools are executed by the provider and are deliberately
+        absent from this registry, so a call that reaches local dispatch under
+        one of their names has been misrouted — it is not evidence the tool is
+        unavailable. Returns None when no registered server claims the name.
+        """
+        for config in self._native_mcp_servers:
+            for source in (config.known_tools, config.allowed_tools):
+                if source and name in source:
+                    return config.name
+        return None
+
     def has_native_mcp_servers(self) -> bool:
         """Check if any native MCP servers are registered.
 
@@ -817,6 +831,40 @@ class ToolRegistry:
         mcp_tool = self.get_mcp_tool(tool_name)
 
         if not function_tool and not http_tool and not mcp_tool:
+            # A name a registered native-MCP server serves is not missing — the
+            # call was addressed to the wrong executor. Answering it with the
+            # generic list of every LOCAL tool is actively misleading: the model
+            # reads its own tool absent from a long list of others and concludes
+            # the integration was revoked. It then stops, apologises, and asks
+            # the user to reconnect something that was never disconnected.
+            mcp_server_name = self.native_mcp_server_for_tool(resolved_name)
+            if mcp_server_name:
+                error_msg = (
+                    f"Tool '{tool_name}' is served by the '{mcp_server_name}' MCP "
+                    f"server and runs on the provider side, so it is not in the "
+                    f"local tool list. It is still available — call it directly "
+                    f"instead of treating it as missing, and do not tell the user "
+                    f"the integration is disconnected."
+                )
+                if self.enable_logging:
+                    logger.warning(
+                        "Native-MCP tool '%s' (server '%s') was dispatched "
+                        "locally — the call was routed as a client-side tool_use.",
+                        resolved_name,
+                        mcp_server_name,
+                    )
+                return ToolResult(
+                    name=resolved_name,
+                    input=kwargs,
+                    output=None,
+                    error=error_msg,
+                    success=False,
+                    metadata={
+                        "error_type": "native_mcp_tool_misrouted",
+                        "mcp_server_name": mcp_server_name,
+                    },
+                )
+
             all_tools = self.list_tools()
             error_msg = f"Tool '{tool_name}' not found. Available: {all_tools}"
             if self.enable_logging:

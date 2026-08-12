@@ -22,6 +22,8 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=10.0,
         output_cost_hint=50.0,
+        cache_read_cost_hint=1.0,  # 0.1x input
+        cache_write_cost_hint=12.5,  # 1.25x input (5-min TTL)
     ),
     "claude-opus-5": ModelConfig(
         model_identifier="claude-opus-5",
@@ -40,6 +42,8 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=5.0,
         output_cost_hint=25.0,
+        cache_read_cost_hint=0.5,  # 0.1x input
+        cache_write_cost_hint=6.25,  # 1.25x input (5-min TTL)
     ),
     "claude-opus-4.8": ModelConfig(
         model_identifier="claude-opus-4-8",
@@ -58,6 +62,8 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=5.0,
         output_cost_hint=25.0,
+        cache_read_cost_hint=0.5,  # 0.1x input
+        cache_write_cost_hint=6.25,  # 1.25x input (5-min TTL)
     ),
     "claude-opus-4.7": ModelConfig(
         model_identifier="claude-opus-4-7",
@@ -76,6 +82,8 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=5.0,
         output_cost_hint=25.0,
+        cache_read_cost_hint=0.5,  # 0.1x input
+        cache_write_cost_hint=6.25,  # 1.25x input (5-min TTL)
     ),
     "claude-opus-4.6": ModelConfig(
         model_identifier="claude-opus-4-6",
@@ -94,6 +102,8 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=True,
         input_cost_hint=5.0,
         output_cost_hint=25.0,
+        cache_read_cost_hint=0.5,  # 0.1x input
+        cache_write_cost_hint=6.25,  # 1.25x input (5-min TTL)
     ),
     "claude-sonnet-5": ModelConfig(
         model_identifier="claude-sonnet-5",
@@ -112,6 +122,8 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=2.0,
         output_cost_hint=10.0,
+        cache_read_cost_hint=0.2,  # 0.1x input
+        cache_write_cost_hint=2.5,  # 1.25x input (5-min TTL)
     ),
     "claude-sonnet-4.6": ModelConfig(
         model_identifier="claude-sonnet-4-6",
@@ -130,6 +142,8 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=True,
         input_cost_hint=3.0,
         output_cost_hint=15.0,
+        cache_read_cost_hint=0.3,  # 0.1x input
+        cache_write_cost_hint=3.75,  # 1.25x input (5-min TTL)
     ),
     "claude-haiku-4.5": ModelConfig(
         model_identifier="claude-haiku-4-5-20251001",
@@ -148,6 +162,8 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=True,
         input_cost_hint=1.0,
         output_cost_hint=5.0,
+        cache_read_cost_hint=0.1,  # 0.1x input
+        cache_write_cost_hint=1.25,  # 1.25x input (5-min TTL)
     ),
 }
 

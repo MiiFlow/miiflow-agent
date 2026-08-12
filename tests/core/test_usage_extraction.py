@@ -160,6 +160,25 @@ class TestBilledPromptTokens:
         assert usage.billed_prompt_tokens == 31_000
 
 
+class TestUncachedPromptTokens:
+    def test_subtracts_cache_split_from_inclusive_prompt(self):
+        usage = TokenCount(
+            prompt_tokens=10_000, cache_read_tokens=8_000, cache_write_tokens=1_000
+        )
+        assert usage.uncached_prompt_tokens == 1_000
+
+    def test_no_split_means_everything_uncached(self):
+        assert TokenCount(prompt_tokens=5_000).uncached_prompt_tokens == 5_000
+
+    def test_clamps_when_invariant_broken(self):
+        """An adapter reporting an EXCLUSIVE prompt count (Anthropic's raw
+        input_tokens) would make the subtraction negative; clamp to zero so a
+        consumer that misses its own invariant check degrades rather than
+        producing a negative token bucket."""
+        usage = TokenCount(prompt_tokens=100, cache_read_tokens=30_000)
+        assert usage.uncached_prompt_tokens == 0
+
+
 class TestAddition:
     def test_reasoning_tokens_accumulate(self):
         a = TokenCount(prompt_tokens=1, completion_tokens=2, reasoning_tokens=10)

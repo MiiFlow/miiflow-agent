@@ -68,3 +68,15 @@ class ModelConfig:
     # These are approximate values - actual pricing may vary by provider/region
     input_cost_hint: float = 0.0
     output_cost_hint: float = 0.0
+    # Cache pricing (per million tokens in USD). 0.0 = undeclared: consumers
+    # bill cache tokens at input_cost_hint, i.e. the pre-cache-aware behavior.
+    # Declared as explicit $/M (not multipliers of input_cost_hint) because
+    # OpenAI publishes cached-input prices per model, not a uniform ratio.
+    # NOTE: rates are per-model, but Anthropic's cache-WRITE rate is per
+    # request TTL (1.25x input for the 5-minute default, 2x for 1h). This
+    # codebase only ever requests the default TTL (see AnthropicClient.
+    # _apply_prompt_caching, which never sets a "ttl" key); if a 1h TTL is
+    # ever requested, this schema undercharges writes and needs a per-request
+    # dimension instead.
+    cache_read_cost_hint: float = 0.0
+    cache_write_cost_hint: float = 0.0

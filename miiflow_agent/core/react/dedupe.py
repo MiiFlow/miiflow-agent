@@ -34,7 +34,7 @@ import time
 from typing import Any, Dict, Optional
 
 from ..checkpoint import stable_json_hash
-from ..observation import ObservationSink
+from ..observation import ObservationSink, bound_observation_for_llm
 
 logger = logging.getLogger(__name__)
 
@@ -144,8 +144,20 @@ class LedgerDedupeGate:
             entry.observation_ref,
             time.time() - (entry.produced_at or 0),
         )
+        # Bound HERE, the single chokepoint both ledger-served call sites
+        # (serial + parallel batch) flow through. These branches skip
+        # record_tool_observation entirely, so without this they were bounded
+        # only by the store cap happening to equal the live cap — the moment
+        # an adapter tightens its live policy, an unbounded served text would
+        # be the divergence. With no sink policy the SDK fallback applies, so
+        # library behavior is unchanged.
         return {
-            "output": stored.observation_text,
+            "output": bound_observation_for_llm(
+                self._sink,
+                stored.observation_text,
+                tool_name=tool_name,
+                ref=stored.ref,
+            ),
             "observation_ref": stored.ref,
         }
 

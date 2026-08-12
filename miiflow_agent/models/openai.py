@@ -49,6 +49,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=5.0,
         output_cost_hint=30.0,
+        cache_read_cost_hint=0.5,  # OpenAI cached input: 10% of input rate
     ),
     "gpt-5.6-sol-pro": ModelConfig(
         model_identifier="gpt-5.6-sol-pro",
@@ -66,6 +67,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=5.0,
         output_cost_hint=30.0,
+        cache_read_cost_hint=0.5,  # OpenAI cached input: 10% of input rate
     ),
     "gpt-5.6-terra": ModelConfig(
         model_identifier="gpt-5.6-terra",
@@ -83,6 +85,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=2.0,
         output_cost_hint=12.0,
+        cache_read_cost_hint=0.2,  # OpenAI cached input: 10% of input rate
     ),
     "gpt-5.6-luna": ModelConfig(
         model_identifier="gpt-5.6-luna",
@@ -100,6 +103,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=0.20,
         output_cost_hint=1.20,
+        cache_read_cost_hint=0.02,  # OpenAI cached input: 10% of input rate
     ),
     # GPT-5.5 series (released April 23, 2026) — succeeded by the GPT-5.6 family
     "gpt-5.5": ModelConfig(
@@ -118,6 +122,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=5.0,
         output_cost_hint=30.0,
+        cache_read_cost_hint=0.5,  # OpenAI cached input: 10% of input rate
     ),
     "gpt-5.5-pro": ModelConfig(
         model_identifier="gpt-5.5-pro",
@@ -135,6 +140,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=30.0,
         output_cost_hint=180.0,
+        cache_read_cost_hint=3.0,  # OpenAI cached input: 10% of input rate
     ),
     # GPT-5.4 series (released March 2026) — two generations old, superseded by the GPT-5.6 family
     "gpt-5.4": ModelConfig(
@@ -153,6 +159,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=2.50,
         output_cost_hint=15.0,
+        cache_read_cost_hint=0.25,  # OpenAI cached input: 10% of input rate
     ),
     "gpt-5.4-pro": ModelConfig(
         model_identifier="gpt-5.4-pro",
@@ -170,6 +177,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=30.0,
         output_cost_hint=180.0,
+        cache_read_cost_hint=3.0,  # OpenAI cached input: 10% of input rate
     ),
     "gpt-5.4-mini": ModelConfig(
         model_identifier="gpt-5.4-mini",
@@ -187,6 +195,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=0.75,
         output_cost_hint=4.50,
+        cache_read_cost_hint=0.075,  # OpenAI cached input: 10% of input rate
     ),
     "gpt-5.4-nano": ModelConfig(
         model_identifier="gpt-5.4-nano",
@@ -204,6 +213,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=0.20,
         output_cost_hint=1.25,
+        cache_read_cost_hint=0.02,  # OpenAI cached input: 10% of input rate
     ),
     # GPT-4.1 series (standard models, use max_tokens)
     "gpt-4.1": ModelConfig(
@@ -222,6 +232,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=True,
         input_cost_hint=2.0,
         output_cost_hint=8.0,
+        cache_read_cost_hint=0.50,  # OpenAI cached input: 25% of input for gpt-4.1
     ),
     "gpt-4.1-mini": ModelConfig(
         model_identifier="gpt-4.1-mini",
@@ -239,6 +250,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=True,
         input_cost_hint=0.40,
         output_cost_hint=1.60,
+        cache_read_cost_hint=0.10,  # OpenAI cached input: 25% of input for gpt-4.1
     ),
     "gpt-4.1-nano": ModelConfig(
         model_identifier="gpt-4.1-nano",
@@ -256,6 +268,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=True,
         input_cost_hint=0.10,
         output_cost_hint=0.40,
+        cache_read_cost_hint=0.025,  # OpenAI cached input: 25% of input for gpt-4.1
     ),
 }
 

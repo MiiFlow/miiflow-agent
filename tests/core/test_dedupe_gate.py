@@ -192,6 +192,37 @@ class TestTryServe:
         assert served is None
 
 
+class TestServedOutputIsBounded:
+    """The ledger-served branches skip record_tool_observation, so try_serve
+    is their ONLY bounding seam. Both directions probed: a sink policy is
+    honored, and no policy keeps library behavior byte-identical."""
+
+    def test_sink_policy_bounds_served_text(self):
+        class _ClampingSink(_FakeSink):
+            def llm_excerpt(self, *, text, tool_name=None, ref=None):
+                return text[:10] + f"…[clamped ref={ref}]"
+
+        big = '{"accounts": ' + "x" * 5_000 + "}"
+        cp = _checkpoint_with_entry(inputs={})
+        sink = _ClampingSink({"agent_obs_1": _stored(text=big)})
+        gate = LedgerDedupeGate(cp, sink)
+
+        served = _run(gate.try_serve("list_all_ad_accounts", {}, _schema()))
+        assert served is not None
+        assert served["output"] == big[:10] + "…[clamped ref=agent_obs_1]"
+
+    def test_no_sink_policy_keeps_output_unchanged(self):
+        # Library default pinned: without an adapter policy the framework
+        # ceiling (200K) governs, so a normal payload is served verbatim.
+        cp = _checkpoint_with_entry(inputs={})
+        sink = _FakeSink({"agent_obs_1": _stored()})
+        gate = LedgerDedupeGate(cp, sink)
+
+        served = _run(gate.try_serve("list_all_ad_accounts", {}, _schema()))
+        assert served is not None
+        assert served["output"] == _stored().observation_text
+
+
 class TestSingleFlight:
     def test_concurrent_identical_calls_coalesce(self):
         async def go():

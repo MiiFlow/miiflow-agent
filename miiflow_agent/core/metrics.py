@@ -53,6 +53,25 @@ class TokenCount:
             self.cache_read_tokens + self.cache_write_tokens
         )
 
+    @property
+    def uncached_prompt_tokens(self) -> int:
+        """Prompt tokens billed at the full input rate.
+
+        Invariant (normalized at construction, not here): ``prompt_tokens``
+        is INCLUSIVE of ``cache_read_tokens`` + ``cache_write_tokens`` for
+        every provider. AnthropicClient folds the split in before
+        constructing this (see ``billed_prompt_tokens``); OpenAI/Gemini
+        report cache reads as a subset of ``prompt_tokens`` natively and
+        never report cache writes. The ``max(0, ...)`` is a backstop for a
+        future adapter that breaks the invariant — consumers that price
+        tokens must re-check it themselves (undercharging is worse than
+        degrading to cache-blind pricing).
+        """
+        return max(
+            0,
+            self.prompt_tokens - self.cache_read_tokens - self.cache_write_tokens,
+        )
+
     def __add__(self, other: "TokenCount") -> "TokenCount":
         return TokenCount(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,

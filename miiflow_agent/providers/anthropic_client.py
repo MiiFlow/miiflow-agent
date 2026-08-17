@@ -545,7 +545,10 @@ class AnthropicClient(ModelClient):
         return demoted
 
     @staticmethod
-    def _prune_stale_tool_references(request_params: Dict[str, Any]) -> int:
+    def _prune_stale_tool_references(
+        request_params: Dict[str, Any],
+        mcp_servers: Optional[List["NativeMCPServerConfig"]] = None,
+    ) -> int:
         """Drop replayed `tool_reference`s that name tools absent from this request.
 
         Anthropic validates every `tool_reference` inside a replayed
@@ -572,11 +575,34 @@ class AnthropicClient(ModelClient):
         message metadata / checkpoint.
 
         Returns the number of references dropped (for the log line).
+
+        ``mcp_servers`` are the connector servers on THIS request. Their tools
+        are not in ``tools`` (an ``mcp_toolset`` stands in for the whole
+        server), yet a deferred connector tool the model discovered through
+        search is replayed as a ``tool_reference`` like any other — so the
+        names a present server is known to serve count as available. The API
+        names a connector tool in a reference as ``"<server name>_<tool>"``,
+        verbatim and unsanitised (observed live: server ``"Deep Wiki-X"`` →
+        ``"Deep Wiki-X_read_wiki_structure"``), while ``mcp_tool_use`` carries
+        the bare tool name — both spellings are accepted. A name no present
+        server claims is pruned; the worst case is one extra search, whereas
+        keeping a reference the API cannot resolve is the 400 this method
+        exists to prevent.
         """
         tools = request_params.get("tools") or []
         available = {
             t.get("name") for t in tools if isinstance(t, dict) and t.get("name")
         }
+        for server in mcp_servers or []:
+            server_name = getattr(server, "name", "") or ""
+            for source in (
+                getattr(server, "known_tools", None),
+                getattr(server, "allowed_tools", None),
+            ):
+                for tool_name in source or []:
+                    if isinstance(tool_name, str):
+                        available.add(tool_name)
+                        available.add(f"{server_name}_{tool_name}")
         messages = request_params.get("messages") or []
         dropped = 0
         for msg_index, msg in enumerate(messages):
@@ -813,9 +839,74 @@ class AnthropicClient(ModelClient):
         text = str(getattr(error, "message", None) or error).lower()
         return "tool_search" in text or "defer_loading" in text
 
+    #: Beta header for Anthropic's MCP connector. The 2025-04-04 revision put
+    #: tool selection on the server entry (`tool_configuration`) and loaded
+    #: EVERY tool of every server into context with no way to defer; the
+    #: 2025-11-20 revision moves selection into a `mcp_toolset` tools entry,
+    #: which is also where `defer_loading` for connector tools lives.
+    MCP_CONNECTOR_BETA = "mcp-client-2025-11-20"
+
     @staticmethod
-    def _disable_tool_deferral(request_params: Dict[str, Any]) -> bool:
+    def _is_tool_search_tool(tool: Any) -> bool:
+        return isinstance(tool, dict) and str(tool.get("type", "")).startswith(
+            "tool_search_tool"
+        )
+
+    @classmethod
+    def _apply_native_mcp(
+        cls, request_params: Dict[str, Any], mcp_servers: List["NativeMCPServerConfig"]
+    ) -> None:
+        """Wire the MCP connector into `request_params` in place.
+
+        Two halves the API validates together: an `mcp_servers[]` entry per
+        server (connection details) and exactly one `mcp_toolset` per server
+        in `tools` (which of its tools the model sees, and whether they load
+        up front). The toolsets are DEFERRED whenever the request already
+        carries a `tool_search_tool_*` entry — i.e. whenever the caller has
+        chosen native deferral for the local tools — so connector tools get
+        the same treatment as the ~60 local ones and are discovered through
+        the same search tool. Without a search tool there is nothing to
+        discover them with, so they load eagerly, as before.
+
+        Toolsets are inserted BEFORE the search tool rather than appended: the
+        search tool must stay last so `_apply_prompt_caching`'s final-tool
+        cache breakpoint lands on it (a deferred entry cannot carry
+        `cache_control`). With no search tool present the toolsets go last
+        and are not deferred, and a non-deferred toolset accepts the marker.
+        """
+        request_params["mcp_servers"] = [s.to_anthropic_format() for s in mcp_servers]
+
+        tools = list(request_params.get("tools") or [])
+        search_index = next(
+            (i for i, t in enumerate(tools) if cls._is_tool_search_tool(t)), None
+        )
+        defer = search_index is not None
+        toolsets = [s.to_anthropic_toolset(defer_loading=defer) for s in mcp_servers]
+        insert_at = search_index if search_index is not None else len(tools)
+        tools[insert_at:insert_at] = toolsets
+        request_params["tools"] = tools
+
+        betas = request_params.get("betas")
+        betas = list(betas) if isinstance(betas, list) else []
+        if cls.MCP_CONNECTOR_BETA not in betas:
+            betas.append(cls.MCP_CONNECTOR_BETA)
+        request_params["betas"] = betas
+
+        logger.debug(
+            "Native MCP: %d server(s) %s, toolsets deferred=%s",
+            len(mcp_servers),
+            [s.name for s in mcp_servers],
+            defer,
+        )
+
+    @classmethod
+    def _disable_tool_deferral(cls, request_params: Dict[str, Any]) -> bool:
         """Strip deferral + the server search tool; load every tool instead.
+
+        Covers both places deferral is expressed: the per-tool
+        ``defer_loading`` flag on local schemas and the ``default_config`` /
+        ``configs`` of an ``mcp_toolset``. Leaving the toolset flags in place
+        after dropping the search tool would leave those tools unreachable.
 
         Returns True if anything changed (i.e. a retry is worth attempting).
         """
@@ -827,16 +918,53 @@ class AnthropicClient(ModelClient):
             if not isinstance(tool, dict):
                 rebuilt.append(tool)
                 continue
-            if str(tool.get("type", "")).startswith("tool_search_tool"):
+            if cls._is_tool_search_tool(tool):
                 changed = True  # drop the server tool entirely
                 continue
             if "defer_loading" in tool:
                 tool = {k: v for k, v in tool.items() if k != "defer_loading"}
                 changed = True
+            if tool.get("type") == "mcp_toolset":
+                stripped, toolset_changed = cls._strip_toolset_deferral(tool)
+                if toolset_changed:
+                    tool = stripped
+                    changed = True
             rebuilt.append(tool)
         if changed:
             request_params["tools"] = rebuilt
         return changed
+
+    @staticmethod
+    def _strip_toolset_deferral(toolset: Dict[str, Any]) -> tuple:
+        """Copy of an `mcp_toolset` with every `defer_loading` removed."""
+        changed = False
+        out = dict(toolset)
+        default_config = out.get("default_config")
+        if isinstance(default_config, dict) and "defer_loading" in default_config:
+            default_config = {k: v for k, v in default_config.items() if k != "defer_loading"}
+            changed = True
+            if default_config:
+                out["default_config"] = default_config
+            else:
+                out.pop("default_config", None)
+        configs = out.get("configs")
+        if isinstance(configs, dict):
+            new_configs: Dict[str, Any] = {}
+            configs_changed = False
+            for name, cfg in configs.items():
+                if isinstance(cfg, dict) and "defer_loading" in cfg:
+                    cfg = {k: v for k, v in cfg.items() if k != "defer_loading"}
+                    configs_changed = True
+                    if not cfg:
+                        continue  # nothing left to say about this tool
+                new_configs[name] = cfg
+            if configs_changed:
+                changed = True
+                if new_configs:
+                    out["configs"] = new_configs
+                else:
+                    out.pop("configs", None)
+        return out, changed
 
     # Block types that accept a cache_control marker. Notably absent:
     # thinking / redacted_thinking — marking those is a 400.
@@ -1088,24 +1216,7 @@ class AnthropicClient(ModelClient):
 
             # Handle native MCP servers
             if use_native_mcp:
-                # Convert NativeMCPServerConfig to Anthropic format
-                anthropic_mcp_servers = [server.to_anthropic_format() for server in mcp_servers]
-                request_params["mcp_servers"] = anthropic_mcp_servers
-
-                # Add MCP beta header (combine with existing betas if any)
-                betas = request_params.get("betas", [])
-                if isinstance(betas, list):
-                    betas = list(betas)  # Make a copy
-                else:
-                    betas = []
-                if "mcp-client-2025-04-04" not in betas:
-                    betas.append("mcp-client-2025-04-04")
-                request_params["betas"] = betas
-
-                logger.debug(
-                    f"Using native MCP with {len(mcp_servers)} servers: "
-                    f"{[s.name for s in mcp_servers]}"
-                )
+                self._apply_native_mcp(request_params, mcp_servers)
 
             # Determine which client to use
             # Some models (e.g. Opus 4.7) reject `temperature` as a deprecated
@@ -1114,7 +1225,9 @@ class AnthropicClient(ModelClient):
                 request_params.pop("temperature", None)
 
             self._apply_strict_tool_cap(request_params)
-            self._prune_stale_tool_references(request_params)
+            self._prune_stale_tool_references(
+                request_params, mcp_servers if use_native_mcp else None
+            )
             self._apply_prompt_caching(request_params)
 
             # Use beta client for structured outputs or native MCP
@@ -1450,21 +1563,7 @@ class AnthropicClient(ModelClient):
 
             # Handle native MCP servers
             if use_native_mcp:
-                # Convert NativeMCPServerConfig to Anthropic format
-                anthropic_mcp_servers = [server.to_anthropic_format() for server in mcp_servers]
-                request_params["mcp_servers"] = anthropic_mcp_servers
-
-                # Add MCP beta header (combine with existing betas if any)
-                betas = request_params.get("betas", [])
-                if isinstance(betas, list):
-                    betas = list(betas)  # Make a copy
-                else:
-                    betas = []
-                if "mcp-client-2025-04-04" not in betas:
-                    betas.append("mcp-client-2025-04-04")
-                request_params["betas"] = betas
-
-                logger.debug(f"Streaming with native MCP: {len(mcp_servers)} servers")
+                self._apply_native_mcp(request_params, mcp_servers)
 
             # Some models (e.g. Opus 4.7) reject `temperature` as a deprecated
             # parameter; drop it before hitting the API.
@@ -1472,7 +1571,9 @@ class AnthropicClient(ModelClient):
                 request_params.pop("temperature", None)
 
             self._apply_strict_tool_cap(request_params)
-            self._prune_stale_tool_references(request_params)
+            self._prune_stale_tool_references(
+                request_params, mcp_servers if use_native_mcp else None
+            )
             self._apply_prompt_caching(request_params)
 
             # Determine which client to use

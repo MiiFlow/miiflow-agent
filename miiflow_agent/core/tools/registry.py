@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 #: clamps sooner when big schemas are present.
 _TYPICAL_TOOL_SCHEMA_BYTES = 1500
 
-from .exceptions import ToolPreparationError
+from .exceptions import ToolPreparationError, is_tool_validation_error, log_tool_failure
 from .function import FunctionTool
 from .http import HTTPTool
 from .schemas import ToolResult, ToolSchema
@@ -927,9 +927,7 @@ class ToolRegistry:
             raise
         except Exception as e:
             error_msg = f"Registry error executing '{resolved_name}': {str(e)}"
-            if self.enable_logging:
-                logger.debug(error_msg, exc_info=True)
-            logger.exception(error_msg)
+            log_tool_failure(logger, error_msg, e)
 
             if resolved_name in self.execution_stats:
                 self.execution_stats[resolved_name]["failures"] += 1
@@ -943,7 +941,7 @@ class ToolRegistry:
                 metadata={
                     "error_type": "registry_error",
                     "original_error": str(e),
-                    "is_validation_error": getattr(e, "is_tool_validation_error", False),
+                    "is_validation_error": is_tool_validation_error(e),
                 },
             )
 
@@ -1056,7 +1054,7 @@ class ToolRegistry:
         except Exception as e:
             execution_time = time.time() - start_time
             error_msg = f"Tool '{resolved_name}' failed: {str(e)}"
-            logger.exception(error_msg)
+            log_tool_failure(logger, error_msg, e)
 
             if resolved_name in self.execution_stats:
                 self.execution_stats[resolved_name]["failures"] += 1
@@ -1071,7 +1069,7 @@ class ToolRegistry:
                 metadata={
                     "execution_pattern": "first_param",
                     "error_type": type(e).__name__,
-                    "is_validation_error": getattr(e, "is_tool_validation_error", False),
+                    "is_validation_error": is_tool_validation_error(e),
                 },
             )
 

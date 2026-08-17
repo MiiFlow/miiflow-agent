@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional
 
 from ..schemas import ToolResult
 from ..types import FunctionType
-from ..exceptions import ToolExecutionError
+from ..exceptions import ToolExecutionError, is_tool_validation_error, log_tool_failure
 from ..schema_utils import detect_function_type, get_fun_schema
 from .context_patterns import analyze_context_pattern, filter_context_from_schema
 
@@ -181,8 +181,7 @@ class FunctionTool:
                     error_msg += f"\n  Optional: {', '.join(optional_params)}"
                 error_msg += f"\n  Provided: {', '.join(kwargs.keys())}"
 
-            logger.debug(error_msg, exc_info=True)
-            logger.exception(error_msg)
+            log_tool_failure(logger, error_msg, e)
 
             return ToolResult(
                 name=self.name,
@@ -191,7 +190,11 @@ class FunctionTool:
                 error=error_msg,
                 success=False,
                 execution_time=execution_time,
-                metadata={"function_type": self.function_type.value, "error_type": error_type}
+                metadata={
+                    "function_type": self.function_type.value,
+                    "error_type": error_type,
+                    "is_validation_error": is_tool_validation_error(e),
+                },
             )
 
         except TypeError as e:
@@ -214,8 +217,7 @@ class FunctionTool:
                     value_type = type(value).__name__
                     error_msg += f"\n  - {param_name}: {value_type} = {repr(value)[:100]}"
 
-            logger.debug(error_msg, exc_info=True)
-            logger.exception(error_msg)
+            log_tool_failure(logger, error_msg, e)
 
             return ToolResult(
                 name=self.name,
@@ -224,7 +226,11 @@ class FunctionTool:
                 error=error_msg,
                 success=False,
                 execution_time=execution_time,
-                metadata={"function_type": self.function_type.value, "error_type": "TypeError"}
+                metadata={
+                    "function_type": self.function_type.value,
+                    "error_type": "TypeError",
+                    "is_validation_error": is_tool_validation_error(e),
+                },
             )
 
         except ValueError as e:
@@ -244,8 +250,7 @@ class FunctionTool:
                 if hasattr(param_schema, 'maximum') and param_schema.maximum is not None and param_name in kwargs:
                     error_msg += f"\n  - {param_name} maximum: {param_schema.maximum}"
 
-            logger.debug(error_msg, exc_info=True)
-            logger.exception(error_msg)
+            log_tool_failure(logger, error_msg, e)
 
             return ToolResult(
                 name=self.name,
@@ -254,7 +259,11 @@ class FunctionTool:
                 error=error_msg,
                 success=False,
                 execution_time=execution_time,
-                metadata={"function_type": self.function_type.value, "error_type": "ValueError"}
+                metadata={
+                    "function_type": self.function_type.value,
+                    "error_type": "ValueError",
+                    "is_validation_error": is_tool_validation_error(e),
+                },
             )
 
         except Exception as e:
@@ -274,8 +283,7 @@ class FunctionTool:
             if kwargs:
                 error_msg += f"\n  Called with {len(kwargs)} parameter(s): {', '.join(kwargs.keys())}"
 
-            logger.debug(error_msg, exc_info=True)
-            logger.exception(error_msg)
+            log_tool_failure(logger, error_msg, e)
 
             return ToolResult(
                 name=self.name,
@@ -287,7 +295,7 @@ class FunctionTool:
                 metadata={
                     "function_type": self.function_type.value,
                     "error_type": error_type,
-                    "is_validation_error": getattr(e, "is_tool_validation_error", False),
+                    "is_validation_error": is_tool_validation_error(e),
                 },
             )
     

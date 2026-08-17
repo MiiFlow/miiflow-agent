@@ -86,7 +86,11 @@ class NativeMCPServerConfig:
         allowed_tools: Optional list of tool names to enable (filter)
         headers: Optional HTTP headers for authentication (OpenAI)
         require_approval: Tool approval mode for OpenAI: "never", "always"
-        tool_configuration: Additional tool configuration options
+        tool_configuration: Extra per-server tool settings. On Anthropic these
+            are folded into the ``mcp_toolset`` entry (``enabled`` →
+            ``default_config.enabled``, ``allowed_tools`` → an allowlist in
+            ``configs``); the deprecated ``mcp_servers[].tool_configuration``
+            wire field is never sent.
         known_tools: Tool names this server is known to serve, for local
             DIAGNOSTICS only — never sent to the provider. A native-MCP tool is
             not in the local registry (the provider connects to the server
@@ -95,6 +99,10 @@ class NativeMCPServerConfig:
             which reads as "the integration is gone". Populated by the host
             from whatever it has cached; an empty/None list only costs the
             sharper message.
+        description: What the server is for, in the host's words — for the
+            host's own prompt, never on the wire. Under deferral the model no
+            longer sees the server's tool descriptions up front, so this is
+            the one line that tells it the capability exists at all.
     """
 
     name: str
@@ -105,9 +113,17 @@ class NativeMCPServerConfig:
     require_approval: str = "never"  # OpenAI: "never", "always"
     tool_configuration: Optional[Dict[str, Any]] = None
     known_tools: Optional[List[str]] = None
+    description: Optional[str] = None
 
     def to_anthropic_format(self) -> Dict[str, Any]:
-        """Convert to Anthropic MCP server format."""
+        """The ``mcp_servers[]`` entry: connection details only.
+
+        Tool selection lives in the paired ``mcp_toolset`` (see
+        :meth:`to_anthropic_toolset`), not here — under
+        ``mcp-client-2025-11-20`` the old ``tool_configuration`` field on the
+        server entry is deprecated, and every server must be referenced by
+        exactly one toolset in ``tools``.
+        """
         config: Dict[str, Any] = {
             "type": "url",
             "url": self.url,
@@ -115,13 +131,49 @@ class NativeMCPServerConfig:
         }
         if self.authorization_token:
             config["authorization_token"] = self.authorization_token
-        if self.allowed_tools:
-            config["tool_configuration"] = {"allowed_tools": self.allowed_tools}
-        if self.tool_configuration:
-            # Merge with existing tool_configuration
-            existing = config.get("tool_configuration", {})
-            config["tool_configuration"] = {**existing, **self.tool_configuration}
         return config
+
+    def to_anthropic_toolset(self, *, defer_loading: bool = False) -> Dict[str, Any]:
+        """The ``tools[]`` entry that enables this server's tools on Anthropic.
+
+        ``defer_loading=True`` marks every tool on the server as deferred:
+        the API keeps the definitions server-side and the model reaches
+        them through the tool-search tool, exactly like a deferred local
+        tool. This is the ONLY deferral mechanism for connector tools — the
+        per-tool ``defer_loading`` flag on local schemas never applies to
+        them, which is how a whole-server attachment (263 tools, ~660K
+        tokens of schema on one production org) shipped into every request
+        uncached and cost ~30 s of first-token latency per new thread. Only
+        meaningful when the request also carries a ``tool_search_tool_*``
+        entry; the caller decides that from the tools array it is sending.
+
+        ``allowed_tools`` becomes the documented allowlist shape
+        (``default_config.enabled: false`` + per-tool ``enabled: true``);
+        an explicit ``tool_configuration.enabled`` sets the default.
+        """
+        toolset: Dict[str, Any] = {
+            "type": "mcp_toolset",
+            "mcp_server_name": self.name,
+        }
+        default_config: Dict[str, Any] = {}
+        configs: Dict[str, Dict[str, Any]] = {}
+
+        extra = dict(self.tool_configuration or {})
+        if "enabled" in extra:
+            default_config["enabled"] = bool(extra["enabled"])
+        allowed = list(self.allowed_tools or []) or list(extra.get("allowed_tools") or [])
+        if allowed:
+            default_config["enabled"] = False
+            for tool_name in allowed:
+                configs[str(tool_name)] = {"enabled": True}
+        if defer_loading:
+            default_config["defer_loading"] = True
+
+        if default_config:
+            toolset["default_config"] = default_config
+        if configs:
+            toolset["configs"] = configs
+        return toolset
 
     def to_openai_format(self) -> Dict[str, Any]:
         """Convert to OpenAI MCP tool format (for Responses API)."""

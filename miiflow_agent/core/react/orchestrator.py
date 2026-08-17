@@ -212,14 +212,34 @@ def _attach_search_blocks(
     return False
 
 
+#: Appended to a rendered visualization's ``[VIZ:id]`` observation. Stated
+#: here, at the moment the model holds the handle, rather than only in a
+#: system prompt: it is what makes revising a visual safe. Without it the model
+#: had no way to know what became of a render it did NOT embed — one
+#: production strategist rendered the same KPI card three times, refining the
+#: labels, and embedded only the last; the host appended the two abandoned
+#: drafts under the answer as duplicates. The contract is now explicit and
+#: symmetric with the host's finalize step (unembedded renders are dropped
+#: whenever the answer embeds any marker), so "render again, embed only the
+#: final one" is the documented way to revise.
+VISUALIZATION_MARKER_CONTRACT = (
+    "Rendered. It appears in the answer only where this marker is embedded; "
+    "a render that is not embedded is dropped, so to revise it, render again "
+    "and embed only the final marker."
+)
+
+
 def visualization_observation(viz_data: Dict[str, Any]) -> str:
     """What the model is told after a tool returned a visualization.
 
-    A bare ``[VIZ:id]`` marker is right for a chart: the picture went to the
-    user and the model needs only a handle for it. It is wrong for an
-    ``auth_prompt``, where the marker is the ONLY record that the tool did no
-    work — read back as "visualization generated", it reports a blocked call as
-    a success, and the model carries on as though it had data.
+    For a chart it is the ``[VIZ:id]`` handle plus the one rule the model
+    needs to hold it correctly (:data:`VISUALIZATION_MARKER_CONTRACT`). It is
+    wrong for an ``auth_prompt``, where the marker is the ONLY record that the
+    tool did no work — read back as "visualization generated", it reports a
+    blocked call as a success, and the model carries on as though it had
+    data. The auth card is also not something the model places: the host shows
+    it regardless of embedding, so it gets its own wording rather than the
+    embed rule.
 
     Shared because the two result paths had drifted: the single-tool path
     spelled the auth case out while the batch path emitted the bare marker, so
@@ -228,7 +248,7 @@ def visualization_observation(viz_data: Dict[str, Any]) -> str:
     """
     marker = f"[VIZ:{viz_data.get('id', 'unknown')}]"
     if viz_data.get("type") != "auth_prompt":
-        return marker
+        return f"{marker} {VISUALIZATION_MARKER_CONTRACT}"
     provider_name = (viz_data.get("data") or {}).get("providerName") or "the provider"
     return (
         f"{marker} No data was returned: {provider_name} is not connected. "

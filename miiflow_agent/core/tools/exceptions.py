@@ -73,3 +73,33 @@ class MCPAuthRequired(Exception):
             f"MCP server {mcp_server_name!r} requires user authorization"
             + (f": {reason}" if reason else "")
         )
+
+
+def is_tool_validation_error(exc: BaseException) -> bool:
+    """True when a tool raised a *declared* input-shape rejection.
+
+    Tools mark exceptions with ``is_tool_validation_error = True`` when the
+    failure means "the model must fix its call" (bad GAQL, unknown field, …)
+    rather than "the tool malfunctioned". The registry propagates the flag
+    into ``ToolResult.metadata['is_validation_error']`` so the recovery
+    manager skips the runtime-failure ladder — and the same flag decides how
+    the failure is *logged*: a validation rejection is the tool's normal
+    contract with the model, not an exception worth an Error Tracking issue.
+    """
+    return bool(getattr(exc, "is_tool_validation_error", False))
+
+
+def log_tool_failure(logger, message: str, exc: BaseException) -> None:
+    """Log a failed tool call at the right severity.
+
+    ``logger.exception`` for genuine malfunctions (traceback attached, so the
+    PostHog log bridge captures it as an ``$exception`` and Error Tracking
+    alerts). ``logger.warning`` — no traceback — for declared validation
+    rejections, which the model routinely commits and self-corrects on the
+    next turn (e.g. every malformed GAQL query); reporting those as
+    exceptions pages on-call for model typos.
+    """
+    if is_tool_validation_error(exc):
+        logger.warning("%s [tool_validation_error=%s]", message, type(exc).__name__)
+    else:
+        logger.exception(message)

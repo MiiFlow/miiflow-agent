@@ -360,7 +360,7 @@ def supports_native_mcp(model: str) -> bool:
     Native MCP allows the Anthropic API to connect directly to MCP servers
     and execute tools server-side, rather than requiring client-side handling.
 
-    All Claude models support native MCP via the mcp-client-2025-04-04 beta.
+    All Claude models support native MCP via the mcp-client beta (see AnthropicClient.MCP_CONNECTOR_BETA).
 
     Args:
         model: The model identifier

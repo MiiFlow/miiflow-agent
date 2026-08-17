@@ -71,7 +71,7 @@ class BedrockClient(AnthropicClient):
         """
         Check if Bedrock supports native MCP.
 
-        Native MCP (mcp-client-2025-04-04 beta) is an Anthropic API-specific feature
+        Native MCP (the mcp-client beta) is an Anthropic API-specific feature
         that allows server-side MCP execution. This feature is NOT supported by
         Amazon Bedrock - attempting to use it results in:
         "extraneous key [mcp_servers] is not permitted"

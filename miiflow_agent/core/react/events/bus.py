@@ -151,7 +151,7 @@ class EventBus:
                 else:
                     callback(event)
             except Exception as e:
-                logger.error(f"Error in event subscriber: {e}")
+                logger.exception(f"Error in event subscriber: {e}")
 
     def get_events(self, **filters) -> List[Any]:
         """Get filtered events from buffer using simple kwargs.

@@ -183,7 +183,7 @@ class MCPTool:
         except Exception as e:
             execution_time = time.time() - start_time
             error_msg = f"MCP tool '{self.name}' failed: {str(e)}"
-            logger.error(error_msg)
+            logger.exception(error_msg)
 
             return ToolResult(
                 name=self.name,

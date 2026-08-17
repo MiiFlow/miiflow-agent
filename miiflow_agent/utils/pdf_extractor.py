@@ -106,7 +106,7 @@ def extract_pdf_text(pdf_data: str, use_ocr: bool = True, max_size_mb: int = 100
         }
         
     except Exception as e:
-        logger.error(f"PDF text extraction failed: {str(e)}")
+        logger.exception(f"PDF text extraction failed: {str(e)}")
         return {
             "text": f"[Error extracting PDF text: {str(e)}]",
             "metadata": {
@@ -156,7 +156,7 @@ def _extract_with_ocr(doc, pdf_bytes: bytes) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        logger.error(f"OCR extraction failed: {str(e)}")
+        logger.exception(f"OCR extraction failed: {str(e)}")
         return {"success": False, "page_texts": []}
 
 
@@ -211,7 +211,7 @@ def extract_pdf_metadata(pdf_data: str) -> Dict[str, Any]:
         return metadata
         
     except Exception as e:
-        logger.error(f"PDF metadata extraction failed: {str(e)}")
+        logger.exception(f"PDF metadata extraction failed: {str(e)}")
         return {"error": str(e)}
 
 

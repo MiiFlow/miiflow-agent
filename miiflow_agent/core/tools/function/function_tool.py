@@ -182,7 +182,7 @@ class FunctionTool:
                 error_msg += f"\n  Provided: {', '.join(kwargs.keys())}"
 
             logger.debug(error_msg, exc_info=True)
-            logger.error(error_msg)
+            logger.exception(error_msg)
 
             return ToolResult(
                 name=self.name,
@@ -215,7 +215,7 @@ class FunctionTool:
                     error_msg += f"\n  - {param_name}: {value_type} = {repr(value)[:100]}"
 
             logger.debug(error_msg, exc_info=True)
-            logger.error(error_msg)
+            logger.exception(error_msg)
 
             return ToolResult(
                 name=self.name,
@@ -245,7 +245,7 @@ class FunctionTool:
                     error_msg += f"\n  - {param_name} maximum: {param_schema.maximum}"
 
             logger.debug(error_msg, exc_info=True)
-            logger.error(error_msg)
+            logger.exception(error_msg)
 
             return ToolResult(
                 name=self.name,
@@ -275,7 +275,7 @@ class FunctionTool:
                 error_msg += f"\n  Called with {len(kwargs)} parameter(s): {', '.join(kwargs.keys())}"
 
             logger.debug(error_msg, exc_info=True)
-            logger.error(error_msg)
+            logger.exception(error_msg)
 
             return ToolResult(
                 name=self.name,

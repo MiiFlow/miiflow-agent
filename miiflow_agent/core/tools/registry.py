@@ -929,7 +929,7 @@ class ToolRegistry:
             error_msg = f"Registry error executing '{resolved_name}': {str(e)}"
             if self.enable_logging:
                 logger.debug(error_msg, exc_info=True)
-            logger.error(error_msg)
+            logger.exception(error_msg)
 
             if resolved_name in self.execution_stats:
                 self.execution_stats[resolved_name]["failures"] += 1
@@ -1056,7 +1056,7 @@ class ToolRegistry:
         except Exception as e:
             execution_time = time.time() - start_time
             error_msg = f"Tool '{resolved_name}' failed: {str(e)}"
-            logger.error(error_msg)
+            logger.exception(error_msg)
 
             if resolved_name in self.execution_stats:
                 self.execution_stats[resolved_name]["failures"] += 1

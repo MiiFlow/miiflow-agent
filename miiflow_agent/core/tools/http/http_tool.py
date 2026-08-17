@@ -107,7 +107,7 @@ class HTTPTool:
         except httpx.ProxyError as e:
             execution_time = time.time() - start_time
             error_msg = f"Proxy error for HTTP tool '{self.name}': {str(e)}"
-            logger.error(error_msg)
+            logger.exception(error_msg)
             logger.debug("Check proxy settings: HTTP_PROXY, HTTPS_PROXY, NO_PROXY")
             
             return ToolResult(
@@ -125,7 +125,7 @@ class HTTPTool:
         except httpx.ConnectTimeout as e:
             execution_time = time.time() - start_time
             error_msg = f"Connection timeout for HTTP tool '{self.name}': {str(e)}"
-            logger.error(error_msg)
+            logger.exception(error_msg)
             
             return ToolResult(
                 name=self.name,
@@ -142,7 +142,7 @@ class HTTPTool:
         except httpx.ReadTimeout as e:
             execution_time = time.time() - start_time
             error_msg = f"Read timeout for HTTP tool '{self.name}': {str(e)}"
-            logger.error(error_msg)
+            logger.exception(error_msg)
             
             return ToolResult(
                 name=self.name,
@@ -159,7 +159,7 @@ class HTTPTool:
         except httpx.HTTPStatusError as e:
             execution_time = time.time() - start_time
             error_msg = f"HTTP {e.response.status_code} error for tool '{self.name}': {e.response.text}"
-            logger.error(error_msg)
+            logger.exception(error_msg)
             
             return ToolResult(
                 name=self.name,

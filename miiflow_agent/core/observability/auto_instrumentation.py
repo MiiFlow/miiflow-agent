@@ -205,7 +205,7 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
         logger.warning(f"OpenTelemetry dependencies not available: {e}")
         return False
     except Exception as e:
-        logger.error(f"Failed to setup OpenTelemetry tracing: {e}")
+        logger.exception(f"Failed to setup OpenTelemetry tracing: {e}")
         return False
 
 
@@ -232,7 +232,7 @@ def launch_local_phoenix(port: int = 6006) -> Optional[Any]:
         logger.warning(f"Phoenix dependencies not available: {e}")
         return None
     except Exception as e:
-        logger.error(f"Failed to launch local Phoenix: {e}")
+        logger.exception(f"Failed to launch local Phoenix: {e}")
         return None
 
 

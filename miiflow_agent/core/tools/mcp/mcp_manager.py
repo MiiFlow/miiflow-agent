@@ -123,7 +123,7 @@ class MCPToolManager:
 
             except Exception as e:
                 error_msg = f"Failed to connect to MCP server '{name}': {e}"
-                logger.error(error_msg)
+                logger.exception(error_msg)
                 errors.append(error_msg)
 
         if errors:
@@ -147,7 +147,7 @@ class MCPToolManager:
             try:
                 await connection.disconnect()
             except Exception as e:
-                logger.error(f"Error disconnecting from '{name}': {e}")
+                logger.exception(f"Error disconnecting from '{name}': {e}")
 
         self._connections.clear()
         self._tools.clear()
@@ -268,7 +268,7 @@ class MCPToolManager:
 
                 logger.info(f"Refreshed tools from '{name}': {len(tools)} tools")
             except Exception as e:
-                logger.error(f"Failed to refresh tools from '{name}': {e}")
+                logger.exception(f"Failed to refresh tools from '{name}': {e}")
 
     def get_schemas(self, provider: str) -> List[Dict[str, Any]]:
         """Get all tool schemas in provider format.

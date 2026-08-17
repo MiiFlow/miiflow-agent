@@ -165,4 +165,4 @@ class EventProcessor:
                 else:
                     print(formatted)  # Default handler
             except Exception as e:
-                logging.error(f"Formatter {name} failed: {e}")
+                logging.exception(f"Formatter {name} failed: {e}")

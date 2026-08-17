@@ -955,7 +955,7 @@ class ReActOrchestrator:
                         execution_state.structural_repair_attempted = True
                         repaired, anomalies = repair_tool_pairing(context.messages)
                         if anomalies:
-                            logger.error(
+                            logger.exception(
                                 "[ORCH] provider rejected message structure "
                                 "(%s); repaired and resending: %s",
                                 _preview(str(_llm_err), 200),
@@ -963,7 +963,7 @@ class ReActOrchestrator:
                             )
                             context.messages = repaired
                             continue
-                        logger.error(
+                        logger.exception(
                             "[ORCH] provider rejected message structure but "
                             "repair found nothing to fix: %s",
                             _preview(str(_llm_err), 200),

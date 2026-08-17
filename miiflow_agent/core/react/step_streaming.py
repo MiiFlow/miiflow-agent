@@ -700,7 +700,7 @@ class StepStreamer:
                         try:
                             step.action_input = json.loads(tool_args)
                         except json.JSONDecodeError as e:
-                            logger.error(
+                            logger.exception(
                                 f"Step {state.current_step} - Failed to parse tool arguments as JSON. "
                                 f"Error: {e}. Arguments preview: {tool_args[:200]}..."
                             )

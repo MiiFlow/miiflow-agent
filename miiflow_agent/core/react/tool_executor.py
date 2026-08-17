@@ -131,6 +131,23 @@ class AgentToolExecutor:
             tool_name, inputs = unwrapped
             logger.debug("[TOOL_BRIDGE] unwrapped tool_call -> %s", tool_name)
 
+        # One TOOL span per execution, opened AFTER unwrapping so it is named
+        # for the real tool. A plain coroutine (not an async generator), so
+        # the sync context manager's attach/detach stay in one task — the
+        # hazard `traced_stream` exists for does not apply here. Child agents
+        # dispatched from inside the tool nest under this span.
+        from ..observability.spans import record_tool_result, tool_span
+
+        with tool_span(tool_name, inputs) as span:
+            result = await self._execute_tool_gated(tool_name, inputs, context)
+            record_tool_result(span, result)
+            return result
+
+    async def _execute_tool_gated(
+        self, tool_name: str, inputs: dict, context=None
+    ) -> ToolResult:
+        """`execute_tool` after bridge-unwrapping: filter, plan-mode gate,
+        PRE_TOOL_USE approval, dedupe gate, then the execution leg."""
         # Check tool filter before execution
         if self.tool_filter and not self.tool_filter.is_allowed(tool_name):
             return ToolResult(

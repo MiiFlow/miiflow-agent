@@ -7,7 +7,7 @@ context window limits, inspired by Claude Code's multi-level compaction system.
 import logging
 from enum import Enum
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .message import Message, MessageRole
 
@@ -62,8 +62,40 @@ _SUMMARY_INPUT_CLIP_CHARS = 2_000
 # Summary output budget scales with how much is being replaced: a flat cap
 # (formerly 500 tokens) meant a 100-message run compacted into the same space
 # as a 10-message one, discarding almost everything that made the run useful.
-_SUMMARY_MIN_TOKENS = 500
-_SUMMARY_MAX_TOKENS = 2_000
+#
+# The floor is 2,000, not 500, because `max_tokens` is a hard cap on thinking
+# PLUS text: on the thinking-by-default Claude 5 models the 500-token floor was
+# consumed entirely by the thinking block — production traces (2026-08) showed
+# 20 of 24 handoff notes returned `stop_reason=max_tokens` with an empty text
+# body, so every compacted run continued from a blank note. Thinking is now
+# disabled for this call where the API allows it, and the floor gives real
+# headroom where it does not (Fable 5).
+_SUMMARY_MIN_TOKENS = 2_000
+_SUMMARY_MAX_TOKENS = 6_000
+# One retry with this budget when the note still hits `max_tokens` — a
+# truncated note is a partial handoff, but no note at all is a hard reset.
+_SUMMARY_RETRY_TOKENS = 12_000
+
+
+# Provider spellings of "output was cut off by max_tokens".
+_TRUNCATED_FINISH_REASONS = {"max_tokens", "length"}
+
+
+def _response_text(response: Any) -> str:
+    """The text of a ChatResponse, tolerating list-of-blocks content."""
+    content = getattr(getattr(response, "message", None), "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            text = getattr(block, "text", None)
+            if text is None and isinstance(block, dict):
+                text = block.get("text")
+            if text:
+                parts.append(str(text))
+        return "".join(parts)
+    return ""
 
 
 def _head_user_message(messages: List[Message]) -> Optional[Message]:
@@ -349,6 +381,77 @@ class ContextCompressor:
         # clamp as the final safety net across all strategies.
         return result
 
+    async def _request_summary(
+        self, summary_prompt: str, max_tokens: int, *, dropped_messages: int = 0
+    ) -> str:
+        """One summariser call, shaped so the note cannot silently come back empty.
+
+        Runs inside a `context.compaction` CHAIN span so the note's budget,
+        finish reason and size are visible in the trace next to the LLM call
+        that produced it — the empty-note regression was only found by
+        reading raw LLM spans, which is not a place anyone looks routinely.
+
+        * No tools and no MCP servers: the note is prose for the model's own
+          future self; the agent's tool schemas and connectors only add tokens
+          and change how the model answers.
+        * Thinking disabled where the API allows it: adaptive thinking is on by
+          default on Claude 5 and shares `max_tokens` with the text.
+        * `stop_reason=max_tokens` with no text is retried once with a much
+          larger budget; a still-truncated note is kept (partial beats blank)
+          and logged so the compaction span shows it.
+        """
+        from .observability.spans import agent_span, set_span_attribute
+
+        summary_message = [Message(role=MessageRole.USER, content=summary_prompt)]
+        summary_kwargs: Dict[str, Any] = {
+            "temperature": 0.0,
+            "_formatted_tools": [],
+            "mcp_servers": None,
+            "thinking_disabled": True,
+        }
+        with agent_span(
+            "context.compaction",
+            kind="CHAIN",
+            **{
+                "compaction.dropped_messages": dropped_messages,
+                "compaction.max_tokens": max_tokens,
+            },
+        ) as span:
+            response = await self.client.achat(
+                messages=summary_message, max_tokens=max_tokens, **summary_kwargs
+            )
+            text = _response_text(response)
+            finish = getattr(response, "finish_reason", None)
+            retried = False
+            if not text.strip() and finish in _TRUNCATED_FINISH_REASONS:
+                retried = True
+                logger.warning(
+                    "[COMPACTION] handoff note empty at max_tokens=%d (finish=%s); "
+                    "retrying with max_tokens=%d",
+                    max_tokens,
+                    finish,
+                    _SUMMARY_RETRY_TOKENS,
+                )
+                response = await self.client.achat(
+                    messages=summary_message,
+                    max_tokens=_SUMMARY_RETRY_TOKENS,
+                    **summary_kwargs,
+                )
+                text = _response_text(response)
+                finish = getattr(response, "finish_reason", None)
+            if finish in _TRUNCATED_FINISH_REASONS:
+                logger.warning(
+                    "[COMPACTION] handoff note truncated (finish=%s, chars=%d)",
+                    finish,
+                    len(text),
+                )
+            set_span_attribute(span, "compaction.retried", retried)
+            set_span_attribute(span, "compaction.finish_reason", finish)
+            set_span_attribute(span, "compaction.summary_chars", len(text))
+            set_span_attribute(span, "compaction.truncated", finish in _TRUNCATED_FINISH_REASONS)
+            set_span_attribute(span, "output.value", text[:4000])
+        return text or "Previous conversation context unavailable."
+
     async def _summarize(
         self, messages: List[Message], preserve_recent: int
     ) -> List[Message]:
@@ -440,12 +543,9 @@ class ContextCompressor:
         )
 
         try:
-            response = await self.client.achat(
-                messages=[Message(role=MessageRole.USER, content=summary_prompt)],
-                temperature=0.0,
-                max_tokens=summary_max_tokens,
+            summary = await self._request_summary(
+                summary_prompt, summary_max_tokens, dropped_messages=len(old_messages)
             )
-            summary = response.message.content or "Previous conversation context unavailable."
         except Exception as e:
             logger.warning(f"LLM summarization failed: {e}")
             summary = f"[{len(old_messages)} earlier messages summarized - details unavailable due to error]"

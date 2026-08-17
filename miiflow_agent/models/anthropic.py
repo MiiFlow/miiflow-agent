@@ -1,6 +1,6 @@
 """Anthropic model configurations."""
 
-from typing import Dict
+from typing import Dict, Optional
 
 from .base import ModelConfig, ParameterConfig, ParameterType
 
@@ -209,6 +209,34 @@ _NO_EXTENDED_THINKING = {
     "claude-opus-4.7",
     "claude-sonnet-5",
 }
+
+# Models that THINK BY DEFAULT when the request omits `thinking` (adaptive is
+# the default, not off) and that accept `thinking: {"type": "disabled"}` at
+# effort <= high. Fable 5 also thinks by default but rejects "disabled" with a
+# 400, so it is deliberately absent; Opus 4.8/4.7/4.6 and Sonnet 4.6 default to
+# no thinking, so there is nothing to disable.
+_THINKING_ON_BY_DEFAULT_DISABLEABLE = {
+    "claude-opus-5",
+    "claude-sonnet-5",
+}
+
+
+def thinking_disable_param(model: str) -> Optional[Dict[str, str]]:
+    """The `thinking` request value that turns thinking OFF for `model`, or None.
+
+    Callers that want a short, deterministic, cheap completion (a compaction
+    handoff note, a title, a classifier) must pass this explicitly on the
+    thinking-by-default models: otherwise adaptive thinking runs first and
+    `max_tokens` — a hard cap on thinking PLUS text — can be consumed entirely
+    by the thinking block, returning `stop_reason=max_tokens` with no text at
+    all. Returns None where nothing needs sending (defaults to off) or where
+    the API would reject "disabled" (Fable 5).
+    """
+    model_lower = (model or "").lower()
+    for name in _THINKING_ON_BY_DEFAULT_DISABLEABLE:
+        if name in model_lower or ANTHROPIC_MODELS[name].model_identifier in model_lower:
+            return {"type": "disabled"}
+    return None
 
 
 def _get_thinking_models() -> list[str]:

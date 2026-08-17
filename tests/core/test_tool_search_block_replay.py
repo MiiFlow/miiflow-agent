@@ -394,3 +394,88 @@ def test_dispatcher_always_load_is_set_by_the_factory():
 
     tool = make_subagent_dispatcher_tool([_Sub()], parent_assistant_id="p1")
     assert tool.schema.metadata.get("always_load") is True
+
+
+# ── stale tool_reference pruning ─────────────────────────────────────────────
+
+def _search_pair(*tool_names, use_id="srvtoolu_9"):
+    return [
+        {"type": "server_tool_use", "id": use_id, "name": "tool_search_tool_regex",
+         "input": {"query": "ads"}},
+        {"type": "tool_search_tool_result", "tool_use_id": use_id,
+         "content": {"type": "tool_search_tool_search_result",
+                     "tool_references": [
+                         {"type": "tool_reference", "tool_name": n} for n in tool_names
+                     ]}},
+    ]
+
+
+def _prune(request_params):
+    from miiflow_agent.providers.anthropic_client import AnthropicClient
+
+    return AnthropicClient._prune_stale_tool_references(request_params)
+
+
+def test_prune_drops_only_references_to_tools_missing_from_the_request():
+    """Production 2026-08-10..15: `Tool reference 'list_all_ad_accounts' not
+    found in available tools` — 18 pipeline specialist runs died 12–20 min in
+    because a search result recorded earlier named a tool the current request
+    no longer carried."""
+    original_pair = _search_pair("list_all_ad_accounts", "google_ads_query")
+    params = {
+        "tools": [{"name": "google_ads_query", "input_schema": {}}],
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}] + original_pair},
+        ],
+    }
+    dropped = _prune(params)
+    assert dropped == 1
+    result = params["messages"][1]["content"][2]
+    assert [r["tool_name"] for r in result["content"]["tool_references"]] == ["google_ads_query"]
+    # The stored blocks (message metadata / checkpoint) are never mutated.
+    assert [r["tool_name"] for r in original_pair[1]["content"]["tool_references"]] == [
+        "list_all_ad_accounts", "google_ads_query",
+    ]
+
+
+def test_prune_removes_both_halves_when_no_reference_survives():
+    params = {
+        "tools": [{"name": "meta_ads_insights"}],
+        "messages": [
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}] + _search_pair("gone")},
+        ],
+    }
+    assert _prune(params) == 1
+    types = [b["type"] for b in params["messages"][0]["content"]]
+    assert types == ["text"], types
+
+
+def test_prune_leaves_a_placeholder_when_the_turn_was_only_a_search():
+    params = {
+        "tools": [{"name": "x"}],
+        "messages": [{"role": "assistant", "content": _search_pair("gone")}],
+    }
+    _prune(params)
+    assert params["messages"][0]["content"] == [{"type": "text", "text": "[no content]"}]
+
+
+def test_prune_is_a_noop_when_every_reference_is_available():
+    pair = _search_pair("a", "b")
+    params = {
+        "tools": [{"name": "a"}, {"name": "b", "defer_loading": True}],
+        "messages": [{"role": "assistant", "content": pair}],
+    }
+    assert _prune(params) == 0
+    assert params["messages"][0]["content"] is pair
+
+
+def test_prune_ignores_string_content_and_other_blocks():
+    params = {
+        "tools": [],
+        "messages": [
+            {"role": "user", "content": "plain"},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "ok"}]},
+        ],
+    }
+    assert _prune(params) == 0

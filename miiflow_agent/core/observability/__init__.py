@@ -11,7 +11,18 @@ from .auto_instrumentation import (
     uninstrument_all,
 )
 from .logging import get_logger, configure_structured_logging
-from .spans import agent_span, set_span_attribute, set_span_output, traced_stream
+from .spans import (
+    OUTCOME_ANSWERED,
+    OUTCOME_APPROVAL,
+    OUTCOME_CLARIFICATION,
+    OUTCOME_ERROR,
+    OUTCOME_HALTED,
+    AgentOutcome,
+    agent_span,
+    set_span_attribute,
+    set_span_output,
+    traced_stream,
+)
 
 __all__ = [
     # Core configuration
@@ -29,6 +40,12 @@ __all__ = [
     "uninstrument_all",
     # Agent spans
     "agent_span",
+    "AgentOutcome",
+    "OUTCOME_ANSWERED",
+    "OUTCOME_APPROVAL",
+    "OUTCOME_CLARIFICATION",
+    "OUTCOME_ERROR",
+    "OUTCOME_HALTED",
     "set_span_attribute",
     "set_span_output",
     "traced_stream",

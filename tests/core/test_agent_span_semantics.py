@@ -181,3 +181,90 @@ class TestNoTracerIsANoOp:
         assert ran == [None]
         # The output helper must tolerate the no-op span too.
         set_span_output(None, "anything")
+
+
+class TestToolSpans:
+    """Tool executions used to leave no span at all — a 15-minute investigator
+    trace was one AGENT span with LLM children and nothing between them."""
+
+    def test_success_records_name_input_output_and_ok(self, spans):
+        from types import SimpleNamespace
+
+        from opentelemetry.trace import StatusCode
+
+        from miiflow_agent.core.observability.spans import record_tool_result, tool_span
+
+        with tool_span("google_ads_query", {"customer_id": "123", "query": "SELECT 1"}) as span:
+            record_tool_result(
+                span,
+                SimpleNamespace(
+                    success=True, error=None, output={"rows": [1, 2]},
+                    metadata={"observation_ref": "agent_obs_x"},
+                ),
+            )
+        s = spans()["tool.google_ads_query"]
+        assert s.attributes["openinference.span.kind"] == "TOOL"
+        assert s.attributes["tool.name"] == "google_ads_query"
+        assert '"customer_id":"123"' in s.attributes["input.value"]
+        assert '"rows":[1,2]' in s.attributes["output.value"]
+        assert s.attributes["tool.observation_ref"] == "agent_obs_x"
+        assert s.attributes["tool.outcome"] == "ok"
+        assert s.status.status_code == StatusCode.OK
+
+    def test_failed_result_marks_error_with_tool_message(self, spans):
+        from types import SimpleNamespace
+
+        from opentelemetry.trace import StatusCode
+
+        from miiflow_agent.core.observability.spans import record_tool_result, tool_span
+
+        with tool_span("meta_ads_insights", {}) as span:
+            record_tool_result(
+                span, SimpleNamespace(success=False, error="account not found", output=None, metadata={})
+            )
+        s = spans()["tool.meta_ads_insights"]
+        assert s.status.status_code == StatusCode.ERROR
+        assert "account not found" in s.status.description
+        assert s.attributes["tool.outcome"] == "error"
+
+    def test_approval_pause_is_not_an_error(self, spans):
+        from opentelemetry.trace import StatusCode
+
+        from miiflow_agent.core.observability.spans import tool_span
+        from miiflow_agent.core.react.exceptions import ToolApprovalRequired
+
+        with pytest.raises(ToolApprovalRequired):
+            with tool_span("update_campaign_budget", {"budget": 10}):
+                raise ToolApprovalRequired("update_campaign_budget", {"budget": 10})
+        s = spans()["tool.update_campaign_budget"]
+        assert s.status.status_code == StatusCode.OK
+        assert s.attributes["tool.outcome"] == "paused"
+
+    def test_unexpected_raise_is_an_error(self, spans):
+        from opentelemetry.trace import StatusCode
+
+        from miiflow_agent.core.observability.spans import tool_span
+
+        with pytest.raises(RuntimeError):
+            with tool_span("boom", {}):
+                raise RuntimeError("kaboom")
+        s = spans()["tool.boom"]
+        assert s.status.status_code == StatusCode.ERROR
+        assert "kaboom" in s.status.description
+
+    def test_large_output_is_excerpted(self, spans):
+        from types import SimpleNamespace
+
+        from miiflow_agent.core.observability.spans import (
+            TOOL_OUTPUT_EXCERPT_CHARS,
+            record_tool_result,
+            tool_span,
+        )
+
+        with tool_span("big", {}) as span:
+            record_tool_result(
+                span, SimpleNamespace(success=True, error=None, output="x" * 50_000, metadata={})
+            )
+        out = spans()["tool.big"].attributes["output.value"]
+        assert len(out) < TOOL_OUTPUT_EXCERPT_CHARS + 64
+        assert "chars]" in out

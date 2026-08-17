@@ -171,3 +171,89 @@ class TestTracedStreamSemantics:
 
         asyncio.run(go())
         assert seen == ["a"]
+
+
+class TestOutcomeStatus:
+    """Arize filters on span STATUS. Every agent span used to end UNSET —
+    successes, halts and pauses alike — because status was only set when the
+    body raised. A canned "I wasn't able to finish this run" answer is a
+    failure to the reader, and must read as one in the trace list."""
+
+    def _run(self, harness, status_getter=None, exporter_key="agent.outcome"):
+        tracer, _ = harness
+        exporter = InMemorySpanExporter()
+        provider = trace_sdk.TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        t = provider.get_tracer("miiflow.agent")
+
+        async def src():
+            yield 1
+
+        async def go():
+            async for _ in traced_stream("agent.x", src(), status_getter=status_getter):
+                pass
+
+        original = trace.get_tracer
+        trace.get_tracer = lambda *a, **k: t
+        try:
+            asyncio.run(go())
+        finally:
+            trace.get_tracer = original
+        (span,) = exporter.get_finished_spans()
+        return span
+
+    def test_default_is_ok_not_unset(self, harness):
+        from opentelemetry.trace import StatusCode
+
+        span = self._run(harness)
+        assert span.status.status_code == StatusCode.OK
+
+    def test_halted_outcome_marks_error_with_cause(self, harness):
+        from opentelemetry.trace import StatusCode
+
+        from miiflow_agent.core.observability import OUTCOME_HALTED, AgentOutcome
+
+        span = self._run(
+            harness,
+            status_getter=lambda: AgentOutcome(
+                OUTCOME_HALTED, ok=False, description="repeated tool errors (last tool: google_ads_query)"
+            ),
+        )
+        assert span.status.status_code == StatusCode.ERROR
+        assert "google_ads_query" in span.status.description
+        assert span.attributes["agent.outcome"] == "halted"
+
+    def test_pause_for_clarification_is_ok_but_labelled(self, harness):
+        from opentelemetry.trace import StatusCode
+
+        from miiflow_agent.core.observability import OUTCOME_CLARIFICATION, AgentOutcome
+
+        span = self._run(harness, status_getter=lambda: AgentOutcome(OUTCOME_CLARIFICATION))
+        assert span.status.status_code == StatusCode.OK
+        assert span.attributes["agent.outcome"] == "clarification"
+
+    def test_status_getter_failure_never_breaks_the_turn(self, harness):
+        from opentelemetry.trace import StatusCode
+
+        def boom():
+            raise RuntimeError("no")
+
+        span = self._run(harness, status_getter=boom)
+        assert span.status.status_code == StatusCode.OK
+
+    def test_agent_span_clean_exit_is_ok(self, harness):
+        from opentelemetry.trace import StatusCode
+
+        exporter = InMemorySpanExporter()
+        provider = trace_sdk.TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        t = provider.get_tracer("miiflow.agent")
+        original = trace.get_tracer
+        trace.get_tracer = lambda *a, **k: t
+        try:
+            with agent_span("agent.child"):
+                pass
+        finally:
+            trace.get_tracer = original
+        (span,) = exporter.get_finished_spans()
+        assert span.status.status_code == StatusCode.OK

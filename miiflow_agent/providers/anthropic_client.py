@@ -21,6 +21,7 @@ from ..models.anthropic import (
     supports_structured_outputs,
     supports_temperature,
     supports_thinking,
+    thinking_disable_param,
 )
 from ..utils.image import data_uri_to_base64_and_mimetype
 
@@ -544,6 +545,109 @@ class AnthropicClient(ModelClient):
         return demoted
 
     @staticmethod
+    def _prune_stale_tool_references(request_params: Dict[str, Any]) -> int:
+        """Drop replayed `tool_reference`s that name tools absent from this request.
+
+        Anthropic validates every `tool_reference` inside a replayed
+        `tool_search_tool_result` against the request's CURRENT `tools` array
+        and rejects the whole request otherwise:
+
+            400 Tool reference 'list_all_ad_accounts' not found in available tools
+
+        The search blocks are recorded on the assistant message the turn they
+        happen and replayed verbatim on every later turn (see
+        `convert_message_to_provider_format`), while the tool list is rebuilt
+        per turn — so any drift between the two (a tool hidden by a
+        visibility filter, dropped by a cap, or a bundle that stopped loading)
+        surfaces as a 400 on a request that has nothing to do with that tool.
+        In production (2026-08-10..15) that killed 18 pipeline specialist runs
+        12–20 minutes in, each ending "I wasn't able to finish this run".
+
+        A stale reference is not information the model needs — the tool is not
+        callable — so it is pruned here rather than failing the turn. When a
+        result block would be left with no references, BOTH halves of the pair
+        (`server_tool_use` + `tool_search_tool_result`, matched by id) are
+        removed: the API rejects either half alone. Blocks are copied, never
+        mutated in place — the replayed dicts are the ones stored on the
+        message metadata / checkpoint.
+
+        Returns the number of references dropped (for the log line).
+        """
+        tools = request_params.get("tools") or []
+        available = {
+            t.get("name") for t in tools if isinstance(t, dict) and t.get("name")
+        }
+        messages = request_params.get("messages") or []
+        dropped = 0
+        for msg_index, msg in enumerate(messages):
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if not isinstance(content, list):
+                continue
+            new_content: List[Any] = []
+            remove_ids: set = set()
+            changed = False
+            for block in content:
+                if not (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_search_tool_result"
+                ):
+                    new_content.append(block)
+                    continue
+                inner = block.get("content")
+                refs = inner.get("tool_references") if isinstance(inner, dict) else None
+                if not isinstance(refs, list):
+                    new_content.append(block)
+                    continue
+                kept = [
+                    r
+                    for r in refs
+                    if not (
+                        isinstance(r, dict)
+                        and r.get("type") == "tool_reference"
+                        and r.get("tool_name") not in available
+                    )
+                ]
+                if len(kept) == len(refs):
+                    new_content.append(block)
+                    continue
+                dropped += len(refs) - len(kept)
+                changed = True
+                if kept:
+                    new_content.append(
+                        {**block, "content": {**inner, "tool_references": kept}}
+                    )
+                else:
+                    remove_ids.add(block.get("tool_use_id"))
+            if not changed:
+                continue
+            if remove_ids:
+                new_content = [
+                    b
+                    for b in new_content
+                    if not (
+                        isinstance(b, dict)
+                        and (
+                            (b.get("type") == "server_tool_use" and b.get("id") in remove_ids)
+                            or (
+                                b.get("type") == "tool_search_tool_result"
+                                and b.get("tool_use_id") in remove_ids
+                            )
+                        )
+                    )
+                ]
+            if not new_content:
+                # An assistant turn that consisted only of a search pair.
+                new_content = [{"type": "text", "text": "[no content]"}]
+            messages[msg_index] = {**msg, "content": new_content}
+        if dropped:
+            logger.warning(
+                "[TOOL_SEARCH] pruned %d stale tool_reference(s) from replayed "
+                "search results (tools not in this request's tool list)",
+                dropped,
+            )
+        return dropped
+
+    @staticmethod
     def _apply_strict_tool_cap(request_params: Dict[str, Any]) -> None:
         """Demote excess strict tools to non-strict to fit Anthropic's per-request caps.
 
@@ -881,6 +985,10 @@ class AnthropicClient(ModelClient):
             # Extract thinking parameters from kwargs (won't be passed to API directly)
             thinking_enabled = kwargs.pop("thinking_enabled", False)
             budget_tokens = kwargs.pop("budget_tokens", 32000)
+            # Provider-neutral opt-OUT of thinking (other providers ignore the
+            # kwarg). Needed for short deterministic completions on models that
+            # think by default — see `thinking_disable_param`.
+            thinking_disabled = kwargs.pop("thinking_disabled", False)
 
             # Check for native MCP
             use_native_mcp = mcp_servers and len(mcp_servers) > 0 and self._supports_native_mcp()
@@ -973,6 +1081,10 @@ class AnthropicClient(ModelClient):
                 logger.debug(
                     f"Anthropic tools parameter:\n{json.dumps(tools, indent=2, default=str)}"
                 )
+            elif thinking_disabled and not thinking_enabled:
+                disable = thinking_disable_param(self.model)
+                if disable is not None:
+                    request_params["thinking"] = disable
 
             # Handle native MCP servers
             if use_native_mcp:
@@ -1002,6 +1114,7 @@ class AnthropicClient(ModelClient):
                 request_params.pop("temperature", None)
 
             self._apply_strict_tool_cap(request_params)
+            self._prune_stale_tool_references(request_params)
             self._apply_prompt_caching(request_params)
 
             # Use beta client for structured outputs or native MCP
@@ -1221,6 +1334,10 @@ class AnthropicClient(ModelClient):
             # Extract thinking parameters from kwargs (won't be passed to API directly)
             thinking_enabled = kwargs.pop("thinking_enabled", False)
             budget_tokens = kwargs.pop("budget_tokens", 32000)
+            # Provider-neutral opt-OUT of thinking (other providers ignore the
+            # kwarg). Needed for short deterministic completions on models that
+            # think by default — see `thinking_disable_param`.
+            thinking_disabled = kwargs.pop("thinking_disabled", False)
 
             logger.debug(f"Streaming request to Anthropic with {len(anthropic_messages)} messages:")
             for idx, msg in enumerate(anthropic_messages):
@@ -1326,6 +1443,10 @@ class AnthropicClient(ModelClient):
                     f"Extended thinking enabled for {self.model} "
                     f"with budget_tokens={budget_tokens}"
                 )
+            elif thinking_disabled and not thinking_enabled:
+                disable = thinking_disable_param(self.model)
+                if disable is not None:
+                    request_params["thinking"] = disable
 
             # Handle native MCP servers
             if use_native_mcp:
@@ -1351,6 +1472,7 @@ class AnthropicClient(ModelClient):
                 request_params.pop("temperature", None)
 
             self._apply_strict_tool_cap(request_params)
+            self._prune_stale_tool_references(request_params)
             self._apply_prompt_caching(request_params)
 
             # Determine which client to use
@@ -1431,9 +1553,16 @@ class AnthropicClient(ModelClient):
                 ):
                     yield normalized_chunk
 
-                # Stop on message_stop event
-                if hasattr(event, "type") and event.type == "message_stop":
-                    break
+                # Deliberately NO `break` on `message_stop`. The SDK closes the
+                # SSE stream right after that event, so exhausting the iterator
+                # costs nothing — and it is REQUIRED for observability: the
+                # OpenInference wrapper around this stream only ends its LLM
+                # span when the `async for` runs to completion. Breaking out
+                # early abandons that async generator (GeneratorExit, not an
+                # Exception, so its except-branch never runs either), the span
+                # is never ended and never exported. That is exactly why, for
+                # weeks, no streaming Anthropic call appeared under any agent
+                # span in Arize while non-streaming and 4xx calls did.
 
             # Slow-call observability (rec #5 review finding): emit a
             # structured warning when a successful stream exceeded the

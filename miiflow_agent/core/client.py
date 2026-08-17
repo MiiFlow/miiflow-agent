@@ -324,6 +324,29 @@ class LLMClient:
         return cls(client)
 
     # Async methods
+    # Provider-neutral control kwargs callers may pass to achat/astream_chat.
+    # Only the providers listed handle them; every other provider forwards
+    # unknown kwargs into its SDK call (Mistral) or its options map (Ollama),
+    # so they must be dropped here rather than trusted to be ignored.
+    _PROVIDERS_HANDLING_THINKING_DISABLED = frozenset({"anthropic", "bedrock"})
+
+    def _strip_control_kwargs(self, kwargs: Dict[str, Any]) -> None:
+        """Remove control kwargs the bound provider does not understand.
+
+        * ``thinking_disabled`` — kept for providers that pop it.
+        * ``mcp_servers=None`` — the caller's opt-out of registry injection
+          (see above) has done its job once we get here; forwarding a literal
+          None would reach SDKs that reject unknown keyword arguments.
+        """
+        provider = getattr(self.client, "provider_name", None)
+        if (
+            "thinking_disabled" in kwargs
+            and provider not in self._PROVIDERS_HANDLING_THINKING_DISABLED
+        ):
+            kwargs.pop("thinking_disabled")
+        if "mcp_servers" in kwargs and kwargs["mcp_servers"] is None:
+            kwargs.pop("mcp_servers")
+
     async def achat(
         self,
         messages: Union[List[Dict[str, Any]], List[Message]],
@@ -378,9 +401,19 @@ class LLMClient:
                         self.client.provider_name, self.client
                     )
 
-        # Check for native MCP servers and pass to provider if supported
-        if self.tool_registry.has_native_mcp_servers() and self._supports_native_mcp():
+        # Check for native MCP servers and pass to provider if supported. An
+        # explicit `mcp_servers=` from the caller (including `None`, meaning
+        # "no server-side tools on this call") wins over the registry: a
+        # compaction summary or a classifier must not carry the agent's MCP
+        # connectors — they cost tokens, change model behaviour, and ship the
+        # servers' auth headers with a call that has no use for them.
+        if (
+            "mcp_servers" not in kwargs
+            and self.tool_registry.has_native_mcp_servers()
+            and self._supports_native_mcp()
+        ):
             kwargs["mcp_servers"] = self.tool_registry.get_native_mcp_configs()
+        self._strip_control_kwargs(kwargs)
 
         # Get callback context
         ctx = get_callback_context()
@@ -555,9 +588,19 @@ class LLMClient:
                         self.client.provider_name, self.client
                     )
 
-        # Check for native MCP servers and pass to provider if supported
-        if self.tool_registry.has_native_mcp_servers() and self._supports_native_mcp():
+        # Check for native MCP servers and pass to provider if supported. An
+        # explicit `mcp_servers=` from the caller (including `None`, meaning
+        # "no server-side tools on this call") wins over the registry: a
+        # compaction summary or a classifier must not carry the agent's MCP
+        # connectors — they cost tokens, change model behaviour, and ship the
+        # servers' auth headers with a call that has no use for them.
+        if (
+            "mcp_servers" not in kwargs
+            and self.tool_registry.has_native_mcp_servers()
+            and self._supports_native_mcp()
+        ):
             kwargs["mcp_servers"] = self.tool_registry.get_native_mcp_configs()
+        self._strip_control_kwargs(kwargs)
 
         # Get callback context
         ctx = get_callback_context()

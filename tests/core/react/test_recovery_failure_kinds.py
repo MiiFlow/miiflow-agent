@@ -109,3 +109,70 @@ async def test_schema_failures_dont_consume_runtime_budget():
     )
     assert runtime_action.strategy_used == RecoveryStrategy.RETRY_WITH_GUIDANCE
     assert "render_chart" not in manager.excluded_tools
+
+
+# ── fatal provider errors ────────────────────────────────────────────────────
+
+BILLING_400 = (
+    "Step execution failed: Error code: 400 - {'type': 'error', 'error': "
+    "{'type': 'invalid_request_error', 'message': 'Your credit balance is too "
+    "low to access the Anthropic API. Please go to Plans & Billing to upgrade "
+    "or purchase credits.'}}"
+)
+
+
+@pytest.mark.asyncio
+async def test_billing_error_stops_the_ladder_immediately():
+    """2026-08-11: an out-of-credit account produced five identical failing
+    calls per agent in one second, because every ladder step retried the
+    request. Billing/auth are about the account, not the request."""
+    from miiflow_agent.core.react.recovery import is_fatal_provider_error
+
+    assert is_fatal_provider_error(Exception(BILLING_400))
+    manager = RecoveryManager(max_recovery_attempts=3)
+    action = await manager.attempt_recovery(
+        error=Exception(BILLING_400), context=None, tool_name=None
+    )
+    assert action.should_continue is False
+    assert action.guidance_message is None
+    # Nothing was consumed from the runtime ladder either.
+    assert manager._attempt_count == 0
+
+
+@pytest.mark.asyncio
+async def test_auth_and_quota_wordings_are_fatal():
+    from miiflow_agent.core.react.recovery import is_fatal_provider_error
+
+    for text in (
+        "Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}}",
+        "Error code: 429 - You exceeded your current quota, please check your plan and billing details. (insufficient_quota)",
+        "Error code: 403 - permission_error: This API key does not have access to model claude-opus-5",
+    ):
+        assert is_fatal_provider_error(Exception(text)), text
+
+
+@pytest.mark.asyncio
+async def test_ordinary_tool_and_transient_errors_are_not_fatal():
+    from miiflow_agent.core.react.recovery import is_fatal_provider_error
+
+    for text in (
+        "account not found",
+        "Error code: 529 - overloaded_error",
+        "Tool reference 'list_all_ad_accounts' not found in available tools",
+        "prompt is too long: 210000 tokens > 200000 maximum",
+        "each tool_use must have a single result",
+    ):
+        assert not is_fatal_provider_error(Exception(text)), text
+
+
+@pytest.mark.asyncio
+async def test_tool_step_auth_wording_is_not_fatal():
+    """A TOOL that answers 401 is one integration's expired credential; the
+    ladder must keep running (guidance → SIMPLIFY_TOOLS), not halt the run."""
+    manager = RecoveryManager(max_recovery_attempts=3)
+    action = await manager.attempt_recovery(
+        error=Exception("HTTP 401 error for tool 'shopify_orders': Unauthorized invalid api key"),
+        context=None,
+        tool_name="shopify_orders",
+    )
+    assert action.should_continue is True

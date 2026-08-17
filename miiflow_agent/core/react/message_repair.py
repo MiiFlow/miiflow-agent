@@ -33,6 +33,14 @@ _STRUCTURAL_HINTS = (
     "unexpected tool_use_id",
     "tool_result block(s) provided when previous message",
     "must be followed by a user message with a corresponding tool_result",
+    # Anthropic, duplicate answer: `messages.N.content.M: each tool_use must
+    # have a single result. Found multiple tool_result blocks with id ...`.
+    # Seen 2026-08-11 on a web thread whose PERSISTED history carried two
+    # results for one call — every later turn 400'd until compaction happened
+    # to drop the pair, because this wording was not recognised as structural.
+    "each tool_use must have a single result",
+    "found multiple `tool_result` blocks",
+    "found multiple tool_result blocks",
     # OpenAI
     "must be followed by tool messages",
     "did not have response messages",
@@ -75,6 +83,8 @@ def repair_tool_pairing(
     Two repairs, mirroring the two 400s providers actually raise:
 
     * an orphan TOOL message (its tool_use is gone) is dropped;
+    * a DUPLICATE TOOL message (its tool_use was already answered) is dropped
+      — providers accept exactly one result per call;
     * an unanswered assistant tool_call gets a synthesized TOOL result saying
       the execution was interrupted, so the model knows not to trust it.
 
@@ -86,6 +96,7 @@ def repair_tool_pairing(
     anomalies: List[str] = []
 
     pending: List[str] = []  # unanswered call ids from the latest assistant
+    answered: set = set()  # call ids already answered in this answer window
 
     def close_pending() -> None:
         for call_id in pending:
@@ -98,13 +109,19 @@ def repair_tool_pairing(
                 )
             )
         pending.clear()
+        answered.clear()
 
     for message in messages:
         if message.role == MessageRole.TOOL:
             call_id: Optional[str] = message.tool_call_id
             if call_id is not None and call_id in pending:
                 pending.remove(call_id)
+                answered.add(call_id)
                 repaired.append(message)
+            elif call_id is not None and call_id in answered:
+                anomalies.append(
+                    f"dropped duplicate tool_result {call_id!r} (already answered)"
+                )
             else:
                 anomalies.append(
                     f"dropped orphan tool_result {call_id!r} (no matching tool_use)"

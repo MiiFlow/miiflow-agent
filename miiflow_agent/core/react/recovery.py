@@ -37,6 +37,54 @@ _CONTEXT_OVERFLOW_HINTS = (
 )
 
 
+# Provider errors no ladder step can change: the request will fail the same
+# way on retry-with-guidance, after compaction and with fewer tools, because
+# the ACCOUNT — not the request — is what is wrong. Matched on the provider's
+# own wording (the ladder receives ``Exception(step.error)``, a string wrapper,
+# so the SDK exception class is gone by the time it gets here).
+_FATAL_PROVIDER_HINTS = (
+    # Anthropic billing
+    "credit balance is too low",
+    "plans & billing",
+    # OpenAI billing / quota
+    "exceeded your current quota",
+    "insufficient_quota",
+    "billing_hard_limit_reached",
+    "billing hard limit",
+    # Auth / permission (any provider)
+    "authentication_error",
+    "invalid x-api-key",
+    "invalid api key",
+    "incorrect api key",
+    "api key not valid",
+    "permission_error",
+    "permission denied",
+    "does not have access to model",
+    "unauthorized",
+    # Deployment / model configuration
+    "model_not_found",
+    "not_found_error",
+    "does not exist or you do not have access",
+)
+
+
+def is_fatal_provider_error(error: BaseException) -> bool:
+    """True when the provider rejected the request for a reason no retry fixes.
+
+    2026-08-11 07:21 UTC: the Anthropic account ran out of credit and every
+    agent in the suggestion run answered the 400 by walking the full recovery
+    ladder — five identical requests per agent inside one second, forty
+    failing calls across six orgs, then the canned "repeated issues" answer.
+    Guidance, compaction and tool simplification all address the REQUEST;
+    a billing or auth failure is about the ACCOUNT, so the only correct move
+    is to stop at once (and let the halt reason name the cause).
+    """
+    if error is None:
+        return False
+    text = (str(error) or "").lower()
+    return any(hint in text for hint in _FATAL_PROVIDER_HINTS)
+
+
 def is_tool_approval_error(error: BaseException) -> bool:
     """True if ``error`` is (or stringifies to) a tool-approval pause.
 
@@ -227,6 +275,26 @@ class RecoveryManager:
             logger.info(
                 "Recovery received a tool-approval pause; stopping the loop "
                 "(approval cannot be satisfied by a retry)."
+            )
+            return RecoveryAction(
+                strategy_used=RecoveryStrategy.RETRY_WITH_GUIDANCE,
+                should_continue=False,
+                guidance_message=None,
+                attempt_number=self._attempt_count,
+            )
+
+        # Account-level provider failures (billing, auth, missing model) are
+        # not recoverable by anything below; retrying only multiplies the
+        # failing calls. Stop now — the run's failure metadata carries the
+        # cause. LLM-step failures only (`tool_name is None`): a TOOL that
+        # answers "401 Unauthorized" is one integration's expired credential,
+        # which the ladder handles by guidance and SIMPLIFY_TOOLS — it must
+        # not halt the whole run.
+        if tool_name is None and is_fatal_provider_error(error):
+            logger.error(
+                "Recovery received a fatal provider error; stopping the loop "
+                "instead of retrying: %s",
+                str(error)[:300],
             )
             return RecoveryAction(
                 strategy_used=RecoveryStrategy.RETRY_WITH_GUIDANCE,

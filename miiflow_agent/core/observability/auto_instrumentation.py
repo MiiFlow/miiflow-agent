@@ -87,6 +87,14 @@ def setup_openinference_instrumentation() -> Dict[str, bool]:
     return instrumentation_status
 
 
+def _install_standard_processors(tracer_provider: Any) -> None:
+    """Context stamping + secret redaction, on every provider we configure."""
+    from .processors import install_processors
+
+    installed = install_processors(tracer_provider)
+    logger.info("Installed span processors: %s", ", ".join(installed) or "none")
+
+
 def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) -> bool:
     """Setup OpenTelemetry tracing to send traces to Phoenix endpoint.
 
@@ -141,6 +149,9 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
                 ),
                 span_limits=span_limits,
             )
+            # Stamping + redaction MUST precede the exporter's processor so
+            # every span reaches the wire with an owner and without secrets.
+            _install_standard_processors(tracer_provider)
             tracer_provider.add_span_processor(
                 BatchSpanProcessor(
                     OTLPSpanExporter(
@@ -190,6 +201,7 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
             exporter_kwargs["headers"] = headers
 
         otlp_exporter = OTLPSpanExporter(**exporter_kwargs)
+        _install_standard_processors(tracer_provider)
         tracer_provider.add_span_processor(
             BatchSpanProcessor(otlp_exporter)
         )

@@ -16,6 +16,7 @@ from miiflow_agent.core.context_compression import (
     _HEAD_USER_MESSAGE_MAX_CHARS,
     _SUMMARY_MAX_TOKENS,
     _SUMMARY_MIN_TOKENS,
+    _SUMMARY_RETRY_TOKENS,
     CompressionStrategy,
     ContextCompressor,
 )
@@ -36,14 +37,25 @@ def _history(n_filler=30, filler_size=400):
 
 
 class _SummarizerClient:
-    """Captures the summarization call and returns a canned handoff note."""
+    """Captures the summarization call and returns a canned handoff note.
 
-    def __init__(self):
+    `responses` (optional) is a queue of (content, finish_reason) pairs so a
+    test can script a truncated first answer followed by a full one.
+    """
+
+    def __init__(self, responses=None):
         self.calls = []
+        self._responses = list(responses or [])
 
     async def achat(self, messages, **kwargs):
         self.calls.append({"messages": messages, **kwargs})
-        return SimpleNamespace(message=SimpleNamespace(content="HANDOFF NOTE"))
+        if self._responses:
+            content, finish = self._responses.pop(0)
+        else:
+            content, finish = "HANDOFF NOTE", "end_turn"
+        return SimpleNamespace(
+            message=SimpleNamespace(content=content), finish_reason=finish
+        )
 
 
 class TestTruncateHeadPreservation:
@@ -115,7 +127,7 @@ class TestHandoffSummary:
             strategy=CompressionStrategy.SUMMARIZE,
         )
         result = await compressor.compress_if_needed(
-            _history(n_filler=40, filler_size=1600), preserve_recent=4
+            _history(n_filler=140, filler_size=1600), preserve_recent=4
         )
 
         assert result.was_compressed
@@ -124,9 +136,15 @@ class TestHandoffSummary:
         prompt = call["messages"][0].content
         assert "handoff note" in prompt
         assert "SETTLED" in prompt and "OPEN" in prompt
-        # Budget scales with dropped volume instead of the old flat 500.
+        # Budget scales with dropped volume instead of the old flat cap.
         assert _SUMMARY_MIN_TOKENS <= call["max_tokens"] <= _SUMMARY_MAX_TOKENS
         assert call["max_tokens"] > _SUMMARY_MIN_TOKENS
+        # The summariser call is bare: no agent tools, no MCP connectors, and
+        # thinking off — otherwise adaptive thinking eats the token budget on
+        # Claude 5 models and the note comes back empty.
+        assert call["_formatted_tools"] == []
+        assert call["mcp_servers"] is None
+        assert call["thinking_disabled"] is True
 
         # The note lands in a marker that frames it as established work.
         note_msg = next(
@@ -198,5 +216,48 @@ class TestHandoffSummary:
         assert result.was_compressed
         assert any(
             isinstance(m.content, str) and "details unavailable" in m.content
+            for m in result.messages
+        )
+
+
+class TestHandoffSummaryTruncation:
+    async def test_empty_note_at_max_tokens_is_retried_with_larger_budget(self):
+        # First answer: thinking consumed the whole budget, no text at all.
+        client = _SummarizerClient(
+            responses=[("", "max_tokens"), ("REAL HANDOFF NOTE", "end_turn")]
+        )
+        compressor = ContextCompressor(
+            client=client,
+            max_context_tokens=2000,
+            compression_threshold=0.5,
+            strategy=CompressionStrategy.SUMMARIZE,
+        )
+        result = await compressor.compress_if_needed(_history(), preserve_recent=4)
+
+        assert len(client.calls) == 2
+        assert client.calls[1]["max_tokens"] == _SUMMARY_RETRY_TOKENS
+        assert any(
+            isinstance(m.content, str) and "REAL HANDOFF NOTE" in m.content
+            for m in result.messages
+        )
+        # And never the placeholder — an empty note must not be accepted.
+        assert not any(
+            isinstance(m.content, str) and "context unavailable" in m.content
+            for m in result.messages
+        )
+
+    async def test_truncated_but_nonempty_note_is_kept_without_retry(self):
+        client = _SummarizerClient(responses=[("PARTIAL NOTE", "max_tokens")])
+        compressor = ContextCompressor(
+            client=client,
+            max_context_tokens=2000,
+            compression_threshold=0.5,
+            strategy=CompressionStrategy.SUMMARIZE,
+        )
+        result = await compressor.compress_if_needed(_history(), preserve_recent=4)
+
+        assert len(client.calls) == 1
+        assert any(
+            isinstance(m.content, str) and "PARTIAL NOTE" in m.content
             for m in result.messages
         )

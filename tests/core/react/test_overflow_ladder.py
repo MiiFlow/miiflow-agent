@@ -123,6 +123,17 @@ class TestStructuralErrorDetection:
             Exception("unexpected tool_use_id found in tool_result blocks")
         )
 
+    def test_anthropic_duplicate_result_wording(self):
+        # Verbatim from a 2026-08-11 production 400 (thread stuck for 1.5h).
+        assert is_structural_message_error(
+            Exception(
+                "Error code: 400 - {'type': 'error', 'error': {'type': "
+                "'invalid_request_error', 'message': 'messages.10.content.1: "
+                "each tool_use must have a single result. Found multiple "
+                "`tool_result` blocks with id: toolu_01abc'}}"
+            )
+        )
+
     def test_openai_wording(self):
         assert is_structural_message_error(
             Exception(
@@ -196,7 +207,7 @@ class TestRepairToolPairing:
             Message(role=MessageRole.TOOL, content="ok again", tool_call_id="a"),
         ]
         repaired, anomalies = repair_tool_pairing(messages)
-        assert len(anomalies) == 1
+        assert len(anomalies) == 1 and "duplicate" in anomalies[0]
         assert sum(1 for m in repaired if m.role == MessageRole.TOOL) == 1
 
     def test_dangling_calls_at_end_are_closed(self):

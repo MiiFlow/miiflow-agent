@@ -988,6 +988,11 @@ class ReActOrchestrator:
                         logger.warning(
                             "Context-overflow recovery exhausted; stopping execution"
                         )
+                        await self._record_recovery_halt(
+                            execution_state,
+                            stop_reason="context_overflow",
+                            description=str(_llm_err)[:300],
+                        )
                         break
                     if recovery_action.guidance_message:
                         context.messages.append(
@@ -1073,6 +1078,11 @@ class ReActOrchestrator:
                     )
                     if not recovery_action.should_continue:
                         logger.warning("Recovery exhausted, stopping execution")
+                        await self._record_recovery_halt(
+                            execution_state,
+                            stop_reason="recovery_exhausted",
+                            description=str(step.error or "recovery exhausted")[:800],
+                        )
                         break
                     if recovery_action.guidance_message:
                         context.messages.append(
@@ -1350,6 +1360,38 @@ class ReActOrchestrator:
 
         collab = getattr(self, "_tool_actions", None) or ToolActionHandler(self)
         return collab.handle_step_error(step, error, state)
+
+    async def _record_recovery_halt(
+        self, state: "ExecutionState", *, stop_reason: str, description: str
+    ) -> None:
+        """Make a recovery-ladder halt look like every other halt.
+
+        Safety-condition halts stamp `failure_metadata` and publish a
+        STOP_CONDITION event, which is what the dispatch envelope, the root
+        agent span's status and the halt wrap-up all read. A halt because the
+        recovery manager gave up (fatal provider error, overflow that will not
+        compact) used to just `break` — no failure metadata, no event — so a
+        run killed by an out-of-credit account reported nothing more specific
+        than the canned "repeated issues" answer, and its span read as a
+        success in the trace list.
+        """
+        failure = _extract_failure_metadata(
+            state.steps, stop_reason=stop_reason, description=description
+        )
+        state.failure_metadata = failure
+        state.halt_description = description
+        try:
+            await self.event_bus.publish(
+                EventFactory.stop_condition(
+                    state.current_step,
+                    stop_reason,
+                    description,
+                    failure=failure,
+                    partial_results=_extract_partial_results(state.steps),
+                )
+            )
+        except Exception:  # noqa: BLE001 — never let telemetry fail the halt
+            logger.exception("failed to publish recovery-halt stop condition")
 
     async def _publish_final_answer_event(self, step: ReActStep, state: "ExecutionState"):
         """Delegates to _answers.publish_final_answer_event — see that module."""

@@ -103,6 +103,12 @@ class NativeMCPServerConfig:
             host's own prompt, never on the wire. Under deferral the model no
             longer sees the server's tool descriptions up front, so this is
             the one line that tells it the capability exists at all.
+        disabled_tools: Tool names the host has switched OFF for this server
+            (rendered as ``configs[name].enabled: false`` on Anthropic).
+            The provider hosts a connector tool's definition, so this is the
+            host's only lever over which of them the model can ever load —
+            e.g. a definition too large to sit in context. Wins over
+            ``allowed_tools`` for a name in both.
     """
 
     name: str
@@ -114,6 +120,7 @@ class NativeMCPServerConfig:
     tool_configuration: Optional[Dict[str, Any]] = None
     known_tools: Optional[List[str]] = None
     description: Optional[str] = None
+    disabled_tools: Optional[List[str]] = None
 
     def to_anthropic_format(self) -> Dict[str, Any]:
         """The ``mcp_servers[]`` entry: connection details only.
@@ -149,7 +156,9 @@ class NativeMCPServerConfig:
 
         ``allowed_tools`` becomes the documented allowlist shape
         (``default_config.enabled: false`` + per-tool ``enabled: true``);
-        an explicit ``tool_configuration.enabled`` sets the default.
+        an explicit ``tool_configuration.enabled`` sets the default;
+        ``disabled_tools`` become per-tool ``enabled: false`` and win over
+        the allowlist.
         """
         toolset: Dict[str, Any] = {
             "type": "mcp_toolset",
@@ -166,6 +175,8 @@ class NativeMCPServerConfig:
             default_config["enabled"] = False
             for tool_name in allowed:
                 configs[str(tool_name)] = {"enabled": True}
+        for tool_name in self.disabled_tools or []:
+            configs[str(tool_name)] = {"enabled": False}
         if defer_loading:
             default_config["defer_loading"] = True
 

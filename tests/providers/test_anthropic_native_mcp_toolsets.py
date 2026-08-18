@@ -89,6 +89,29 @@ def test_allowed_tools_become_the_documented_allowlist_shape():
     }
 
 
+def test_disabled_tools_are_switched_off_and_win_over_the_allowlist():
+    """The provider hosts a connector tool's definition, so `configs[name].enabled:
+    false` is the host's only lever over which of them the model can ever load —
+    e.g. a 139K-char schema that tool search would otherwise pull straight back
+    into context (thread_lFKEoZtIQqHwrB0QneVCWp3x)."""
+    toolset = _klaviyo(
+        allowed_tools=["get_campaigns", "create_flow"],
+        disabled_tools=["create_flow", "update_segment"],
+    ).to_anthropic_toolset(defer_loading=True)
+    assert toolset["default_config"] == {"enabled": False, "defer_loading": True}
+    assert toolset["configs"] == {
+        "get_campaigns": {"enabled": True},
+        "create_flow": {"enabled": False},
+        "update_segment": {"enabled": False},
+    }
+
+
+def test_disabled_tools_alone_keep_the_rest_enabled():
+    toolset = _klaviyo(disabled_tools=["create_flow"]).to_anthropic_toolset()
+    assert "default_config" not in toolset
+    assert toolset["configs"] == {"create_flow": {"enabled": False}}
+
+
 def test_legacy_tool_configuration_folds_into_the_toolset():
     cfg = _klaviyo(tool_configuration={"enabled": False, "allowed_tools": ["list_flows"]})
     toolset = cfg.to_anthropic_toolset()

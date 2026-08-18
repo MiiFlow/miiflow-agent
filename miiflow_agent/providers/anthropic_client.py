@@ -17,6 +17,8 @@ from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import AnthropicStreamNormalizer, extract_mcp_result_text
 from ..core.streaming import StreamChunk
 from ..models.anthropic import (
+    EFFORT_LEVELS,
+    supports_effort,
     supports_native_mcp,
     supports_structured_outputs,
     supports_temperature,
@@ -38,6 +40,18 @@ class AnthropicClient(ModelClient):
     """Anthropic provider client."""
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
+        # `effort` scales adaptive thinking on the models that think by default
+        # (`output_config.effort`; see models.anthropic.supports_effort). It is a
+        # per-client setting rather than a per-call kwarg because it arrives the
+        # way `max_tokens` does — from the assistant's stored model_config, which
+        # is spread into the client constructor — and an unhandled key there
+        # would otherwise be absorbed silently by the base class.
+        effort = kwargs.pop("effort", None)
+        if effort is not None and effort not in EFFORT_LEVELS:
+            raise ValueError(
+                f"effort must be one of {EFFORT_LEVELS}, got {effort!r}"
+            )
+        self.effort: Optional[str] = effort
         super().__init__(model=model, api_key=api_key, **kwargs)
         from .sdk_client_cache import get_or_create_sdk_client
 
@@ -56,6 +70,21 @@ class AnthropicClient(ModelClient):
     def _supports_structured_outputs(self) -> bool:
         """Check if the current model supports native structured outputs."""
         return supports_structured_outputs(self.model)
+
+    def _apply_effort(self, request_params: Dict[str, Any]) -> None:
+        """Set `output_config.effort` when configured and the model accepts it.
+
+        Merged into an existing `output_config` (structured outputs use the
+        same object for `format`) rather than replacing it. Silently skipped
+        on models that would 400 on the parameter, so one config can be
+        shared across model swaps.
+        """
+        if not self.effort or not supports_effort(self.model):
+            return
+        output_config = request_params.get("output_config")
+        if not isinstance(output_config, dict):
+            output_config = {}
+        request_params["output_config"] = {**output_config, "effort": self.effort}
 
     def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to Anthropic format with loosened constraints.
@@ -1193,6 +1222,7 @@ class AnthropicClient(ModelClient):
                 request_params["system"] = system_content
             if tools:
                 request_params["tools"] = tools
+            self._apply_effort(request_params)
 
             # Enable extended thinking if requested and model supports it
             if thinking_enabled and supports_thinking(self.model):
@@ -1543,6 +1573,7 @@ class AnthropicClient(ModelClient):
                 request_params["system"] = system_content
             if tools:
                 request_params["tools"] = tools
+            self._apply_effort(request_params)
 
             # Enable extended thinking if requested and model supports it
             if thinking_enabled and supports_thinking(self.model):

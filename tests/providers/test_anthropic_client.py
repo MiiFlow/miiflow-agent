@@ -476,3 +476,46 @@ class TestApplyPromptCaching:
         AnthropicClient._apply_prompt_caching(params)
         assert params["system"][-1]["cache_control"] == {"type": "ephemeral"}
         assert params["messages"] == []
+
+
+class TestEffort:
+    """`effort` (from an assistant's model_config) becomes `output_config.effort`
+    on the request — and only there, and only on models that accept it."""
+
+    @pytest.mark.asyncio
+    async def test_effort_lands_in_output_config_on_supported_model(
+        self, sample_messages, mock_anthropic_response
+    ):
+        client = AnthropicClient(model="claude-sonnet-5", api_key="test-key", effort="medium")
+        assert client.effort == "medium"
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = mock_anthropic_response
+            await client.achat(sample_messages)
+            kwargs = mock_create.call_args.kwargs
+            assert kwargs["output_config"] == {"effort": "medium"}
+            # Never a top-level request key: the API rejects unknown params.
+            assert "effort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_effort_is_skipped_on_models_that_reject_it(
+        self, sample_messages, mock_anthropic_response
+    ):
+        client = AnthropicClient(model="claude-haiku-4-5-20251001", api_key="test-key", effort="low")
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = mock_anthropic_response
+            await client.achat(sample_messages)
+            kwargs = mock_create.call_args.kwargs
+            assert "output_config" not in kwargs
+            assert "effort" not in kwargs
+
+    def test_invalid_effort_is_rejected_at_construction(self):
+        with pytest.raises(ValueError):
+            AnthropicClient(model="claude-sonnet-5", api_key="test-key", effort="turbo")
+
+    @pytest.mark.asyncio
+    async def test_no_effort_means_no_output_config(self, sample_messages, mock_anthropic_response):
+        client = AnthropicClient(model="claude-sonnet-5", api_key="test-key")
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = mock_anthropic_response
+            await client.achat(sample_messages)
+            assert "output_config" not in mock_create.call_args.kwargs

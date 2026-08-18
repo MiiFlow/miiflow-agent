@@ -908,16 +908,26 @@ class StepStreamer:
                             metadata=provider_mcp_metadata,
                         )
                     )
-                context.messages.append(
-                    Message(
-                        role=MessageRole.USER,
-                        content=(
-                            "Previous response was truncated by max_tokens. "
-                            "Continue from where you left off, call the tool you intended, "
-                            "or provide a final answer."
-                        ),
+                # Two different situations share finish_reason="length": a
+                # long visible answer that got cut, and — on models that think
+                # by default — a turn whose ENTIRE budget went to thinking, so
+                # nothing visible was produced. "Continue from where you left
+                # off" is wrong for the second (there is nothing to continue)
+                # and invites another all-thinking turn; ask for the answer
+                # directly instead.
+                if assistant_content:
+                    nudge = (
+                        "Previous response was truncated by max_tokens. "
+                        "Continue from where you left off, call the tool you intended, "
+                        "or provide a final answer."
                     )
-                )
+                else:
+                    nudge = (
+                        "Your previous turn hit max_tokens before producing any "
+                        "visible output. Do not deliberate further — call the tool "
+                        "you intended or write the final answer now, concisely."
+                    )
+                context.messages.append(Message(role=MessageRole.USER, content=nudge))
                 # Don't set step.answer — loop will continue
 
             elif not (assistant_content or "").strip():

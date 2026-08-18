@@ -221,6 +221,34 @@ _THINKING_ON_BY_DEFAULT_DISABLEABLE = {
 }
 
 
+# `output_config.effort` — the GA knob that scales adaptive thinking (and overall
+# token spend) on the models that think by default. `budget_tokens` is rejected
+# on Sonnet 5 / Opus 5 / 4.7 / 4.8 / Fable 5, so this is the ONLY way to bound
+# their deliberation short of disabling thinking (which is discouraged: with
+# thinking off these models sometimes write a tool call into visible text).
+# Haiku 4.5 and older models 400 on the parameter.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+_SUPPORTS_EFFORT = {
+    "claude-fable-5",
+    "claude-opus-5",
+    "claude-opus-4.8",
+    "claude-opus-4.7",
+    "claude-opus-4.6",
+    "claude-sonnet-5",
+    "claude-sonnet-4.6",
+}
+
+
+def supports_effort(model: str) -> bool:
+    """True when `model` accepts `output_config: {"effort": ...}`."""
+    model_lower = (model or "").lower()
+    for name in _SUPPORTS_EFFORT:
+        if name in model_lower or ANTHROPIC_MODELS[name].model_identifier in model_lower:
+            return True
+    return False
+
+
 def thinking_disable_param(model: str) -> Optional[Dict[str, str]]:
     """The `thinking` request value that turns thinking OFF for `model`, or None.
 

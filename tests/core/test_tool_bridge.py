@@ -250,3 +250,81 @@ class TestArrayStability:
             f"cache tier. before={names_before} after={names_after}"
         )
         assert set(names_after) == BRIDGE_TOOL_NAMES
+
+
+class TestBridgeToolsAreCallableThroughTheExecutor:
+    """Shown-to-the-model and callable must be the same set.
+
+    `_build_native_tool_schemas` put `tool_search` / `tool_describe` /
+    `tool_call` in the array and `ToolRegistry.execute_safe` routed them, but
+    the executor's PRE-execution checks (`has_tool`, the schema lookup, the
+    context decision) only consulted the registry dicts — so the action
+    handler rejected the model's very first `tool_search` with
+    "Tool 'tool_search' not found". Found on the first live run against
+    OpenAI (2026-08-18), the day the bridge became the default; every unit
+    test until then stopped at the array or at the registry, never at the
+    executor gate in between.
+    """
+
+    def _executor(self, registry):
+        from unittest.mock import MagicMock
+
+        from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+
+        registry.tool_search_threshold = 0
+        model_client = MagicMock()
+        model_client.provider_name = "openai"
+        model_client.model = "gpt-4o"
+        model_client.convert_schema_to_provider_format = lambda s: dict(s)
+        llm_client = MagicMock()
+        llm_client.client = model_client
+        llm_client.tool_registry = registry
+        agent = MagicMock()
+        agent.client = llm_client
+        agent.tool_registry = registry
+        agent._tools = []
+        executor = AgentToolExecutor(agent)
+        # What the loop does before the first model call: this is what builds
+        # the bridge tools.
+        shown = {s.get("name") for s in executor._build_native_tool_schemas()}
+        assert shown == BRIDGE_TOOL_NAMES
+        return executor
+
+    def test_every_tool_shown_to_the_model_passes_has_tool(self, registry):
+        executor = self._executor(registry)
+        for name in BRIDGE_TOOL_NAMES:
+            assert executor.has_tool(name), name
+            assert executor.get_tool_schema(name).get("name") == name
+            assert executor.tool_needs_context(name) is False
+
+    @pytest.mark.asyncio
+    async def test_search_describe_call_execute_through_the_executor(self, registry):
+        executor = self._executor(registry)
+
+        found = await executor.execute_tool(TOOL_SEARCH_NAME, {"query": "meta ads report 3"})
+        assert found.success, found.error
+        assert any(m["name"] == "meta_ads_report_3" for m in found.output["results"])
+
+        described = await executor.execute_tool(TOOL_DESCRIBE_NAME, {"name": "meta_ads_report_3"})
+        assert described.success, described.error
+        assert "customer_id" in str(described.output)
+
+        called = await executor.execute_tool(
+            TOOL_CALL_NAME, {"name": "meta_ads_report_3", "arguments": {"customer_id": "9"}}
+        )
+        assert called.success, called.error
+        assert called.output == {"tool": "meta_ads_report_3", "customer_id": "9"}
+
+    def test_a_registry_without_bridge_tools_still_reports_them_absent(self, registry):
+        """The check is against the BUILT bridge, not the names — a run that
+        never built the bridge (bridge off) must not accept `tool_search`."""
+        from unittest.mock import MagicMock
+
+        from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+
+        registry.tool_bridge_enabled = False
+        agent = MagicMock()
+        agent.tool_registry = registry
+        agent.client = MagicMock()
+        executor = AgentToolExecutor(agent)
+        assert not executor.has_tool(TOOL_SEARCH_NAME)

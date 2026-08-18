@@ -1159,11 +1159,37 @@ class AgentToolExecutor:
             or reg.mcp_tools.get(tool_name)
         )
 
+    def _bridge_tool_named(self, tool_name: str):
+        """The built bridge tool (`tool_search` / `tool_describe` / `tool_call`)
+        called ``tool_name``, or None.
+
+        The bridge tools live off-registry, exactly like the legacy meta-tool:
+        `_build_tool_schemas` puts them in the array the model sees and
+        `ToolRegistry.execute_safe` routes their execution — but every
+        *pre-execution* check in this executor (`has_tool`, the schema lookup,
+        the context decision) went through `_lookup_any_tool`, which only
+        knows the three registry dicts. So with the bridge on, the model was
+        shown `tool_search`, called it, and the action handler rejected the
+        call with "Tool 'tool_search' not found" before the registry ever saw
+        it — found on the first live run against OpenAI (2026-08-18), the day
+        the bridge became the default. Consult the same list the registry
+        routes from, so "shown to the model" and "callable" cannot disagree.
+        """
+        built = getattr(self._tool_registry, "_bridge_tools", None) or []
+        for bridge_tool in built:
+            if getattr(bridge_tool, "name", None) == tool_name:
+                return bridge_tool
+        return None
+
     def has_tool(self, tool_name: str) -> bool:
-        # The tool_search meta-tool lives off-registry; recognize it when
-        # the orchestrator validates an LLM-issued tool call against the
-        # executor's view of available tools.
+        # The tool_search meta-tool and the bridge tools live off-registry;
+        # recognize them when the orchestrator validates an LLM-issued tool
+        # call against the executor's view of available tools. (`tool_call`
+        # is unwrapped to its target inside `execute_tool`, and the target is
+        # filter/approval-checked there under its real name.)
         if tool_name == self._tool_search_meta_name():
+            return True
+        if self._bridge_tool_named(tool_name) is not None:
             return True
         if self._lookup_any_tool(tool_name) is None:
             return False
@@ -1174,14 +1200,21 @@ class AgentToolExecutor:
     def get_tool_schema(self, tool_name: str) -> dict:
         if tool_name == self._tool_search_meta_name():
             return self._tool_registry.get_tool_search_tool().schema.to_universal_schema()
+        bridge_tool = self._bridge_tool_named(tool_name)
+        if bridge_tool is not None:
+            return bridge_tool.schema.to_universal_schema()
         tool = self._lookup_any_tool(tool_name)
         return tool.schema.to_universal_schema() if tool else {}
 
     def tool_needs_context(self, tool_name: str) -> bool:
         """Check if a tool requires context injection."""
-        # The meta-tool runs without a context (it operates on the registry,
-        # not on user data).
+        # The meta-tool and the bridge tools run without a context (they
+        # operate on the registry, not on user data). `tool_call` never
+        # reaches here under its own name — it is unwrapped first, and the
+        # decision is made for the target.
         if tool_name == self._tool_search_meta_name():
+            return False
+        if self._bridge_tool_named(tool_name) is not None:
             return False
         tool = self._lookup_any_tool(tool_name)
         if not tool:

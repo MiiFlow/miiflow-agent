@@ -139,3 +139,125 @@ def repair_tool_pairing(
 
     close_pending()
     return repaired, anomalies
+
+
+# ── Unprocessable media ─────────────────────────────────────────────────────
+#
+# The second way a history poisons every subsequent request: a media block the
+# provider cannot decode. Seen 2026-08-18 (thread_ZFuH2vZySdM7RzDMEIbsokgv):
+# view_media pushed an xlsx into a tool_result as an image, Anthropic answered
+# `400 messages.1.content.5.image.source.base64.data: The file format is
+# invalid or unsupported`, and the recovery ladder re-sent the identical block
+# four times (guidance, compaction, tool exclusion) before halting. Nothing on
+# the ladder edits the history; this does — the offending block is replaced by
+# a text note the model can act on, and the request goes out again.
+
+_UNSUPPORTED_MEDIA_HINTS = (
+    # Anthropic
+    "image.source.base64.data",
+    "image.source.url",
+    "document.source.base64.data",
+    "document.source.url",
+    "file format is invalid or unsupported",
+    "could not process image",
+    "image exceeds",  # size limits: 5MB / 8000px
+    "could not fetch",  # URL source the provider cannot download
+    "unsupported image type",
+    "invalid image",
+    # OpenAI
+    "invalid_image_format",
+    "invalid_image_url",
+    "unsupported image",
+    "image_parse_error",
+    "error while downloading",
+    # Gemini
+    "unsupported mime type",
+    "unable to process input image",
+)
+
+_REMOVED_MEDIA_NOTE = (
+    "[{label} removed: the model provider could not process it "
+    "({source}). It is not a viewable image/video for this model. If it is a "
+    "document (spreadsheet, PDF, Word), read it as text with read_memory on its "
+    "workspace path instead of view_media.]"
+)
+
+
+def is_unsupported_media_error(error: BaseException) -> bool:
+    """True when the provider rejected a media block in the request."""
+    if error is None:
+        return False
+    text = (str(error) or "").lower()
+    return any(hint in text for hint in _UNSUPPORTED_MEDIA_HINTS)
+
+
+def _is_media_block(block: object) -> bool:
+    return type(block).__name__ in ("ImageBlock", "VideoBlock", "DocumentBlock")
+
+
+def _media_source(block: object) -> str:
+    for attr in ("image_url", "video_url", "document_url"):
+        value = getattr(block, attr, None)
+        if value:
+            if value.startswith("data:"):
+                # "data:application/octet-stream;base64" — the mimetype is the
+                # useful part; the payload is not.
+                return value.split(",", 1)[0][:60]
+            return value.split("?", 1)[0][-160:]
+    return "unknown source"
+
+
+def strip_unprocessable_media(
+    messages: List[Message],
+) -> Tuple[List[Message], List[str]]:
+    """Replace the media blocks of the LAST media-bearing message with a note.
+
+    The provider's error names a block by wire index, which does not map back
+    to ``messages`` (system prompt lifted out, tool results re-nested), so the
+    repair targets the most recent message that carries any image/video/
+    document block: media enters history one tool call at a time, and the
+    request that first failed is the one right after the poison arrived. If a
+    second bad block sits further back, the next rejection strips that one —
+    the caller bounds how many times this may run.
+
+    Returns ``(repaired, anomalies)``; ``anomalies`` is empty (and ``repaired``
+    is the input list) when no message holds a media block. The input is never
+    mutated.
+    """
+    from ..message import TextBlock
+
+    target = None
+    for index in range(len(messages) - 1, -1, -1):
+        content = messages[index].content
+        if isinstance(content, list) and any(_is_media_block(b) for b in content):
+            target = index
+            break
+    if target is None:
+        return messages, []
+
+    anomalies: List[str] = []
+    original = messages[target]
+    new_content = []
+    for block in original.content:
+        if _is_media_block(block):
+            label = type(block).__name__.replace("Block", "").lower()
+            source = _media_source(block)
+            anomalies.append(f"removed {label} block ({source})")
+            new_content.append(
+                TextBlock(text=_REMOVED_MEDIA_NOTE.format(label=label, source=source))
+            )
+        else:
+            new_content.append(block)
+
+    repaired_message = Message(
+        role=original.role,
+        content=new_content,
+        name=original.name,
+        tool_calls=original.tool_calls,
+        tool_call_id=original.tool_call_id,
+        timestamp=original.timestamp,
+        metadata=original.metadata,
+    )
+    repaired = list(messages)
+    repaired[target] = repaired_message
+    return repaired, anomalies

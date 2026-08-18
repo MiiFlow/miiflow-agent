@@ -1058,6 +1058,13 @@ class ReActOrchestrator:
                     await self._publish_final_answer_event(step, execution_state)
                     break
 
+                # A provider that rejected the REQUEST (not the model's
+                # answer) will reject the identical resend the ladder makes;
+                # repair the history first and let the model take a turn.
+                if step.is_error_step and step.action is None:
+                    if await self._repair_rejected_request(step, context, execution_state):
+                        continue
+
                 # Recovery: if step had an error, try recovery strategies
                 if step.is_error_step and self.recovery_manager:
                     from .recovery import FailureKind
@@ -1373,6 +1380,92 @@ class ReActOrchestrator:
         return resolve_media_refs(
             inputs, state.media_store, passthrough_params=passthrough
         )
+
+    # Bad media blocks a single run may strip before it stops trying. Each
+    # rejection costs one error step, and ErrorThresholdCondition halts on
+    # three consecutive, so this is a documentation of intent more than a
+    # binding limit — but it must exist so a repair that never helps cannot
+    # loop for the whole step budget.
+    MAX_MEDIA_REPAIRS = 3
+
+    async def _repair_rejected_request(
+        self, step: ReActStep, context: RunContext, state: "ExecutionState"
+    ) -> bool:
+        """Edit the history after a provider rejected the request itself.
+
+        The streaming step turns every provider exception into an error step
+        (`_handle_step_error`), so a 400 about the request's CONTENT lands
+        here rather than in the ``except`` around the step call. Two classes
+        are repairable and both are deterministic — retrying without editing
+        the history just repeats the 400 (2026-08-18: four identical
+        rejections of one xlsx-as-image block, then a halt):
+
+        * structural — tool_use/tool_result pairing (once per run);
+        * unprocessable media — an image/document block the provider cannot
+          decode (bounded by MAX_MEDIA_REPAIRS).
+
+        Returns True when the history changed and the step should be resent.
+        The error step stays on ``state.steps`` so the consecutive-error
+        threshold still bounds a repair that does not help.
+        """
+        from .message_repair import (
+            is_structural_message_error,
+            is_unsupported_media_error,
+            repair_tool_pairing,
+            strip_unprocessable_media,
+        )
+
+        error_text = step.error or ""
+
+        if is_unsupported_media_error(error_text):
+            if state.media_repairs >= self.MAX_MEDIA_REPAIRS:
+                logger.warning(
+                    "[ORCH] provider rejected media again after %d repairs; "
+                    "leaving it to the recovery ladder: %s",
+                    state.media_repairs,
+                    _preview(error_text, 200),
+                )
+                return False
+            repaired, anomalies = strip_unprocessable_media(context.messages)
+            if not anomalies:
+                logger.warning(
+                    "[ORCH] provider rejected a media block but the history "
+                    "holds none to strip: %s",
+                    _preview(error_text, 200),
+                )
+                return False
+            state.media_repairs += 1
+            logger.warning(
+                "[ORCH] provider rejected a media block (%s); stripped and "
+                "resending (repair %d/%d): %s",
+                _preview(error_text, 200),
+                state.media_repairs,
+                self.MAX_MEDIA_REPAIRS,
+                "; ".join(anomalies),
+            )
+            context.messages = repaired
+            return True
+
+        if is_structural_message_error(error_text) and not state.structural_repair_attempted:
+            state.structural_repair_attempted = True
+            repaired, anomalies = repair_tool_pairing(context.messages)
+            if not anomalies:
+                logger.warning(
+                    "[ORCH] provider rejected message structure but repair "
+                    "found nothing to fix: %s",
+                    _preview(error_text, 200),
+                )
+                return False
+            logger.warning(
+                "[ORCH] provider rejected message structure (%s); repaired and "
+                "resending: %s",
+                _preview(error_text, 200),
+                "; ".join(anomalies),
+            )
+            context.messages = repaired
+            return True
+
+        return False
 
     def _handle_step_error(self, step: ReActStep, error: Exception, state: "ExecutionState"):
         """Delegates to _tool_actions.handle_step_error — see that module."""

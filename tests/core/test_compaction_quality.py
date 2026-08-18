@@ -261,3 +261,63 @@ class TestHandoffSummaryTruncation:
             isinstance(m.content, str) and "PARTIAL NOTE" in m.content
             for m in result.messages
         )
+
+
+class TestNothingToCompact:
+    """A forced compaction on a short history must be a no-op, not a note.
+
+    2026-08-18 (thread_ZFuH2vZySdM7RzDMEIbsokgv): the recovery ladder forced a
+    compaction on a 6-message run. Everything sat inside the preserved-recent
+    window, so the summariser was handed ZERO messages, came back with
+    "the conversation history is empty… wait for the user's first message",
+    and that note was inserted into the live conversation as compressed
+    history — reported as a successful compaction.
+    """
+
+    def _short_history(self):
+        return [
+            Message(role=MessageRole.SYSTEM, content="System prompt"),
+            Message(role=MessageRole.USER, content=TASK),
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                tool_calls=[{"id": "t1", "function": {"name": "read_memory", "arguments": "{}"}}],
+            ),
+            Message(role=MessageRole.TOOL, content="# plan.xlsx (binary)", tool_call_id="t1"),
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                tool_calls=[{"id": "t2", "function": {"name": "view_media", "arguments": "{}"}}],
+            ),
+            Message(role=MessageRole.TOOL, content="Injected 1 media item", tool_call_id="t2"),
+        ]
+
+    async def test_summarize_with_nothing_older_than_the_window_is_a_noop(self):
+        client = _SummarizerClient()
+        compressor = ContextCompressor(
+            client=client,
+            # Tiny budget so the size check triggers, exactly like force=True.
+            max_context_tokens=1,
+            compression_threshold=1.0,
+            strategy=CompressionStrategy.SUMMARIZE,
+        )
+        history = self._short_history()
+
+        result = await compressor.compress_if_needed(history, preserve_recent=4)
+
+        assert client.calls == [], "no summariser call over an empty transcript"
+        assert result.was_compressed is False
+        assert result.messages is history
+        assert result.compressed_count == len(history)
+
+    async def test_auto_strategy_reports_the_noop_too(self):
+        client = _SummarizerClient()
+        compressor = ContextCompressor(
+            client=client,
+            max_context_tokens=1,
+            compression_threshold=1.0,
+            strategy=CompressionStrategy.AUTO,
+        )
+        result = await compressor.compress_if_needed(self._short_history(), preserve_recent=4)
+        assert result.was_compressed is False
+        assert client.calls == []

@@ -76,6 +76,12 @@ class ExecutionState:
     # repairing in a loop would hide a producer bug behind infinite retries.
     structural_repair_attempted: bool = False
 
+    # How many unprocessable-media repairs this run has spent. Each strips the
+    # media blocks of ONE message and resends (see
+    # message_repair.strip_unprocessable_media); a history can hold several
+    # bad blocks, so this is a small cap rather than a once-flag.
+    media_repairs: int = 0
+
     # Interrupt ids recorded by THIS run (_record_interrupt). When a second
     # interrupt arrives in the same run (parallel dispatch_assistant batch),
     # the previously-active one is demoted into the checkpoint's

@@ -271,6 +271,12 @@ class ContextCompressor:
             else:
                 compressed = self._truncate(messages, preserve_recent, threshold_tokens)
 
+        # The strategies hand back the SAME list object when they had nothing
+        # to do (too few messages, everything inside the preserved window).
+        # That is not a compression, and reporting it as one is what made a
+        # no-op forced compaction look like a successful recovery step.
+        was_compressed = compressed is not messages
+
         # Final safety net: a single oversized message (e.g. a multi-megabyte
         # tool result) can keep the request over budget even after dropping
         # every other message — and it usually sits in the preserved-recent
@@ -279,9 +285,12 @@ class ContextCompressor:
         # early-return path, so it's the one place the giant-result case is
         # guaranteed to be handled.
         if self._token_fn(compressed) > threshold_tokens:
-            compressed = [
+            clamped = [
                 _clamp_message(m, _MAX_SINGLE_MESSAGE_CHARS) for m in compressed
             ]
+            if any(c is not m for c, m in zip(clamped, compressed)):
+                was_compressed = True
+                compressed = clamped
 
         after_tokens = self._token_fn(compressed)
         logger.info(
@@ -291,7 +300,7 @@ class ContextCompressor:
 
         return CompressionResult(
             messages=compressed,
-            was_compressed=True,
+            was_compressed=was_compressed,
             original_count=len(messages),
             compressed_count=len(compressed),
             estimated_tokens_before=estimated_tokens,
@@ -493,6 +502,22 @@ class ContextCompressor:
             head_user = None
         excluded = recent_set | ({id(head_user)} if head_user is not None else set())
         old_messages = [m for m in non_system if id(m) not in excluded]
+
+        # Nothing sits between the task statement and the recent window: there
+        # is nothing to fold into a note. Returning unchanged (same list
+        # object, so the caller reports was_compressed=False) beats what used
+        # to happen — a summariser call over an empty transcript that came
+        # back "the conversation history is empty… wait for the user's first
+        # message", which was then INSERTED into the live conversation
+        # (2026-08-18, forced compaction on a 6-message run).
+        if not old_messages:
+            logger.info(
+                "[COMPACTION] nothing to compact: %d messages, all within the "
+                "preserved window (preserve_recent=%d)",
+                len(messages),
+                preserve_recent,
+            )
+            return messages
 
         # Format old messages for summarization
         formatted = []

@@ -281,7 +281,7 @@ class TestNothingToCompact:
             Message(
                 role=MessageRole.ASSISTANT,
                 content="",
-                tool_calls=[{"id": "t1", "function": {"name": "read_memory", "arguments": "{}"}}],
+                tool_calls=[{"id": "t1", "function": {"name": "read_file", "arguments": "{}"}}],
             ),
             Message(role=MessageRole.TOOL, content="# plan.xlsx (binary)", tool_call_id="t1"),
             Message(

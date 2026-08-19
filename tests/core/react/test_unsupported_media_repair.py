@@ -44,7 +44,7 @@ def _poisoned_history():
     return [
         Message(role=MessageRole.SYSTEM, content="sys"),
         Message(role=MessageRole.USER, content="check the daily pacing file uploaded"),
-        Message(role=MessageRole.ASSISTANT, content="", tool_calls=[_call("t1", "read_memory")]),
+        Message(role=MessageRole.ASSISTANT, content="", tool_calls=[_call("t1", "read_file")]),
         Message(role=MessageRole.TOOL, content="# plan.xlsx (binary)", tool_call_id="t1"),
         Message(role=MessageRole.ASSISTANT, content="", tool_calls=[_call("t2")]),
         Message(
@@ -104,7 +104,7 @@ class TestStrip:
         note = fixed.content[1]
         assert isinstance(note, TextBlock)
         assert "could not process" in note.text
-        assert "read_memory" in note.text
+        assert "read_file" in note.text
         # The text neighbours survive verbatim.
         assert fixed.content[0].text.startswith("Injected 1 media item")
         assert fixed.content[2].text.startswith("Focus for visual analysis")

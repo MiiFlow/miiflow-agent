@@ -178,7 +178,7 @@ _UNSUPPORTED_MEDIA_HINTS = (
 _REMOVED_MEDIA_NOTE = (
     "[{label} removed: the model provider could not process it "
     "({source}). It is not a viewable image/video for this model. If it is a "
-    "document (spreadsheet, PDF, Word), read it as text with read_memory on its "
+    "document (spreadsheet, PDF, Word), read it as text with read_file on its "
     "workspace path instead of view_media.]"
 )
 

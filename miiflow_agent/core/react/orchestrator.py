@@ -399,9 +399,13 @@ def _approved_action_success_guidance(tool_name: str) -> str:
         "it has ALREADY been executed — its result is in the tool result "
         "above. The task step it implements is DONE. Do not run it again, do "
         "not re-dispatch it, and do not re-verify it with more tool calls. "
-        "Report the outcome to the user in plain language now (include the "
-        "key created/changed entities), and only continue with further work "
-        "if the original request clearly requires more."
+        "EXCEPTION: if its result says the work was dispatched asynchronously "
+        "and names a read tool to poll for the outcome (get_run_status, "
+        "get_assistant_run, get_schedule), polling that read tool is part of "
+        "THIS step, not a re-run — poll it until the outcome is known, then "
+        "report. Report the outcome to the user in plain language now "
+        "(include the key created/changed entities), and only continue with "
+        "further work if the original request clearly requires more."
     )
 
 

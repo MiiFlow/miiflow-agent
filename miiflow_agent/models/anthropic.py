@@ -108,7 +108,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-5": ModelConfig(
         model_identifier="claude-sonnet-5",
         name="claude-sonnet-5",
-        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. 1M context window. Introductory pricing of $2/$10 per 1M input/output tokens applies through August 31, 2026, reverting to $3/$15 on September 1, 2026.",
+        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. 1M context window. Priced at $2/$10 per 1M input/output tokens — the launch introductory rate, made permanent on August 10, 2026 when Anthropic cancelled the previously scheduled September 1 increase to $3/$15.",
         support_images=True,
         support_files=True,
         support_streaming=True,

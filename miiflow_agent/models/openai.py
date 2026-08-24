@@ -36,7 +36,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.6-sol": ModelConfig(
         model_identifier="gpt-5.6-sol",
         name="gpt-5.6-sol",
-        description="GPT-5.6 Sol is OpenAI's flagship model (generally available July 9, 2026) and the highest-intelligence tier of the GPT-5.6 family, built for complex coding, reasoning, and long-horizon agentic work. 1M context window. Available in the API as gpt-5.6-sol (alias: gpt-5.6).",
+        description="GPT-5.6 Sol is OpenAI's flagship model (generally available July 9, 2026) and the highest-intelligence tier of the GPT-5.6 family, built for complex coding, reasoning, and long-horizon agentic work. 1M context window. Available in the API as gpt-5.6-sol (alias: gpt-5.6). An August 21, 2026 price cut lowered it to $4/$20 per 1M input/output tokens (from $5/$30) — a promotional rate running through at least November 21, 2026 — undercutting Claude Opus 5 on both input and output.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -47,14 +47,14 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         maximum_output_tokens=128000,
         token_param_name="max_completion_tokens",
         supports_temperature=False,
-        input_cost_hint=5.0,
-        output_cost_hint=30.0,
-        cache_read_cost_hint=0.5,  # OpenAI cached input: 10% of input rate
+        input_cost_hint=4.0,
+        output_cost_hint=20.0,
+        cache_read_cost_hint=0.4,  # OpenAI cached input: 10% of input rate
     ),
     "gpt-5.6-sol-pro": ModelConfig(
         model_identifier="gpt-5.6-sol-pro",
         name="gpt-5.6-sol-pro",
-        description="GPT-5.6 Sol Pro is GPT-5.6 Sol served with reasoning.mode=pro for maximum accuracy on the hardest agentic and reasoning tasks (July 9, 2026). Same per-token price as Sol, with higher latency and reasoning-token usage. 1M context window.",
+        description="GPT-5.6 Sol Pro is GPT-5.6 Sol served with reasoning.mode=pro for maximum accuracy on the hardest agentic and reasoning tasks (July 9, 2026). Same per-token price as Sol, with higher latency and reasoning-token usage. 1M context window. Priced at $4/$20 per 1M input/output tokens following Sol's August 21, 2026 price cut (from $5/$30) — a promotional rate running through at least November 21, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -65,9 +65,9 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         maximum_output_tokens=128000,
         token_param_name="max_completion_tokens",
         supports_temperature=False,
-        input_cost_hint=5.0,
-        output_cost_hint=30.0,
-        cache_read_cost_hint=0.5,  # OpenAI cached input: 10% of input rate
+        input_cost_hint=4.0,
+        output_cost_hint=20.0,
+        cache_read_cost_hint=0.4,  # OpenAI cached input: 10% of input rate
     ),
     "gpt-5.6-terra": ModelConfig(
         model_identifier="gpt-5.6-terra",

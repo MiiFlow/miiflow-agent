@@ -8,10 +8,10 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # and all current models support temperature
 
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
-    "gemini-3.6-flash": ModelConfig(
-        model_identifier="models/gemini-3.6-flash",
-        name="gemini-3.6-flash",
-        description="Google's most capable Flash model (released July 21, 2026). Beats Gemini 3.1 Pro on coding at roughly 25% lower cost, with native grounding and multimodal (text, image, video, audio, PDF) input. 1M token context window.",
+    "gemini-3.7-flash": ModelConfig(
+        model_identifier="models/gemini-3.7-flash",
+        name="gemini-3.7-flash",
+        description="Google's newest and most capable Flash model (released August 13, 2026), positioned as a leading model while Gemini 3.5 Pro remains in development. Improves on prior Flash generations for coding and reasoning, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -23,8 +23,26 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         maximum_output_tokens=65536,
         token_param_name="max_output_tokens",
         supports_temperature=True,
-        input_cost_hint=1.50,
-        output_cost_hint=7.50,
+        input_cost_hint=0.75,
+        output_cost_hint=3.75,
+    ),
+    "gemini-3.6-flash": ModelConfig(
+        model_identifier="models/gemini-3.6-flash",
+        name="gemini-3.6-flash",
+        description="Legacy — succeeded by Gemini 3.7 Flash (August 2026). Strong coding and agentic performance at Flash-tier pricing, with native grounding and multimodal (text, image, video, audio, PDF) input. 1M token context window. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        supports_structured_outputs=False,
+        reasoning=True,
+        maximum_context_tokens=1048576,
+        maximum_output_tokens=65536,
+        token_param_name="max_output_tokens",
+        supports_temperature=True,
+        input_cost_hint=0.75,
+        output_cost_hint=3.75,
     ),
     "gemini-3.5-flash-lite": ModelConfig(
         model_identifier="models/gemini-3.5-flash-lite",
@@ -140,6 +158,7 @@ GOOGLE_PARAMETERS: list[ParameterConfig] = [
         default_value=4096,
         min_value=1,
         max_value={
+            "gemini-3.7-flash": 65536,
             "gemini-3.6-flash": 65536,
             "gemini-3.5-flash-lite": 65536,
             "gemini-3.5-flash": 65536,

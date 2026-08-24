@@ -102,6 +102,15 @@ class CallbackEvent:
     stream_ms: Optional[float] = None
     transport_retries: int = 0
 
+    # Short order-sensitive digest of the formatted tools array sent with the
+    # call (None when tool-less). The tools array is the FIRST prompt-cache
+    # tier, so two consecutive calls whose fingerprints differ have, by
+    # construction, busted every cache tier — this is the diagnostic for
+    # "cache missed although the previous turn was minutes ago". Computed
+    # before provider-side additions (native MCP toolsets, search tool), so
+    # an unchanged fingerprint with a cache miss points at those instead.
+    tools_fingerprint: Optional[str] = None
+
     # Error information (for ON_ERROR)
     error: Optional[Exception] = None
     error_type: Optional[str] = None

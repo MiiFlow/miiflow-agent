@@ -213,13 +213,21 @@ class UnifiedStreamingClient:
         buffer = ""
         
         try:
+            # NO `break` on finish_reason: an abandoned provider iterator
+            # never runs to completion, and the OpenInference wrapper only
+            # ends (and exports) its LLM span at exhaustion — GeneratorExit
+            # skips its except. Trailing events after finish_reason are
+            # drained silently; providers emit no content after it.
+            _finished = False
             async for stream_chunk in self.client.astream_chat(messages, **kwargs):
+                if _finished:
+                    continue
                 buffer += stream_chunk.delta if stream_chunk.delta else ""
-                
+
                 partial_parse = None
                 if parser and stream_chunk.delta:
                     partial_parse = parser.try_parse_partial(stream_chunk.delta)
-                
+
                 yield EnhancedStreamChunk(
                     content=buffer,
                     delta=stream_chunk.delta,
@@ -234,9 +242,9 @@ class UnifiedStreamingClient:
                         "has_partial_parse": partial_parse is not None
                     }
                 )
-                
+
                 if stream_chunk.finish_reason:
-                    break
+                    _finished = True
             
             if parser and buffer:
                 final_result = parser.finalize_parse(buffer)

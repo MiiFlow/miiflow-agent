@@ -1033,7 +1033,13 @@ class Agent(Generic[Deps, Result]):
             # Prepare messages for LLM (filter out mid-conversation SYSTEM messages)
             llm_messages = self._prepare_messages_for_llm(context.messages)
 
-            # Stream LLM response
+            # Stream LLM response. NO `break` on finish_reason: the provider
+            # closes right after it, so draining costs nothing — and an
+            # abandoned iterator never runs to completion, which silently
+            # drops the OpenInference LLM span (its wrapper only ends the
+            # span at exhaustion, and GeneratorExit skips its except). This
+            # was why single-hop turns exported usage rows but no LLM spans.
+            _finished = False
             async for chunk in self.client.astream_chat(
                 messages=llm_messages,
                 tools=self._tools if self._tools else None,
@@ -1041,6 +1047,8 @@ class Agent(Generic[Deps, Result]):
                 max_tokens=self.max_tokens,
                 json_schema=self.json_schema,
             ):
+                if _finished:
+                    continue
                 if chunk.delta:
                     buffer += chunk.delta
                     yield {"event": "llm_chunk", "data": {"delta": chunk.delta, "content": buffer}}
@@ -1055,7 +1063,7 @@ class Agent(Generic[Deps, Result]):
                         streamed_tool_calls[tc_id] = tc
 
                 if chunk.finish_reason:
-                    break
+                    _finished = True
 
             final_tool_calls = list(streamed_tool_calls.values()) or None
 
@@ -1087,6 +1095,8 @@ class Agent(Generic[Deps, Result]):
 
                 # Stream the post-tool LLM response
                 post_tool_buffer = ""
+                # No `break` on finish_reason — see the first stream loop.
+                _post_finished = False
                 async for chunk in self.client.astream_chat(
                     messages=llm_messages,
                     tools=None,
@@ -1094,12 +1104,14 @@ class Agent(Generic[Deps, Result]):
                     max_tokens=self.max_tokens,
                     json_schema=self.json_schema,
                 ):
+                    if _post_finished:
+                        continue
                     if chunk.delta:
                         post_tool_buffer += chunk.delta
                         yield {"event": "llm_chunk", "data": {"delta": chunk.delta, "content": post_tool_buffer}}
 
                     if chunk.finish_reason:
-                        break
+                        _post_finished = True
 
                 final_message = Message(role=MessageRole.ASSISTANT, content=post_tool_buffer)
                 context.messages.append(final_message)

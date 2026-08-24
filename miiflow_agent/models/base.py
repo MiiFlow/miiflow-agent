@@ -73,10 +73,13 @@ class ModelConfig:
     # Declared as explicit $/M (not multipliers of input_cost_hint) because
     # OpenAI publishes cached-input prices per model, not a uniform ratio.
     # NOTE: rates are per-model, but Anthropic's cache-WRITE rate is per
-    # request TTL (1.25x input for the 5-minute default, 2x for 1h). This
-    # codebase only ever requests the default TTL (see AnthropicClient.
-    # _apply_prompt_caching, which never sets a "ttl" key); if a 1h TTL is
-    # ever requested, this schema undercharges writes and needs a per-request
-    # dimension instead.
+    # request TTL (1.25x input for the 5-minute default, 2x for 1h).
+    # STOPGAP (2026-08): system agents now request ttl="1h" on the
+    # tools/system tiers (AnthropicClient.cache_ttl), so this schema
+    # undercharges those writes by 0.75x-input per written token. Accepted
+    # for now because FINANCE_CACHE_AWARE_LLM_COST is still a shadow flag
+    # (writes bill at 1x input either way while it is off) and the fix is a
+    # per-request TTL dimension on the usage record — tracked as a finance
+    # follow-up, not fixable from a per-model rate.
     cache_read_cost_hint: float = 0.0
     cache_write_cost_hint: float = 0.0

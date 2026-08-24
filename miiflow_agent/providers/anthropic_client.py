@@ -52,6 +52,20 @@ class AnthropicClient(ModelClient):
                 f"effort must be one of {EFFORT_LEVELS}, got {effort!r}"
             )
         self.effort: Optional[str] = effort
+        # `cache_ttl` extends the prompt-cache TTL of the tools + system
+        # breakpoints (the org-stable prefix) beyond the 5-minute default;
+        # the message breakpoint always stays default (agent rounds are
+        # seconds apart, and the transcript prefix changes every turn anyway).
+        # Same delivery path as `effort`: a model_config key spread into the
+        # constructor. Motivation: 63% of system-agent turns arriving >5 min
+        # after the previous one re-billed a ~40K-token prompt at the full
+        # input rate (prod llm_timeline, Aug 2026); "1h" trades a 2x (vs
+        # 1.25x) cache-write premium on the ~30K stable prefix for cache
+        # reads on every returning turn and on new threads org-wide.
+        cache_ttl = kwargs.pop("cache_ttl", None)
+        if cache_ttl is not None and cache_ttl not in ("5m", "1h"):
+            raise ValueError(f"cache_ttl must be '5m' or '1h', got {cache_ttl!r}")
+        self.cache_ttl: Optional[str] = cache_ttl
         super().__init__(model=model, api_key=api_key, **kwargs)
         from .sdk_client_cache import get_or_create_sdk_client
 
@@ -995,12 +1009,50 @@ class AnthropicClient(ModelClient):
                     out.pop("configs", None)
         return out, changed
 
+    @staticmethod
+    def _stamp_stream_span_cache_attrs(stream: Any, usage: Any) -> bool:
+        """Backfill prompt-cache token attrs on the OpenInference stream span.
+
+        openinference-instrumentation-anthropic 1.1.0 emits
+        ``llm.token_count.prompt_details.cache_read/cache_write`` for
+        NON-streaming responses only; its streaming extractor folds cache
+        tokens into the prompt total and drops the split
+        (``_stream._MessageExtractor``). Every chat call here streams, so
+        Arize showed no Anthropic cache telemetry at all — an export gap
+        that once got "prod runs no prompt caching" written up as a finding
+        when ``llm_timeline`` showed caching working fine.
+
+        Reaches into the wrapper's ``_with_span`` deliberately; every access
+        is guarded so an instrumentor upgrade degrades to missing attrs,
+        never a broken stream. Returns True once attrs were written so the
+        caller can stop re-checking.
+        """
+        try:
+            with_span = getattr(stream, "_with_span", None)
+            if with_span is None:
+                return False
+            attrs: Dict[str, Any] = {}
+            read = getattr(usage, "cache_read_tokens", 0) or 0
+            write = getattr(usage, "cache_write_tokens", 0) or 0
+            if read:
+                attrs["llm.token_count.prompt_details.cache_read"] = read
+            if write:
+                attrs["llm.token_count.prompt_details.cache_write"] = write
+            if not attrs:
+                return False
+            with_span.set_attributes(attrs)
+            return True
+        except Exception:  # noqa: BLE001 — telemetry must never break a stream
+            return False
+
     # Block types that accept a cache_control marker. Notably absent:
     # thinking / redacted_thinking — marking those is a 400.
     _CACHEABLE_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result", "document"})
 
     @classmethod
-    def _apply_prompt_caching(cls, request_params: Dict[str, Any]) -> None:
+    def _apply_prompt_caching(
+        cls, request_params: Dict[str, Any], *, ttl: Optional[str] = None
+    ) -> None:
         """Add Anthropic prompt-cache breakpoints to `request_params` in place.
 
         Anthropic renders the prompt as ``tools → system → messages`` and a
@@ -1020,21 +1072,34 @@ class AnthropicClient(ModelClient):
         a system-prompt change still leaves the tools tier hittable.
 
         Anthropic allows 4 breakpoints per request; we place at most 3.
-        TTL stays at the 5-minute default: agent rounds are seconds apart,
-        and the 1h TTL's 2x write premium buys nothing at that cadence.
+        TTL: within-turn agent rounds are seconds apart, so the message
+        breakpoint always stays at the 5-minute default. The tools/system
+        tiers honour ``ttl`` (call sites pass ``self.cache_ttl``) — prod
+        data showed the dominant cache misses were BETWEEN user turns (63%
+        of system-agent turns >5 min idle re-billed the whole ~40K-token
+        prompt), which "1h" on the stable prefix converts to reads at a
+        one-time 2x write premium.
 
         Known limit: a breakpoint only looks back 20 content blocks for the
         previous cache entry, so a single turn that adds more than 20 blocks
         (e.g. a very wide parallel tool batch) re-writes the prefix once
         instead of reading it. The tools/system tiers still hit.
         """
+        # The prefix tiers' marker. Anthropic's default TTL is 5m; only a
+        # non-default value is sent on the wire so unconfigured clients keep
+        # byte-identical requests.
+        if ttl and ttl != "5m":
+            prefix_cache_control = {"type": "ephemeral", "ttl": ttl}
+        else:
+            prefix_cache_control = {"type": "ephemeral"}
+
         tools = request_params.get("tools")
         if tools:
             new_tools = list(tools)
             last = new_tools[-1]
             if isinstance(last, dict):
                 last_copy = dict(last)
-                last_copy["cache_control"] = {"type": "ephemeral"}
+                last_copy["cache_control"] = dict(prefix_cache_control)
                 new_tools[-1] = last_copy
                 request_params["tools"] = new_tools
 
@@ -1044,7 +1109,7 @@ class AnthropicClient(ModelClient):
                 {
                     "type": "text",
                     "text": system,
-                    "cache_control": {"type": "ephemeral"},
+                    "cache_control": dict(prefix_cache_control),
                 }
             ]
         elif isinstance(system, list) and system:
@@ -1052,7 +1117,7 @@ class AnthropicClient(ModelClient):
             last = new_system[-1]
             if isinstance(last, dict):
                 last_copy = dict(last)
-                last_copy["cache_control"] = {"type": "ephemeral"}
+                last_copy["cache_control"] = dict(prefix_cache_control)
                 new_system[-1] = last_copy
                 request_params["system"] = new_system
 
@@ -1258,7 +1323,7 @@ class AnthropicClient(ModelClient):
             self._prune_stale_tool_references(
                 request_params, mcp_servers if use_native_mcp else None
             )
-            self._apply_prompt_caching(request_params)
+            self._apply_prompt_caching(request_params, ttl=self.cache_ttl)
 
             # Use beta client for structured outputs or native MCP
             use_beta_client = use_native_structured_output or use_native_mcp
@@ -1605,7 +1670,7 @@ class AnthropicClient(ModelClient):
             self._prune_stale_tool_references(
                 request_params, mcp_servers if use_native_mcp else None
             )
-            self._apply_prompt_caching(request_params)
+            self._apply_prompt_caching(request_params, ttl=self.cache_ttl)
 
             # Determine which client to use
             # Use beta client for structured outputs or native MCP
@@ -1665,36 +1730,92 @@ class AnthropicClient(ModelClient):
             # state causes corruption when streams interleave.
             stream_normalizer = AnthropicStreamNormalizer(self._tool_name_mapping)
 
-            async for event in stream:
-                # Normalize Anthropic events to StreamChunk
-                normalized_chunk = stream_normalizer.normalize_chunk(event)
+            _events_seen = 0
+            _cache_attrs_stamped = False
+            try:
+                async for event in stream:
+                    _events_seen += 1
+                    # Normalize Anthropic events to StreamChunk
+                    normalized_chunk = stream_normalizer.normalize_chunk(event)
 
-                # Only yield if there's actual content or metadata to send
-                if (
-                    normalized_chunk.delta
-                    or normalized_chunk.thinking_delta
-                    or normalized_chunk.tool_calls
-                    or normalized_chunk.mcp_tool_results
-                    # Search blocks arrive on content_block_stop, where every
-                    # other field above is empty — omit this and the chunk is
-                    # filtered out here and the whole capture→replay chain is
-                    # dead code. Any future provider-payload field added to
-                    # StreamChunk needs a clause here for the same reason.
-                    or normalized_chunk.tool_search_blocks
-                    or normalized_chunk.finish_reason
-                ):
-                    yield normalized_chunk
+                    # Backfill the cache-token split onto the instrumentor's
+                    # LLM span while it is still open (the streaming
+                    # extractor drops it — see _stamp_stream_span_cache_attrs).
+                    if not _cache_attrs_stamped and normalized_chunk.usage:
+                        _cache_attrs_stamped = self._stamp_stream_span_cache_attrs(
+                            stream, normalized_chunk.usage
+                        )
 
-                # Deliberately NO `break` on `message_stop`. The SDK closes the
-                # SSE stream right after that event, so exhausting the iterator
-                # costs nothing — and it is REQUIRED for observability: the
-                # OpenInference wrapper around this stream only ends its LLM
-                # span when the `async for` runs to completion. Breaking out
-                # early abandons that async generator (GeneratorExit, not an
-                # Exception, so its except-branch never runs either), the span
-                # is never ended and never exported. That is exactly why, for
-                # weeks, no streaming Anthropic call appeared under any agent
-                # span in Arize while non-streaming and 4xx calls did.
+                    # Only yield if there's actual content or metadata to send
+                    if (
+                        normalized_chunk.delta
+                        or normalized_chunk.thinking_delta
+                        or normalized_chunk.tool_calls
+                        or normalized_chunk.mcp_tool_results
+                        # Search blocks arrive on content_block_stop, where every
+                        # other field above is empty — omit this and the chunk is
+                        # filtered out here and the whole capture→replay chain is
+                        # dead code. Any future provider-payload field added to
+                        # StreamChunk needs a clause here for the same reason.
+                        or normalized_chunk.tool_search_blocks
+                        or normalized_chunk.finish_reason
+                    ):
+                        yield normalized_chunk
+
+                    # Deliberately NO `break` on `message_stop`. The SDK closes the
+                    # SSE stream right after that event, so exhausting the iterator
+                    # costs nothing — and it is REQUIRED for observability: the
+                    # OpenInference wrapper around this stream only ends its LLM
+                    # span when the `async for` runs to completion. Breaking out
+                    # early abandons that async generator (GeneratorExit, not an
+                    # Exception, so its except-branch never runs either), the span
+                    # is never ended and never exported. That is exactly why, for
+                    # weeks, no streaming Anthropic call appeared under any agent
+                    # span in Arize while non-streaming and 4xx calls did.
+            except GeneratorExit:
+                # A CONSUMER abandoned this generator mid-stream (an upstream
+                # generator in the chain being closed has the same effect as
+                # the in-loop `break` the comment above forbids): the
+                # OpenInference wrapper's iterator never completes, its
+                # `except Exception` cannot catch GeneratorExit, and the LLM
+                # span is silently dropped — tokens/cost recorded by the
+                # POST_CALL callback, nothing in Arize. Production symptom:
+                # web-root turns whose usage rows exist but whose traces hold
+                # zero LLM spans. Drain the few remaining events (usually
+                # just message_stop — usage has already arrived by the time
+                # anyone abandons a finished answer) inside a hard bound so
+                # the wrapper can end its span, then keep closing. PEP 525
+                # allows awaiting during aclose; yielding is what it forbids.
+                logger.warning(
+                    "[TRACE] anthropic stream abandoned by consumer after "
+                    "%d events (model=%s); draining briefly so the LLM span "
+                    "still exports",
+                    _events_seen,
+                    self.model,
+                )
+                if getattr(stream, "_with_span", None) is None:
+                    # No instrumentor wrapper — nothing to rescue; don't
+                    # spend teardown time draining a bare SDK stream.
+                    raise
+                try:
+
+                    async def _drain_remaining() -> None:
+                        nonlocal _cache_attrs_stamped
+                        async for ev in stream:
+                            if _cache_attrs_stamped:
+                                continue
+                            drained_chunk = stream_normalizer.normalize_chunk(ev)
+                            if drained_chunk.usage:
+                                _cache_attrs_stamped = (
+                                    self._stamp_stream_span_cache_attrs(
+                                        stream, drained_chunk.usage
+                                    )
+                                )
+
+                    await asyncio.wait_for(_drain_remaining(), timeout=2.0)
+                except BaseException:  # noqa: BLE001 — already closing
+                    pass
+                raise
 
             # Slow-call observability (rec #5 review finding): emit a
             # structured warning when a successful stream exceeded the

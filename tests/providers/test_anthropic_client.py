@@ -409,6 +409,42 @@ class TestApplyPromptCaching:
         # Anthropic allows at most 4 breakpoints per request.
         assert self._count_breakpoints(params) == 3
 
+    def test_ttl_marks_prefix_tiers_only(self):
+        """ttl="1h" extends the tools + system tiers; the message breakpoint
+        stays on the 5-minute default (agent rounds are seconds apart)."""
+        params = self._params()
+        AnthropicClient._apply_prompt_caching(params, ttl="1h")
+
+        assert params["tools"][-1]["cache_control"] == {
+            "type": "ephemeral",
+            "ttl": "1h",
+        }
+        assert params["system"][-1]["cache_control"] == {
+            "type": "ephemeral",
+            "ttl": "1h",
+        }
+        assert params["messages"][-1]["content"][-1]["cache_control"] == {
+            "type": "ephemeral"
+        }
+
+    def test_ttl_default_and_5m_send_no_ttl_key(self):
+        """Only a non-default TTL goes on the wire — unconfigured clients keep
+        byte-identical requests."""
+        for ttl in (None, "5m"):
+            params = self._params()
+            AnthropicClient._apply_prompt_caching(params, ttl=ttl)
+            assert params["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+            assert params["system"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_cache_ttl_constructor_validation(self):
+        assert AnthropicClient(model="claude-sonnet-5", api_key="k").cache_ttl is None
+        assert (
+            AnthropicClient(model="claude-sonnet-5", api_key="k", cache_ttl="1h").cache_ttl
+            == "1h"
+        )
+        with pytest.raises(ValueError):
+            AnthropicClient(model="claude-sonnet-5", api_key="k", cache_ttl="2h")
+
     def test_does_not_mutate_caller_structures(self):
         params = self._params()
         original_tools = params["tools"]

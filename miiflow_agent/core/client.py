@@ -37,6 +37,41 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _tools_fingerprint(formatted_tools: Optional[List[Any]]) -> Optional[str]:
+    """Short digest of the tools array as it will go on the wire.
+
+    Deliberately ORDER-SENSITIVE (list order preserved): the tools array is
+    the first prompt-cache tier and byte order is part of the prefix, so a
+    reordering must change the fingerprint even when the set is identical.
+
+    Deliberately SHALLOW: hashing (name, description length, top-level key
+    set) per entry catches the drift classes actually observed — tools
+    appearing/disappearing (connect stubs, skill activation), reordering,
+    description edits — without json.dumps'ing a 100K+-char schema array on
+    the event loop before every stream round (this runs per LLM call on the
+    TTFT path). A deep schema edit with an unchanged description length is
+    invisible here; accepted trade. Best-effort — telemetry never fails a
+    call.
+    """
+    if not formatted_tools:
+        return None
+    try:
+        import hashlib
+
+        parts = []
+        for tool in formatted_tools:
+            if not isinstance(tool, dict):
+                parts.append(type(tool).__name__)
+                continue
+            fn = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+            name = tool.get("name") or fn.get("name") or tool.get("type", "?")
+            desc = tool.get("description") or fn.get("description") or ""
+            parts.append(f"{name}:{len(str(desc))}:{','.join(sorted(tool.keys()))}")
+        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _format_tokens(tokens: TokenCount) -> str:
     """Compact token summary for log lines: in/out/total (+cache split)."""
     if tokens is None:
@@ -609,6 +644,7 @@ class LLMClient:
         total_tokens = TokenCount()
         callback_emitted = False
         error_occurred = None
+        tools_fingerprint = _tools_fingerprint(formatted_tools)
 
         # Timing decomposition (kimi-code's StreamDecodeStats insight): a slow
         # step is only diagnosable when the wait splits into build (local
@@ -704,13 +740,14 @@ class LLMClient:
                 if error_occurred:
                     logger.warning(
                         "[LLM_CALL] provider=%s model=%s mode=astream status=error "
-                        "latency_ms=%.0f tokens=%s error=%s tools=%d%s",
+                        "latency_ms=%.0f tokens=%s error=%s tools=%d tools_hash=%s%s",
                         self.client.provider_name,
                         self.client.model,
                         latency_ms,
                         _format_tokens(total_tokens),
                         type(error_occurred).__name__,
                         len(formatted_tools or []),
+                        tools_fingerprint,
                         timing_suffix,
                     )
 
@@ -732,6 +769,7 @@ class LLMClient:
                         stream_ms=stream_ms,
                         request_build_ms=build_ms,
                         transport_retries=attempts_used,
+                        tools_fingerprint=tools_fingerprint,
                         context=ctx,
                         success=False,
                     )
@@ -740,12 +778,13 @@ class LLMClient:
                 else:
                     logger.info(
                         "[LLM_CALL] provider=%s model=%s mode=astream status=ok "
-                        "latency_ms=%.0f tokens=%s tools=%d%s",
+                        "latency_ms=%.0f tokens=%s tools=%d tools_hash=%s%s",
                         self.client.provider_name,
                         self.client.model,
                         latency_ms,
                         _format_tokens(total_tokens),
                         len(formatted_tools or []),
+                        tools_fingerprint,
                         timing_suffix,
                     )
 
@@ -765,6 +804,7 @@ class LLMClient:
                         stream_ms=stream_ms,
                         request_build_ms=build_ms,
                         transport_retries=attempts_used,
+                        tools_fingerprint=tools_fingerprint,
                         context=ctx,
                         success=True,
                     )

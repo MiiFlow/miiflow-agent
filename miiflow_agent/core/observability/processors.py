@@ -301,15 +301,156 @@ class SecretRedactingProcessor(_SpanProcessor):
         return True
 
 
+# ── Span size bounding ───────────────────────────────────────────────────
+
+# Byte budget for the `llm.input_messages.*` family on one LLM span. The SDK
+# caps each attribute VALUE (32K via span_limits()) and the attribute COUNT
+# (128, the OTel default), but 128 attrs x 32K is still ~4MB for a single
+# span that replays a long history — and an OTLP collector that refuses the
+# payload drops it silently (spans simply absent — the exact prod symptom of
+# root-agent LLM spans never reaching Arize). 256KB keeps the newest turns a
+# trace reader actually looks at.
+SPAN_MESSAGE_BYTE_LIMIT_ENV = "MIIFLOW_SPAN_MAX_MESSAGE_BYTES"
+DEFAULT_SPAN_MESSAGE_BYTE_LIMIT = 262_144
+_INPUT_MESSAGES_PREFIX = "llm.input_messages."
+MESSAGES_TRUNCATED_ATTR = "miiflow.span.messages_truncated"
+
+
+def message_byte_limit() -> int:
+    import os
+
+    raw = os.getenv(SPAN_MESSAGE_BYTE_LIMIT_ENV)
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return DEFAULT_SPAN_MESSAGE_BYTE_LIMIT
+
+
+def _write_attribute(attributes: Any, key: str, value: Any) -> None:
+    try:
+        attributes[key] = value
+    except Exception:  # noqa: BLE001 — frozen BoundedAttributes fallback
+        inner = getattr(attributes, "_dict", None)
+        if inner is not None:
+            inner[key] = value
+
+
+def _delete_attribute(attributes: Any, key: str) -> None:
+    try:
+        del attributes[key]
+    except Exception:  # noqa: BLE001 — frozen BoundedAttributes fallback
+        inner = getattr(attributes, "_dict", None)
+        if inner is not None:
+            inner.pop(key, None)
+
+
+def bound_message_attributes(attributes: Any, byte_limit: int) -> int:
+    """Drop the OLDEST whole messages until the family fits; returns count dropped.
+
+    Message indices are chronological (0 = oldest), so dropping from the low
+    end keeps the recent turns a trace reader actually looks at. Whole
+    messages only — a message with half its attributes removed renders as
+    garbage in the trace viewer. Byte cost is the serialized length of each
+    attribute's value; keys are negligible next to 32K content values.
+    """
+    if not attributes:
+        return 0
+    try:
+        keys = list(attributes.keys())
+    except Exception:  # noqa: BLE001
+        return 0
+    by_message: Dict[int, list] = {}
+    for key in keys:
+        if not isinstance(key, str) or not key.startswith(_INPUT_MESSAGES_PREFIX):
+            continue
+        index_str = key[len(_INPUT_MESSAGES_PREFIX):].split(".", 1)[0]
+        if index_str.isdigit():
+            by_message.setdefault(int(index_str), []).append(key)
+    if not by_message:
+        return 0
+
+    def _cost(message_keys: list) -> int:
+        total = 0
+        for key in message_keys:
+            try:
+                total += len(str(attributes.get(key, "")))
+            except Exception:  # noqa: BLE001
+                pass
+        return total
+
+    costs = {index: _cost(message_keys) for index, message_keys in by_message.items()}
+    total_bytes = sum(costs.values())
+    if total_bytes <= byte_limit:
+        return 0
+    dropped = 0
+    for index in sorted(by_message):
+        if total_bytes <= byte_limit:
+            break
+        for key in by_message[index]:
+            _delete_attribute(attributes, key)
+        total_bytes -= costs[index]
+        dropped += 1
+    if dropped:
+        _write_attribute(attributes, MESSAGES_TRUNCATED_ATTR, dropped)
+    return dropped
+
+
+class SpanSizeBoundingProcessor(_SpanProcessor):
+    """Bound the per-span message-attribute count before export.
+
+    Runs AFTER SecretRedactingProcessor (redaction rewrites values; bounding
+    deletes keys — order keeps both effective). LLM spans only: they are the
+    only kind that replays the whole conversation into attributes.
+    """
+
+    def on_start(self, span: Any, parent_context: Any = None) -> None:
+        return None
+
+    def on_end(self, span: Any) -> None:
+        try:
+            attributes = getattr(span, "_attributes", None)
+            if attributes is None:
+                attributes = getattr(span, "attributes", None)
+            if not attributes:
+                return
+            if attributes.get("openinference.span.kind") != "LLM":
+                return
+            n = bound_message_attributes(attributes, message_byte_limit())
+            if n:
+                logger.warning(
+                    "[TRACE] bounded oversized LLM span %s: dropped %d oldest "
+                    "input message(s) so the span stays exportable",
+                    getattr(span, "name", "?"),
+                    n,
+                )
+        except Exception:  # noqa: BLE001 — never fail export over bounding
+            return
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
+
+
 def install_processors(tracer_provider: Any) -> Iterable[str]:
     """Attach the standard processors to ``tracer_provider``.
 
     Order matters: processors run in registration order, and the exporter's
     ``BatchSpanProcessor`` must be registered AFTER these so it sees the
-    stamped and redacted attributes. Returns the names installed (for logs).
+    stamped, redacted, and size-bounded attributes. Returns the names
+    installed (for logs).
     """
     installed = []
-    for proc in (ContextStampingProcessor(), SecretRedactingProcessor()):
+    for proc in (
+        ContextStampingProcessor(),
+        SecretRedactingProcessor(),
+        SpanSizeBoundingProcessor(),
+    ):
         try:
             tracer_provider.add_span_processor(proc)
             installed.append(type(proc).__name__)

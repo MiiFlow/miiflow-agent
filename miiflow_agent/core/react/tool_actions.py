@@ -115,12 +115,14 @@ class ToolActionHandler:
                 # perfectly valid lone transfer.
                 context.deps["batch_size"] = 1
 
-        # Determine if tool needs context injection
-        needs_context = self._orch.tool_executor.tool_needs_context(step.action)
-
-        # Execute tool with or without context based on tool's requirements
+        # Pass the context unconditionally (the batch path already does).
+        # The per-tool needs_context decision belongs to
+        # _execute_tool_inner, which runs AFTER bridge unwrapping — gating
+        # here on step.action would decide on the wrapper name ("tool_call"),
+        # stripping ctx from every first_param tool invoked through the
+        # bridge.
         return await self._orch.tool_executor.execute_tool(
-            step.action, step.action_input, context=context if needs_context else None
+            step.action, step.action_input, context=context
         )
 
     def handle_step_error(

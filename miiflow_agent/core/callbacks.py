@@ -111,6 +111,12 @@ class CallbackEvent:
     # an unchanged fingerprint with a cache miss points at those instead.
     tools_fingerprint: Optional[str] = None
 
+    # The tool names behind tools_fingerprint, in wire order. The fingerprint
+    # says THAT the tools tier changed; the names say WHAT changed — consumers
+    # persist them sparsely (first call of a turn / on fingerprint change) so
+    # two drifting turns can be diffed without re-running anything.
+    tools_names: Optional[List[str]] = None
+
     # Error information (for ON_ERROR)
     error: Optional[Exception] = None
     error_type: Optional[str] = None

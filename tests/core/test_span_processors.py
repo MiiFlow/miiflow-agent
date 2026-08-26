@@ -16,6 +16,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from miiflow_agent.core.callback_context import callback_context
 from miiflow_agent.core.callbacks import CallbackContext
 from miiflow_agent.core.observability.processors import (
+    MESSAGES_TRUNCATED_ATTR,
+    SPAN_MESSAGE_BYTE_LIMIT_ENV,
     REDACTED,
     context_attributes,
     install_processors,
@@ -28,7 +30,11 @@ def pipeline():
     exporter = InMemorySpanExporter()
     provider = trace_sdk.TracerProvider()
     installed = install_processors(provider)
-    assert installed == ["ContextStampingProcessor", "SecretRedactingProcessor"]
+    assert installed == [
+        "ContextStampingProcessor",
+        "SecretRedactingProcessor",
+        "SpanSizeBoundingProcessor",
+    ]
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     tracer = provider.get_tracer("test")
     return tracer, exporter
@@ -154,3 +160,80 @@ class TestRedactionEdgeCases:
         out = redact_text(text)
         assert opaque not in out
         assert '"authorization_token":"' + REDACTED + '"' in out
+
+
+class TestSpanSizeBounding:
+    """Oversized LLM spans lose their OLDEST input messages, nothing else.
+
+    The SDK caps attribute values (32K) and count (128, OTel default), but
+    128 x 32K is still ~4MB for one span replaying a long history — and an
+    OTLP collector that refuses the payload drops it silently, the exact
+    prod symptom of root-agent LLM spans never reaching Arize. The bound is
+    a byte budget over the ``llm.input_messages.*`` family. Message counts
+    here stay under the SDK's 128-attr cap so its own eviction never
+    confounds what the processor did.
+    """
+
+    @staticmethod
+    def _message_attrs(count, content_bytes=200):
+        out = {"openinference.span.kind": "LLM"}
+        for i in range(count):
+            out[f"llm.input_messages.{i}.message.role"] = "user"
+            out[f"llm.input_messages.{i}.message.content"] = f"msg {i} " + "x" * content_bytes
+        return out
+
+    def test_oversized_llm_span_is_bounded_keeping_newest(self, pipeline, monkeypatch):
+        # 20 messages x ~200B content = ~4KB family; budget 1KB forces a cut.
+        monkeypatch.setenv(SPAN_MESSAGE_BYTE_LIMIT_ENV, "1000")
+        tracer, exporter = pipeline
+        n_messages = 20
+        with tracer.start_as_current_span(
+            "messages.create", attributes=self._message_attrs(n_messages)
+        ):
+            pass
+        (span,) = exporter.get_finished_spans()
+        dropped = span.attributes[MESSAGES_TRUNCATED_ATTR]
+        assert dropped > 0
+        # Oldest dropped, newest kept — and only whole messages.
+        assert "llm.input_messages.0.message.role" not in span.attributes
+        assert "llm.input_messages.0.message.content" not in span.attributes
+        newest = n_messages - 1
+        assert span.attributes[f"llm.input_messages.{newest}.message.role"] == "user"
+        assert f"msg {newest}" in span.attributes[f"llm.input_messages.{newest}.message.content"]
+        surviving = {
+            int(k.split(".")[2])
+            for k in span.attributes
+            if k.startswith("llm.input_messages.")
+        }
+        assert surviving == set(range(dropped, n_messages))
+        for idx in surviving:
+            assert f"llm.input_messages.{idx}.message.role" in span.attributes
+            assert f"llm.input_messages.{idx}.message.content" in span.attributes
+        # Surviving family fits the budget.
+        kept_bytes = sum(
+            len(str(span.attributes[k]))
+            for k in span.attributes
+            if k.startswith("llm.input_messages.")
+        )
+        assert kept_bytes <= 1000
+
+    def test_normal_llm_span_untouched(self, pipeline):
+        tracer, exporter = pipeline
+        with tracer.start_as_current_span(
+            "messages.create", attributes=self._message_attrs(5)
+        ):
+            pass
+        (span,) = exporter.get_finished_spans()
+        assert MESSAGES_TRUNCATED_ATTR not in span.attributes
+        assert span.attributes["llm.input_messages.0.message.role"] == "user"
+
+    def test_non_llm_span_untouched_even_when_oversized(self, pipeline, monkeypatch):
+        monkeypatch.setenv(SPAN_MESSAGE_BYTE_LIMIT_ENV, "1000")
+        tracer, exporter = pipeline
+        attrs = self._message_attrs(20)
+        attrs["openinference.span.kind"] = "AGENT"
+        with tracer.start_as_current_span("agent.root", attributes=attrs):
+            pass
+        (span,) = exporter.get_finished_spans()
+        assert MESSAGES_TRUNCATED_ATTR not in span.attributes
+        assert span.attributes["llm.input_messages.0.message.role"] == "user"

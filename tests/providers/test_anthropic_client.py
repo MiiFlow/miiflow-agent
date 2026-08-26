@@ -92,6 +92,73 @@ class TestAnthropicClient:
             assert call_args.kwargs['stream'] is True
     
     @pytest.mark.asyncio
+    async def test_cancelled_stream_drains_and_logs_witness(
+        self, client, sample_messages, mock_anthropic_stream_chunks, caplog
+    ):
+        """Task cancellation mid-stream must still drain the instrumented
+        stream (so the OpenInference span exports) and log a witness line.
+        CancelledError is a BaseException — without the dedicated handler it
+        bypasses the GeneratorExit net and every except clause, and the span
+        silently vanishes."""
+        import asyncio
+        import logging
+
+        class FakeInstrumentedStream:
+            """Instrumented-looking stream that hangs once mid-iteration."""
+
+            def __init__(self, chunks, hang_at):
+                self._chunks = list(chunks)
+                self._i = 0
+                self._hang_at = hang_at
+                self._hung = False
+                self._never = asyncio.Event()
+                self._with_span = MagicMock()  # marks it as instrumentor-wrapped
+                self.exhausted = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._i == self._hang_at and not self._hung:
+                    self._hung = True
+                    await self._never.wait()  # cancellation lands here
+                if self._i >= len(self._chunks):
+                    self.exhausted = True
+                    raise StopAsyncIteration
+                chunk = self._chunks[self._i]
+                self._i += 1
+                return chunk
+
+        # Hang after the text delta (index 2), before message_stop.
+        fake = FakeInstrumentedStream(mock_anthropic_stream_chunks, hang_at=2)
+
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = fake
+
+            received = []
+
+            async def consume():
+                async for chunk in client.astream_chat(sample_messages):
+                    received.append(chunk)
+
+            with caplog.at_level(logging.WARNING, logger="miiflow_agent.providers.anthropic_client"):
+                task = asyncio.create_task(consume())
+                for _ in range(50):
+                    await asyncio.sleep(0.01)
+                    if fake._hung:
+                        break
+                assert fake._hung, "stream never reached the hang point"
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        assert any(c.delta for c in received), "expected the pre-cancel delta"
+        assert fake.exhausted, "abandoned stream was not drained to completion"
+        assert any(
+            "anthropic stream cancelled" in rec.getMessage() for rec in caplog.records
+        ), "witness log for cancelled stream missing"
+
+    @pytest.mark.asyncio
     async def test_system_message_handling(self, client):
         """Test system message extraction."""
         messages = [

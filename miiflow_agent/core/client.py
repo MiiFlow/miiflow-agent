@@ -53,23 +53,41 @@ def _tools_fingerprint(formatted_tools: Optional[List[Any]]) -> Optional[str]:
     invisible here; accepted trade. Best-effort — telemetry never fails a
     call.
     """
+    fingerprint, _ = _tools_fingerprint_and_names(formatted_tools)
+    return fingerprint
+
+
+def _tools_fingerprint_and_names(
+    formatted_tools: Optional[List[Any]],
+) -> "tuple[Optional[str], Optional[List[str]]]":
+    """`_tools_fingerprint` plus the tool names behind it, in wire order.
+
+    The names make a changed fingerprint diffable: consumers persist them
+    sparsely (first call of a turn / on fingerprint change) so drift can be
+    attributed to the tools that appeared, vanished, or moved. Same
+    best-effort contract — (None, None) on any failure.
+    """
     if not formatted_tools:
-        return None
+        return None, None
     try:
         import hashlib
 
         parts = []
+        names = []
         for tool in formatted_tools:
             if not isinstance(tool, dict):
                 parts.append(type(tool).__name__)
+                names.append(type(tool).__name__)
                 continue
             fn = tool.get("function") if isinstance(tool.get("function"), dict) else {}
             name = tool.get("name") or fn.get("name") or tool.get("type", "?")
             desc = tool.get("description") or fn.get("description") or ""
             parts.append(f"{name}:{len(str(desc))}:{','.join(sorted(tool.keys()))}")
-        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
+            names.append(str(name))
+        digest = hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
+        return digest, names
     except Exception:  # noqa: BLE001
-        return None
+        return None, None
 
 
 def _format_tokens(tokens: TokenCount) -> str:
@@ -644,7 +662,7 @@ class LLMClient:
         total_tokens = TokenCount()
         callback_emitted = False
         error_occurred = None
-        tools_fingerprint = _tools_fingerprint(formatted_tools)
+        tools_fingerprint, tools_names = _tools_fingerprint_and_names(formatted_tools)
 
         # Timing decomposition (kimi-code's StreamDecodeStats insight): a slow
         # step is only diagnosable when the wait splits into build (local
@@ -770,6 +788,7 @@ class LLMClient:
                         request_build_ms=build_ms,
                         transport_retries=attempts_used,
                         tools_fingerprint=tools_fingerprint,
+                        tools_names=tools_names,
                         context=ctx,
                         success=False,
                     )
@@ -805,6 +824,7 @@ class LLMClient:
                         request_build_ms=build_ms,
                         transport_retries=attempts_used,
                         tools_fingerprint=tools_fingerprint,
+                        tools_names=tools_names,
                         context=ctx,
                         success=True,
                     )

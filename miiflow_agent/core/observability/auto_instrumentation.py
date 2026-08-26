@@ -117,7 +117,44 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
         from opentelemetry import trace
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         from opentelemetry.sdk import trace as trace_sdk
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExportResult
+
+        class _LoggingOTLPSpanExporter(OTLPSpanExporter):
+            """OTLP exporter that logs refused exports instead of dropping silently.
+
+            The base exporter returns FAILURE without raising when the
+            collector refuses a payload (413 oversized, auth, network), so
+            spans simply vanish — which reads as "instrumentation is broken"
+            rather than "the export was rejected". One warning per minute,
+            with the shape data needed to tell an oversized span from an
+            outage.
+            """
+
+            _last_warn_monotonic = 0.0
+
+            def export(self, spans):
+                result = super().export(spans)
+                if result is not SpanExportResult.SUCCESS:
+                    import time as _time
+
+                    now = _time.monotonic()
+                    cls = _LoggingOTLPSpanExporter
+                    if now - cls._last_warn_monotonic > 60:
+                        cls._last_warn_monotonic = now
+                        try:
+                            max_attrs = max(
+                                (len(getattr(s, "attributes", None) or {}) for s in spans),
+                                default=0,
+                            )
+                        except Exception:  # noqa: BLE001
+                            max_attrs = -1
+                        logger.warning(
+                            "[TRACE] OTLP span export FAILED — %d span(s) dropped "
+                            "(max_attrs_per_span=%d)",
+                            len(spans),
+                            max_attrs,
+                        )
+                return result
 
         # Check if tracer provider is already set
         current_provider = trace.get_tracer_provider()
@@ -154,7 +191,7 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
             _install_standard_processors(tracer_provider)
             tracer_provider.add_span_processor(
                 BatchSpanProcessor(
-                    OTLPSpanExporter(
+                    _LoggingOTLPSpanExporter(
                         endpoint=config.arize_traces_url,
                         # Literal lowercase header names — AX does not use
                         # `Authorization: Bearer`, which is the Phoenix shape
@@ -200,7 +237,7 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
         if headers:
             exporter_kwargs["headers"] = headers
 
-        otlp_exporter = OTLPSpanExporter(**exporter_kwargs)
+        otlp_exporter = _LoggingOTLPSpanExporter(**exporter_kwargs)
         _install_standard_processors(tracer_provider)
         tracer_provider.add_span_processor(
             BatchSpanProcessor(otlp_exporter)

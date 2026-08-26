@@ -328,3 +328,74 @@ class TestBridgeToolsAreCallableThroughTheExecutor:
         agent.client = MagicMock()
         executor = AgentToolExecutor(agent)
         assert not executor.has_tool(TOOL_SEARCH_NAME)
+
+
+class TestBridgeCallInjectsContext:
+    """A `first_param` tool invoked through `tool_call` must still get ctx.
+
+    The single-tool action path used to decide context injection on the
+    pre-unwrap name — `tool_needs_context("tool_call")` is False, so every
+    client tool reached through the bridge executed with `context=None` and
+    died with "missing 1 required positional argument: 'ctx'" (production,
+    from the day the bridge became the default). The context decision has
+    exactly one owner: `_execute_tool_inner`, which runs after unwrapping;
+    callers pass the context through unconditionally.
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_param_tool_through_tool_call_receives_ctx(self, registry):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from miiflow_agent.core.react.models import ReActStep
+        from miiflow_agent.core.react.tool_actions import ToolActionHandler
+        from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+
+        @tool(
+            name="ctx_probe",
+            description="Echo the org id from the injected context.",
+            parameters={
+                "label": ParameterSchema(
+                    name="label",
+                    type=ParameterType.STRING,
+                    description="Echoed back",
+                    required=True,
+                )
+            },
+        )
+        async def _ctx_probe(ctx, label: str):
+            return {"label": label, "org": ctx.deps.get("organization_id")}
+
+        registry.register(_ctx_probe)
+        registry.tool_search_threshold = 0
+        model_client = MagicMock()
+        model_client.provider_name = "openai"
+        model_client.model = "gpt-4o"
+        model_client.convert_schema_to_provider_format = lambda s: dict(s)
+        llm_client = MagicMock()
+        llm_client.client = model_client
+        llm_client.tool_registry = registry
+        agent = MagicMock()
+        agent.client = llm_client
+        agent.tool_registry = registry
+        agent._tools = []
+        executor = AgentToolExecutor(agent)
+        executor._build_native_tool_schemas()  # builds the bridge tools
+
+        orch = MagicMock()
+        orch.tool_executor = executor
+        handler = ToolActionHandler(orch)
+
+        context = SimpleNamespace(
+            run_state=SimpleNamespace(),
+            deps={"organization_id": "org_guard"},
+        )
+        step = ReActStep(
+            step_number=1,
+            thought="",
+            action=TOOL_CALL_NAME,
+            action_input={"name": "ctx_probe", "arguments": {"label": "x"}},
+        )
+        result = await handler.execute_tool(step, context)
+        assert result.success, result.error
+        assert result.output == {"label": "x", "org": "org_guard"}

@@ -1045,6 +1045,34 @@ class AnthropicClient(ModelClient):
         except Exception:  # noqa: BLE001 — telemetry must never break a stream
             return False
 
+    async def _drain_abandoned_stream(self, stream: Any, stream_normalizer: Any) -> None:
+        """Drain an abandoned instrumented stream so its LLM span exports.
+
+        Shared rescue body for the GeneratorExit and CancelledError handlers
+        in ``astream_chat``: the OpenInference wrapper only ends its span
+        when the iterator completes, so drain the few remaining events
+        (usually just ``message_stop``) inside a hard bound, stamping cache
+        attrs if usage arrives during the drain. Best-effort by contract —
+        any failure (including a second cancellation landing mid-drain) is
+        swallowed; the caller re-raises the original abandonment either way.
+        """
+        try:
+
+            async def _drain_remaining() -> None:
+                stamped = False
+                async for ev in stream:
+                    if stamped:
+                        continue
+                    drained_chunk = stream_normalizer.normalize_chunk(ev)
+                    if drained_chunk.usage:
+                        stamped = self._stamp_stream_span_cache_attrs(
+                            stream, drained_chunk.usage
+                        )
+
+            await asyncio.wait_for(_drain_remaining(), timeout=2.0)
+        except BaseException:  # noqa: BLE001 — already closing
+            pass
+
     # Block types that accept a cache_control marker. Notably absent:
     # thinking / redacted_thinking — marking those is a 400.
     _CACHEABLE_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result", "document"})
@@ -1797,24 +1825,25 @@ class AnthropicClient(ModelClient):
                     # No instrumentor wrapper — nothing to rescue; don't
                     # spend teardown time draining a bare SDK stream.
                     raise
-                try:
-
-                    async def _drain_remaining() -> None:
-                        nonlocal _cache_attrs_stamped
-                        async for ev in stream:
-                            if _cache_attrs_stamped:
-                                continue
-                            drained_chunk = stream_normalizer.normalize_chunk(ev)
-                            if drained_chunk.usage:
-                                _cache_attrs_stamped = (
-                                    self._stamp_stream_span_cache_attrs(
-                                        stream, drained_chunk.usage
-                                    )
-                                )
-
-                    await asyncio.wait_for(_drain_remaining(), timeout=2.0)
-                except BaseException:  # noqa: BLE001 — already closing
-                    pass
+                await self._drain_abandoned_stream(stream, stream_normalizer)
+                raise
+            except asyncio.CancelledError:
+                # Task cancellation (user stop, upstream wait_for timeout,
+                # client disconnect tearing the task down) abandons the
+                # wrapper the same way GeneratorExit does — BaseException,
+                # so neither the wrapper's `except Exception` nor our
+                # handlers below see it, and the span silently vanishes
+                # with NO witness log. Same rescue, then re-raise so
+                # cancellation semantics are preserved.
+                logger.warning(
+                    "[TRACE] anthropic stream cancelled after %d events "
+                    "(model=%s); draining briefly so the LLM span still "
+                    "exports",
+                    _events_seen,
+                    self.model,
+                )
+                if getattr(stream, "_with_span", None) is not None:
+                    await self._drain_abandoned_stream(stream, stream_normalizer)
                 raise
 
             # Slow-call observability (rec #5 review finding): emit a

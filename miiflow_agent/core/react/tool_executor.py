@@ -1207,11 +1207,16 @@ class AgentToolExecutor:
         return tool.schema.to_universal_schema() if tool else {}
 
     def tool_needs_context(self, tool_name: str) -> bool:
-        """Check if a tool requires context injection."""
+        """Check if a tool requires context injection.
+
+        Answers for the name AS GIVEN — a bridge name ("tool_call") returns
+        False even when its wrapped target needs a context. Callers must
+        therefore never use this to gate what they pass into execute_tool:
+        pass the context unconditionally and let _execute_tool_inner decide
+        on the post-unwrap target name.
+        """
         # The meta-tool and the bridge tools run without a context (they
-        # operate on the registry, not on user data). `tool_call` never
-        # reaches here under its own name — it is unwrapped first, and the
-        # decision is made for the target.
+        # operate on the registry, not on user data).
         if tool_name == self._tool_search_meta_name():
             return False
         if self._bridge_tool_named(tool_name) is not None:

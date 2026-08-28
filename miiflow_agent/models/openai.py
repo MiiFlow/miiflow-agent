@@ -13,6 +13,11 @@ _REASONING_MODELS: set[str] = set()
 # GPT-5.6 Sol / Terra / Luna family reached general availability on July 9, 2026
 # with confirmed API model ids; Sol is the current flagship. Sol Pro is Sol
 # served with reasoning.mode=pro at the same per-token price.
+#
+# Deliberately absent: gpt-5.6-cyber ($12.50/$75). It is a purpose-trained
+# cybersecurity model gated behind OpenAI's Daybreak program — provisioned to
+# approved defenders, with no self-serve route — so it would 404 for every key
+# this catalog serves. Add it only if an org is onboarded to Daybreak.
 _GPT5_MODELS = {
     "gpt-5.6-sol",
     "gpt-5.6-sol-pro",
@@ -109,7 +114,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.5": ModelConfig(
         model_identifier="gpt-5.5",
         name="gpt-5.5",
-        description="GPT-5.5 (released April 23, 2026) — previous flagship, succeeded by GPT-5.6 Sol. Strong coding and agentic model (82.7% on Terminal-Bench 2.0, 58.6% on SWE-Bench Pro) with a 1M context window, still available as a lower-cost alternative to the GPT-5.6 line.",
+        description="GPT-5.5 (released April 23, 2026) — previous flagship, superseded by GPT-5.6 Sol. Strong coding and agentic model (82.7% on Terminal-Bench 2.0, 58.6% on SWE-Bench Pro) with a 1M context window. Note that it is no longer the cheaper choice: after Sol's August 21, 2026 cut to $4/$20, GPT-5.5 at $5/$30 costs more than the newer and more capable Sol. Kept for pinned workloads only.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -146,7 +151,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.4": ModelConfig(
         model_identifier="gpt-5.4",
         name="gpt-5.4",
-        description="GPT-5.4 (March 2026) — two generations old, superseded by the GPT-5.6 family. Still available as a lower-cost option with 1M context window, built-in computer use, and improved deep research.",
+        description="GPT-5.4 (March 5, 2026) — two generations old, superseded by the GPT-5.6 family. 1M context window, built-in computer use, and improved deep research. No longer a cost saving: at $2.50/$15 it is priced above GPT-5.6 Terra ($2/$12), which is both newer and stronger. Kept for pinned workloads only.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -182,7 +187,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.4-mini": ModelConfig(
         model_identifier="gpt-5.4-mini",
         name="gpt-5.4-mini",
-        description="GPT-5.4 Mini is a smaller, faster GPT-5.4 variant with strong reasoning at lower cost. 400K context window. Released March 17, 2026.",
+        description="GPT-5.4 Mini is a smaller, faster GPT-5.4 variant with strong reasoning at lower cost. 400K context window. Released March 17, 2026. Superseded by GPT-5.6 Luna, which is cheaper ($0.20/$1.20 vs $0.75/$4.50) and carries a 1M context window; Mini remains the current small model on the 5.4 line.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -200,7 +205,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.4-nano": ModelConfig(
         model_identifier="gpt-5.4-nano",
         name="gpt-5.4-nano",
-        description="GPT-5.4 Nano is the most cost-effective GPT-5.4 variant, optimized for latency. 400K context window. Released March 17, 2026.",
+        description="GPT-5.4 Nano is the most cost-effective GPT-5.4 variant, optimized for latency. 400K context window. Released March 17, 2026. GPT-5.6 Luna matches its input price at a lower output price ($1.20 vs $1.25) with a 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -219,7 +224,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1": ModelConfig(
         model_identifier="gpt-4.1",
         name="gpt-4.1",
-        description="Legacy — succeeded by GPT-5.4. General-purpose model with 1M token context. Retired from ChatGPT Feb 13, 2026; still available via the API, with the API shutdown scheduled for Oct 14, 2026.",
+        description="Deprecated — migrate to GPT-5.6 Terra. General-purpose model with 1M token context. Retired from ChatGPT Feb 13, 2026; still available via the API, but the API shutdown is scheduled for Oct 14, 2026, after which requests will fail.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -237,7 +242,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1-mini": ModelConfig(
         model_identifier="gpt-4.1-mini",
         name="gpt-4.1-mini",
-        description="Legacy — succeeded by GPT-5.4 Mini. Smaller GPT-4.1 with 1M token context. API shutdown scheduled for Oct 14, 2026.",
+        description="Deprecated — migrate to GPT-5.6 Luna or GPT-5.4 Mini. Smaller GPT-4.1 with 1M token context. API shutdown scheduled for Oct 14, 2026, after which requests will fail.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -255,7 +260,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1-nano": ModelConfig(
         model_identifier="gpt-4.1-nano",
         name="gpt-4.1-nano",
-        description="Legacy — succeeded by GPT-5.4 Nano. Smallest, fastest 4.1 variant. API shutdown scheduled for Oct 14, 2026.",
+        description="Deprecated — migrate to GPT-5.6 Luna or GPT-5.4 Nano. Smallest, fastest 4.1 variant. API shutdown scheduled for Oct 14, 2026, after which requests will fail.",
         support_images=True,
         support_files=True,
         support_streaming=True,

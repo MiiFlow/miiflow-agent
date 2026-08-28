@@ -15,6 +15,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import httpx
 
+from ..models.google import supports_temperature
+
 
 def _sanitize_tool_name_for_gemini(name: str) -> str:
     """Sanitize tool name to match Gemini's function name requirements.
@@ -231,11 +233,20 @@ class GeminiClient(ModelClient):
         max_tokens: Optional[int],
         json_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Build generationConfig in REST format."""
+        """Build generationConfig in REST format.
+
+        `temperature` is omitted on models that deprecated the sampling
+        parameters (Gemini 3.6 Flash / 3.5 Flash-Lite and later). Those models
+        accept the field and ignore it, so sending it never errors — it just
+        puts a value on the wire that reads as configuration and controls
+        nothing. Thinking depth is `thinking_level` on that generation, which
+        this client does not send yet.
+        """
         config: Dict[str, Any] = {
-            "temperature": temperature,
             "maxOutputTokens": max_tokens or 8192,
         }
+        if supports_temperature(self.model):
+            config["temperature"] = temperature
         if json_schema:
             config["responseMimeType"] = "application/json"
             config["responseSchema"] = normalize_json_schema(json_schema, SchemaMode.GEMINI_COMPAT)

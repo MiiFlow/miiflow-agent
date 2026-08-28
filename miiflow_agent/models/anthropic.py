@@ -8,7 +8,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-fable-5": ModelConfig(
         model_identifier="claude-fable-5",
         name="claude-fable-5",
-        description="Anthropic's most capable widely released model (generally available since June 9, 2026; API access was briefly suspended June 12–July 1, 2026 under a US export-control directive and has since been restored). Built for demanding reasoning and long-horizon agentic work, with always-on adaptive thinking, structured outputs, and a 1M context window.",
+        description="Anthropic's most capable widely released model (generally available since June 9, 2026; API access was briefly suspended June 12–July 1, 2026 under a US export-control directive and has since been restored). Built for demanding reasoning and long-horizon agentic work, with always-on adaptive thinking, structured outputs, and a 1M context window. Claude Mythos 5 shares its $10/$50 pricing but is limited-availability (Project Glasswing partners only), so Fable 5 is the top tier reachable with a standard API key.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -108,7 +108,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-5": ModelConfig(
         model_identifier="claude-sonnet-5",
         name="claude-sonnet-5",
-        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. 1M context window. Priced at $2/$10 per 1M input/output tokens — the launch introductory rate, made permanent on August 10, 2026 when Anthropic cancelled the previously scheduled September 1 increase to $3/$15.",
+        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. 1M context window. Priced at $2/$10 per 1M input/output tokens: the launch rate, announced as introductory through August 31, 2026, is now the standard price — Anthropic cancelled the scheduled September 1, 2026 increase to $3/$15.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -168,16 +168,28 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
 }
 
 
+# Anthropic deprecated `temperature` (and `top_p` / `top_k`) on Claude Opus 4.7
+# and later: a non-default value returns HTTP 400 "temperature is deprecated for
+# this model". Derived from the model configs rather than restated, so a new
+# model declaring supports_temperature=False is excluded automatically — the
+# request-time gate is `supports_temperature()` below, and this keeps the
+# parameter the UI OFFERS in step with the one the API will actually take.
+_NO_TEMPERATURE_MODELS = [
+    name for name, config in ANTHROPIC_MODELS.items() if not config.supports_temperature
+]
+
+
 ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
     ParameterConfig(
         field_name="temperature",
         display_name="Temperature",
-        description="Amount of randomness injected into the response.",
+        description="Amount of randomness injected into the response. Not accepted by Claude Opus 4.7 and later, which reject a non-default value with a 400.",
         parameter_type=ParameterType.NUMBER,
         default_value=0.7,
         min_value=0,
         max_value=1,
         step=0.1,
+        unsupported_models=_NO_TEMPERATURE_MODELS,
     ),
     ParameterConfig(
         field_name="max_tokens",

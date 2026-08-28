@@ -4,14 +4,25 @@ from typing import Dict
 
 from .base import ModelConfig, ParameterConfig, ParameterType
 
-# All Gemini models use max_output_tokens
-# and all current models support temperature
+# All Gemini models use max_output_tokens.
+#
+# Sampling parameters (temperature / top_p / top_k) are DEPRECATED from Gemini
+# 3.6 Flash and Gemini 3.5 Flash-Lite onward: the API accepts them and silently
+# IGNORES them — no error, no warning — so a value set here would look applied
+# while changing nothing. The older models (3.5 Flash, 3.1 Pro, 3.1 Flash-Lite)
+# still honour them. Google's replacement knob is `thinking_level`
+# (minimal/low/medium/high), which GeminiClient does not send yet.
+_NO_SAMPLING_PARAMS = {
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+}
 
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.7-flash": ModelConfig(
         model_identifier="models/gemini-3.7-flash",
         name="gemini-3.7-flash",
-        description="Google's newest and most capable Flash model (released August 13, 2026), positioned as a leading model while Gemini 3.5 Pro remains in development. Improves on prior Flash generations for coding and reasoning, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        description="Google's newest and most capable Gemini model (released August 13, 2026). Google's top tier is a Flash model because Gemini 3.5 Pro was never released — Gemini 3.1 Pro remains the Pro flagship. Improves on prior Flash generations for coding and reasoning, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window; thinking depth is controlled with thinking_level rather than sampling parameters. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -22,14 +33,14 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         maximum_context_tokens=1048576,
         maximum_output_tokens=65536,
         token_param_name="max_output_tokens",
-        supports_temperature=True,
+        supports_temperature=False,
         input_cost_hint=0.75,
         output_cost_hint=3.75,
     ),
     "gemini-3.6-flash": ModelConfig(
         model_identifier="models/gemini-3.6-flash",
         name="gemini-3.6-flash",
-        description="Legacy — succeeded by Gemini 3.7 Flash (August 2026). Strong coding and agentic performance at Flash-tier pricing, with native grounding and multimodal (text, image, video, audio, PDF) input. 1M token context window. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        description="Legacy — succeeded by Gemini 3.7 Flash (August 2026). Strong coding and agentic performance at Flash-tier pricing, with native grounding and multimodal (text, image, video, audio, PDF) input. 1M token context window; the first generation in which temperature/top_p/top_k are ignored in favour of thinking_level. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -40,14 +51,14 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         maximum_context_tokens=1048576,
         maximum_output_tokens=65536,
         token_param_name="max_output_tokens",
-        supports_temperature=True,
+        supports_temperature=False,
         input_cost_hint=0.75,
         output_cost_hint=3.75,
     ),
     "gemini-3.5-flash-lite": ModelConfig(
         model_identifier="models/gemini-3.5-flash-lite",
         name="gemini-3.5-flash-lite",
-        description="Google's current-generation Flash-Lite model (released July 21, 2026). The fastest and cheapest model in the Gemini 3.5 line (~490 output tokens/sec), built for high-volume, low-reasoning workloads such as search, document processing, and translation. 1M token context window.",
+        description="Google's current-generation Flash-Lite model (released July 21, 2026). The fastest and cheapest model in the Gemini 3.5 line (~490 output tokens/sec), built for high-volume, low-reasoning workloads such as search, document processing, and translation. Defaults to minimal thinking; temperature/top_p/top_k are ignored. 1M token context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -58,7 +69,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         maximum_context_tokens=1048576,
         maximum_output_tokens=65536,
         token_param_name="max_output_tokens",
-        supports_temperature=True,
+        supports_temperature=False,
         input_cost_hint=0.30,
         output_cost_hint=2.50,
     ),
@@ -83,7 +94,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.1-pro": ModelConfig(
         model_identifier="models/gemini-3.1-pro",
         name="gemini-3.1-pro",
-        description="Google's most capable Pro model with strong reasoning and an industry-leading 2M token context window (GA since May 2026). Tiered pricing: $2/$12 per 1M input/output tokens for prompts up to 200K tokens, rising to $4/$18 above 200K.",
+        description="Google's Pro flagship, with strong reasoning and an industry-leading 2M token context window (GA since May 2026). Still the current Pro tier: Gemini 3.5 Pro slipped repeatedly and remains unreleased as of August 2026. Unlike the 3.6/3.7 Flash generation, it still honours temperature/top_p/top_k. Tiered pricing: $2/$12 per 1M input/output tokens for prompts up to 200K tokens, rising to $4/$18 above 200K.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -123,32 +134,35 @@ GOOGLE_PARAMETERS: list[ParameterConfig] = [
     ParameterConfig(
         field_name="temperature",
         display_name="Temperature",
-        description="What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.",
+        description="What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic. Deprecated and ignored from Gemini 3.6 Flash / 3.5 Flash-Lite onward.",
         parameter_type=ParameterType.NUMBER,
         default_value=0.5,
         min_value=0,
         max_value=2,
         step=0.1,
+        unsupported_models=sorted(_NO_SAMPLING_PARAMS),
     ),
     ParameterConfig(
         field_name="top_p",
         display_name="Top P",
-        description="The cumulative probability cutoff for token selection. Tokens are selected in descending probability order until the sum of their probabilities equals this value.",
+        description="The cumulative probability cutoff for token selection. Tokens are selected in descending probability order until the sum of their probabilities equals this value. Deprecated and ignored from Gemini 3.6 Flash / 3.5 Flash-Lite onward.",
         parameter_type=ParameterType.NUMBER,
         default_value=0.5,
         min_value=0.0,
         max_value=1.0,
         step=0.1,
+        unsupported_models=sorted(_NO_SAMPLING_PARAMS),
     ),
     ParameterConfig(
         field_name="top_k",
         display_name="Top K",
-        description="The maximum number of top tokens to consider when sampling.",
+        description="The maximum number of top tokens to consider when sampling. Deprecated and ignored from Gemini 3.6 Flash / 3.5 Flash-Lite onward.",
         parameter_type=ParameterType.NUMBER,
         default_value=40,
         min_value=1,
         max_value=100,
         step=1,
+        unsupported_models=sorted(_NO_SAMPLING_PARAMS),
     ),
     ParameterConfig(
         field_name="max_output_tokens",
@@ -183,3 +197,31 @@ def get_token_param_name(model: str) -> str:
         The API parameter name to use for max tokens
     """
     return "max_output_tokens"
+
+
+def supports_temperature(model: str) -> bool:
+    """Check whether a Gemini model still honours the `temperature` parameter.
+
+    Gemini 3.6 Flash and later (and Gemini 3.5 Flash-Lite) deprecated the
+    sampling parameters. The API does NOT reject them — it accepts and silently
+    ignores them — so nothing fails loudly when we send one; the request simply
+    carries a field that reads as configuration and is not. Callers should omit
+    `temperature` when this is False.
+
+    Args:
+        model: The model identifier (alias, or the "models/..." identifier).
+
+    Returns:
+        True when the model honours `temperature`. Defaults to True for unknown
+        models so behavior matches the previous implicit default.
+    """
+    if model in GOOGLE_MODELS:
+        return GOOGLE_MODELS[model].supports_temperature
+    for config in GOOGLE_MODELS.values():
+        if config.model_identifier == model:
+            return config.supports_temperature
+    model_lower = (model or "").lower()
+    for name, config in GOOGLE_MODELS.items():
+        if name in model_lower or config.model_identifier in model_lower:
+            return config.supports_temperature
+    return True

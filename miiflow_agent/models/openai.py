@@ -1,5 +1,6 @@
 """OpenAI model configurations."""
 
+from dataclasses import replace
 from typing import Dict
 
 from .base import ModelConfig, ParameterConfig, ParameterType
@@ -9,10 +10,8 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # reasoning models are tracked separately in _GPT5_MODELS below.
 _REASONING_MODELS: set[str] = set()
 
-# GPT-5.x reasoning models (use max_completion_tokens, no temperature). The
-# GPT-5.6 Sol / Terra / Luna family reached general availability on July 9, 2026
-# with confirmed API model ids; Sol is the current flagship. Sol Pro is Sol
-# served with reasoning.mode=pro at the same per-token price.
+# GPT-5.x reasoning models (use max_completion_tokens, no temperature). GPT-5.6
+# Pro is an execution mode on these model ids, not a separate model slug.
 #
 # Deliberately absent: gpt-5.6-cyber ($12.50/$75). It is a purpose-trained
 # cybersecurity model gated behind OpenAI's Daybreak program — provisioned to
@@ -20,7 +19,6 @@ _REASONING_MODELS: set[str] = set()
 # this catalog serves. Add it only if an org is onboarded to Daybreak.
 _GPT5_MODELS = {
     "gpt-5.6-sol",
-    "gpt-5.6-sol-pro",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.5",
@@ -29,6 +27,31 @@ _GPT5_MODELS = {
     "gpt-5.4-pro",
     "gpt-5.4-mini",
     "gpt-5.4-nano",
+}
+
+_GPT56_MODELS = {
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+}
+_GPT55_STANDARD_MODELS = {"gpt-5.5"}
+_GPT54_STANDARD_MODELS = {"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"}
+_GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
+_GPT41_MODELS = {"gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"}
+
+# OpenAI applies a request-wide surcharge once a 1.05M-context GPT-5 model's
+# input exceeds this threshold. Finance imports these constants so the request
+# pricing rule stays beside the model catalog rather than becoming a second,
+# drifting model list.
+LONG_CONTEXT_PRICING_THRESHOLD = 272_000
+LONG_CONTEXT_INPUT_MULTIPLIER = 2.0
+LONG_CONTEXT_OUTPUT_MULTIPLIER = 1.5
+_LONG_CONTEXT_SURCHARGE_MODELS = {
+    "gpt-5.6",
+    *_GPT56_MODELS,
+    *_GPT55_STANDARD_MODELS,
+    *_GPT_PRO_MODELS,
+    "gpt-5.4",
 }
 
 # Models that don't support temperature parameter
@@ -55,24 +78,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=4.0,
         output_cost_hint=20.0,
         cache_read_cost_hint=0.4,  # OpenAI cached input: 10% of input rate
-    ),
-    "gpt-5.6-sol-pro": ModelConfig(
-        model_identifier="gpt-5.6-sol-pro",
-        name="gpt-5.6-sol-pro",
-        description="GPT-5.6 Sol Pro is GPT-5.6 Sol served with reasoning.mode=pro for maximum accuracy on the hardest agentic and reasoning tasks (July 9, 2026). Same per-token price as Sol, with higher latency and reasoning-token usage. 1M context window. Priced at $4/$20 per 1M input/output tokens following Sol's August 21, 2026 price cut (from $5/$30) — a promotional rate running through at least November 21, 2026.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        reasoning=True,
-        maximum_context_tokens=1050000,
-        maximum_output_tokens=128000,
-        token_param_name="max_completion_tokens",
-        supports_temperature=False,
-        input_cost_hint=4.0,
-        output_cost_hint=20.0,
-        cache_read_cost_hint=0.4,  # OpenAI cached input: 10% of input rate
+        cache_write_cost_hint=5.0,  # Explicit GPT-5.6 cache writes: 1.25x input
     ),
     "gpt-5.6-terra": ModelConfig(
         model_identifier="gpt-5.6-terra",
@@ -91,6 +97,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=2.0,
         output_cost_hint=12.0,
         cache_read_cost_hint=0.2,  # OpenAI cached input: 10% of input rate
+        cache_write_cost_hint=2.5,  # Explicit GPT-5.6 cache writes: 1.25x input
     ),
     "gpt-5.6-luna": ModelConfig(
         model_identifier="gpt-5.6-luna",
@@ -109,6 +116,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=0.20,
         output_cost_hint=1.20,
         cache_read_cost_hint=0.02,  # OpenAI cached input: 10% of input rate
+        cache_write_cost_hint=0.25,  # Explicit GPT-5.6 cache writes: 1.25x input
     ),
     # GPT-5.5 series (released April 23, 2026) — succeeded by the GPT-5.6 family
     "gpt-5.5": ModelConfig(
@@ -132,20 +140,22 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.5-pro": ModelConfig(
         model_identifier="gpt-5.5-pro",
         name="gpt-5.5-pro",
-        description="GPT-5.5 Pro (April 23, 2026) — high-accuracy model for mission-critical agentic and reasoning tasks; succeeded by GPT-5.6 Sol Pro. 1M context window.",
+        description="GPT-5.5 Pro (April 23, 2026) — high-accuracy model for mission-critical agentic and reasoning tasks. Responses API, 1M context window.",
         support_images=True,
         support_files=True,
-        support_streaming=True,
+        support_streaming=False,
         supports_json_mode=True,
         supports_tool_call=True,
         reasoning=True,
+        api_path="/responses",
         maximum_context_tokens=1050000,
         maximum_output_tokens=128000,
         token_param_name="max_completion_tokens",
         supports_temperature=False,
         input_cost_hint=30.0,
         output_cost_hint=180.0,
-        cache_read_cost_hint=3.0,  # OpenAI cached input: 10% of input rate
+        # GPT-5.5 Pro has no cached-input discount. Leaving the cache-read
+        # rate undeclared makes finance bill cached tokens at the input rate.
     ),
     # GPT-5.4 series (released March 2026) — two generations old, superseded by the GPT-5.6 family
     "gpt-5.4": ModelConfig(
@@ -169,13 +179,14 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.4-pro": ModelConfig(
         model_identifier="gpt-5.4-pro",
         name="gpt-5.4-pro",
-        description="GPT-5.4 Pro (March 2026) — superseded by GPT-5.6 Sol Pro. High-accuracy model for mission-critical agentic tasks. 1M context window with built-in computer use.",
+        description="GPT-5.4 Pro (March 2026) — high-accuracy Responses API model for mission-critical agentic tasks. 1M context window with built-in computer use.",
         support_images=True,
         support_files=True,
         support_streaming=True,
-        supports_json_mode=True,
+        supports_json_mode=False,
         supports_tool_call=True,
         reasoning=True,
+        api_path="/responses",
         maximum_context_tokens=1050000,
         maximum_output_tokens=128000,
         token_param_name="max_completion_tokens",
@@ -231,7 +242,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_json_mode=True,
         supports_tool_call=True,
         reasoning=False,
-        maximum_context_tokens=1000000,
+        maximum_context_tokens=1047576,
         maximum_output_tokens=32768,
         token_param_name="max_tokens",
         supports_temperature=True,
@@ -249,7 +260,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_json_mode=True,
         supports_tool_call=True,
         reasoning=False,
-        maximum_context_tokens=1000000,
+        maximum_context_tokens=1047576,
         maximum_output_tokens=32768,
         token_param_name="max_tokens",
         supports_temperature=True,
@@ -267,7 +278,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         supports_json_mode=True,
         supports_tool_call=True,
         reasoning=False,
-        maximum_context_tokens=1000000,
+        maximum_context_tokens=1047576,
         maximum_output_tokens=32768,
         token_param_name="max_tokens",
         supports_temperature=True,
@@ -312,7 +323,6 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         min_value=1,
         max_value={
             "gpt-5.6-sol": 128000,
-            "gpt-5.6-sol-pro": 128000,
             "gpt-5.6-terra": 128000,
             "gpt-5.6-luna": 128000,
             "gpt-5.5": 128000,
@@ -334,6 +344,7 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         min_value=-2,
         max_value=2,
         step=0.1,
+        supported_models=list(_GPT41_MODELS),
     ),
     ParameterConfig(
         field_name="presence_penalty",
@@ -344,6 +355,7 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         min_value=-2,
         max_value=2,
         step=0.1,
+        supported_models=list(_GPT41_MODELS),
     ),
     ParameterConfig(
         field_name="reasoning_effort",
@@ -351,8 +363,17 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         description="Constrains effort on reasoning for reasoning models.",
         parameter_type=ParameterType.SELECT,
         default_value="medium",
-        options=["minimal", "low", "medium", "high"],
+        options=["none", "low", "medium", "high", "xhigh", "max"],
         supported_models=list(_REASONING_MODELS | _GPT5_MODELS),
+    ),
+    ParameterConfig(
+        field_name="reasoning_mode",
+        display_name="Reasoning Mode",
+        description="Use pro mode for additional model work on difficult tasks. Pro mode requires the Responses API.",
+        parameter_type=ParameterType.SELECT,
+        default_value="standard",
+        options=["standard", "pro"],
+        supported_models=list(_GPT56_MODELS),
     ),
     ParameterConfig(
         field_name="verbosity",
@@ -364,6 +385,119 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         supported_models=list(_GPT5_MODELS),
     ),
 ]
+
+
+_REASONING_EFFORT_OPTIONS = {
+    **{
+        model: ["none", "low", "medium", "high", "xhigh", "max"]
+        for model in _GPT56_MODELS
+    },
+    **{
+        model: ["none", "low", "medium", "high", "xhigh"]
+        for model in _GPT55_STANDARD_MODELS | _GPT54_STANDARD_MODELS
+    },
+    **{model: ["medium", "high", "xhigh"] for model in _GPT_PRO_MODELS},
+}
+
+
+def get_parameters_for_model(model: str) -> list[ParameterConfig]:
+    """Return an exact parameter contract for one OpenAI model.
+
+    The provider importer persists parameter options per model. Keeping this
+    projection in the SDK avoids a single union enum advertising values that
+    OpenAI rejects for Pro and older GPT-5 models.
+    """
+    model_lower = model.lower()
+    parameters: list[ParameterConfig] = []
+    for parameter in OPENAI_PARAMETERS:
+        if parameter.supported_models and model_lower not in parameter.supported_models:
+            continue
+        if parameter.unsupported_models and model_lower in parameter.unsupported_models:
+            continue
+        if parameter.field_name == "reasoning_effort":
+            options = _REASONING_EFFORT_OPTIONS.get(model_lower)
+            if not options:
+                continue
+            default = "medium" if "medium" in options else options[0]
+            parameters.append(
+                replace(parameter, options=options, default_value=default)
+            )
+            continue
+        parameters.append(replace(parameter))
+    return parameters
+
+
+def normalize_model_name(model: str) -> str:
+    """Map retired local aliases to valid OpenAI model identifiers."""
+    if model.lower() == "gpt-5.6-sol-pro":
+        return "gpt-5.6-sol"
+    return model
+
+
+def _matches_model_family(model: str, families: set[str]) -> bool:
+    model_lower = normalize_model_name(model).lower()
+    return any(
+        model_lower == family or model_lower.startswith(f"{family}-20")
+        for family in families
+    )
+
+
+def is_gpt56_model(model: str) -> bool:
+    """Return whether ``model`` is a GPT-5.6 standard model or alias."""
+    normalized = normalize_model_name(model).lower()
+    return normalized == "gpt-5.6" or _matches_model_family(normalized, _GPT56_MODELS)
+
+
+def requires_responses_api(model: str) -> bool:
+    """Return whether OpenAI documents the model as Responses-only/preferred."""
+    if model.lower() == "gpt-5.6-sol-pro":
+        return True
+    return _matches_model_family(model, _GPT_PRO_MODELS)
+
+
+def supports_sampling_penalties(model: str) -> bool:
+    """Frequency/presence penalties are exposed only for GPT-4.1 here."""
+    return _matches_model_family(model, _GPT41_MODELS)
+
+
+def supports_verbosity(model: str) -> bool:
+    """Return whether the model accepts OpenAI's verbosity control."""
+    return _matches_model_family(model, _GPT5_MODELS)
+
+
+def supports_streaming(model: str) -> bool:
+    """Return the catalog's streaming capability for a model or snapshot."""
+    normalized = normalize_model_name(model).lower()
+    if normalized in OPENAI_MODELS:
+        return OPENAI_MODELS[normalized].support_streaming
+    if _matches_model_family(normalized, {"gpt-5.5-pro"}):
+        return False
+    return True
+
+
+def supports_json_mode(model: str) -> bool:
+    """Return the catalog's structured-output capability for a model."""
+    normalized = normalize_model_name(model).lower()
+    if normalized in OPENAI_MODELS:
+        return OPENAI_MODELS[normalized].supports_json_mode
+    if _matches_model_family(normalized, {"gpt-5.4-pro"}):
+        return False
+    return True
+
+
+def get_long_context_pricing_multipliers(
+    model: str | None, input_tokens: int | None
+) -> tuple[float, float]:
+    """Return request-wide input/output multipliers for long-context GPT-5.
+
+    OpenAI applies the surcharge to the full request once prompt input exceeds
+    272K tokens. Unknown models and requests at the boundary keep base rates.
+    """
+    if not model or not input_tokens or input_tokens <= LONG_CONTEXT_PRICING_THRESHOLD:
+        return 1.0, 1.0
+    if not _matches_model_family(model, _LONG_CONTEXT_SURCHARGE_MODELS):
+        return 1.0, 1.0
+    return LONG_CONTEXT_INPUT_MULTIPLIER, LONG_CONTEXT_OUTPUT_MULTIPLIER
 
 
 def get_token_param_name(model: str) -> str:

@@ -37,13 +37,16 @@ class TestOpenAIUsage:
                 input_tokens=500,
                 output_tokens=80,
                 total_tokens=580,
-                input_tokens_details=SimpleNamespace(cached_tokens=256),
+                input_tokens_details=SimpleNamespace(
+                    cached_tokens=256, cache_write_tokens=128
+                ),
                 output_tokens_details=SimpleNamespace(reasoning_tokens=40),
             )
         )
         assert usage.prompt_tokens == 500
         assert usage.completion_tokens == 80
         assert usage.cache_read_tokens == 256
+        assert usage.cache_write_tokens == 128
         assert usage.reasoning_tokens == 40
 
     def test_missing_details_are_zero_not_error(self):

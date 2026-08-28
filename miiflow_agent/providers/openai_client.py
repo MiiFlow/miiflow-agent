@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import re
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
 
@@ -12,18 +13,38 @@ import openai
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..core.client import ChatResponse, ModelClient
-from ..core.exceptions import AuthenticationError, ModelError, ProviderError, RateLimitError, is_retryable_error
+from ..core.exceptions import (
+    AuthenticationError,
+    ModelError,
+    ProviderError,
+    RateLimitError,
+    is_retryable_error,
+)
 from ..core.exceptions import TimeoutError as MiiflowTimeoutError
-from ..core.message import DocumentBlock, ImageBlock, Message, MessageRole, TextBlock, VideoBlock
+from ..core.message import (
+    DocumentBlock,
+    ImageBlock,
+    Message,
+    MessageRole,
+    TextBlock,
+    VideoBlock,
+)
 from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import OpenAIStreamNormalizer
 from ..core.streaming import StreamChunk
 from ..models.openai import (
     get_token_param_name,
+    is_gpt56_model,
+    normalize_model_name,
+    requires_responses_api,
     supports_native_mcp,
     supports_reasoning_effort,
+    supports_json_mode,
+    supports_sampling_penalties,
+    supports_streaming,
     supports_temperature,
+    supports_verbosity,
 )
 
 if TYPE_CHECKING:
@@ -39,6 +60,75 @@ def _sanitize_tool_name(name: str) -> str:
 
 #: Shared with ``OpenAIStreamNormalizer`` — see ``TokenCount.from_openai_usage``.
 extract_usage = TokenCount.from_openai_usage
+logger = logging.getLogger(__name__)
+
+
+_CHAT_COMPLETIONS_PASSTHROUGH = frozenset(
+    {
+        "logit_bias",
+        "logprobs",
+        "metadata",
+        "modalities",
+        "moderation",
+        "n",
+        "parallel_tool_calls",
+        "prediction",
+        "prompt_cache_key",
+        "prompt_cache_options",
+        "prompt_cache_retention",
+        "safety_identifier",
+        "seed",
+        "service_tier",
+        "stop",
+        "store",
+        "top_logprobs",
+        "top_p",
+        "user",
+        "web_search_options",
+    }
+)
+_RESPONSES_PASSTHROUGH = frozenset(
+    {
+        "background",
+        "context_management",
+        "conversation",
+        "include",
+        "instructions",
+        "max_tool_calls",
+        "metadata",
+        "moderation",
+        "parallel_tool_calls",
+        "previous_response_id",
+        "prompt",
+        "prompt_cache_key",
+        "prompt_cache_options",
+        "prompt_cache_retention",
+        "safety_identifier",
+        "service_tier",
+        "store",
+        "stream_options",
+        "top_logprobs",
+        "top_p",
+        "truncation",
+        "user",
+    }
+)
+_RESPONSES_ONLY_KWARGS = frozenset(
+    {
+        "background",
+        "context_management",
+        "conversation",
+        "include",
+        "instructions",
+        "max_tool_calls",
+        "previous_response_id",
+        "prompt",
+        "reasoning_context",
+        "reasoning_generate_summary",
+        "reasoning_summary",
+        "truncation",
+    }
+)
 
 
 class OpenAIClient(ModelClient):
@@ -49,6 +139,7 @@ class OpenAIClient(ModelClient):
     _tool_name_mapping: Dict[str, str] = {}
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
+        self.fine_tuned_model = kwargs.pop("fine_tuned_model", None) or None
         super().__init__(model=model, api_key=api_key, **kwargs)
         from .sdk_client_cache import get_or_create_sdk_client
 
@@ -61,11 +152,173 @@ class OpenAIClient(ModelClient):
 
         # Stream normalizer for unified streaming handling
         # Note: Pass class-level mapping for tool name restoration
-        self._stream_normalizer = OpenAIStreamNormalizer(OpenAIClient._tool_name_mapping)
+        self._stream_normalizer = OpenAIStreamNormalizer(
+            OpenAIClient._tool_name_mapping
+        )
 
     def _supports_native_mcp(self) -> bool:
         """Check if current model supports native MCP via Responses API."""
         return supports_native_mcp(self.model)
+
+    def _request_model(self, kwargs: Dict[str, Any]) -> str:
+        """Resolve a valid request model, including legacy/fine-tune aliases."""
+        configured = (
+            kwargs.get("fine_tuned_model") or self.fine_tuned_model or self.model
+        )
+        return normalize_model_name(configured)
+
+    def _should_use_responses_api(
+        self,
+        *,
+        tools: Optional[List[Dict[str, Any]]],
+        mcp_servers: Optional[List["NativeMCPServerConfig"]],
+        kwargs: Dict[str, Any],
+    ) -> bool:
+        """Choose the endpoint from model and requested feature capabilities."""
+        if kwargs.get("use_responses_api"):
+            return True
+        if any(kwargs.get(key) is not None for key in _RESPONSES_ONLY_KWARGS):
+            return True
+        if requires_responses_api(self.model):
+            return True
+        if kwargs.get("reasoning_mode") == "pro":
+            return True
+        if mcp_servers and self._supports_native_mcp():
+            return True
+        # GPT-5.6 tool calling belongs on Responses. It preserves reasoning
+        # controls and avoids Chat Completions' tools+reasoning incompatibility.
+        if tools and is_gpt56_model(self.model):
+            return True
+        if (
+            tools
+            and kwargs.get("reasoning_effort")
+            and normalize_model_name(self.model).lower().startswith("gpt-5")
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _copy_allowed_kwargs(
+        request_params: Dict[str, Any], kwargs: Dict[str, Any], allowed: frozenset[str]
+    ) -> None:
+        for key in allowed:
+            if key in kwargs and kwargs[key] is not None:
+                request_params[key] = kwargs[key]
+
+    def _build_responses_request(
+        self,
+        *,
+        messages: List[Message],
+        temperature: float,
+        max_tokens: Optional[int],
+        tools: Optional[List[Dict[str, Any]]],
+        json_schema: Optional[Dict[str, Any]],
+        mcp_servers: Optional[List["NativeMCPServerConfig"]],
+        kwargs: Dict[str, Any],
+        stream: bool = False,
+    ) -> Dict[str, Any]:
+        """Build one Responses request for both streaming and non-streaming.
+
+        Keeping this mapping in one place prevents endpoint parameters from
+        drifting between ``achat`` and ``astream_chat``.
+        """
+        response_tools: List[Dict[str, Any]] = []
+        for tool in tools or []:
+            if tool.get("type") == "function" and "function" in tool:
+                response_tools.append({"type": "function", **tool["function"]})
+            else:
+                response_tools.append(tool)
+        for server in mcp_servers or []:
+            response_tools.append(server.to_openai_format())
+
+        request_params: Dict[str, Any] = {
+            "model": self._request_model(kwargs),
+            "input": self._convert_messages_to_responses_input(messages),
+        }
+        if stream:
+            request_params["stream"] = True
+        if response_tools:
+            request_params["tools"] = response_tools
+            tool_choice = kwargs.get("tool_choice", "auto")
+            if (
+                isinstance(tool_choice, dict)
+                and tool_choice.get("type") == "function"
+                and isinstance(tool_choice.get("function"), dict)
+            ):
+                tool_choice = {
+                    "type": "function",
+                    "name": tool_choice["function"].get("name", ""),
+                }
+            request_params["tool_choice"] = tool_choice
+        if max_tokens is not None:
+            request_params["max_output_tokens"] = max_tokens
+        if supports_temperature(self.model):
+            request_params["temperature"] = temperature
+
+        reasoning: Dict[str, Any] = {}
+        reasoning_keys = {
+            "reasoning_effort": "effort",
+            "reasoning_mode": "mode",
+            "reasoning_context": "context",
+            "reasoning_summary": "summary",
+            "reasoning_generate_summary": "generate_summary",
+        }
+        for source, target in reasoning_keys.items():
+            if kwargs.get(source) is not None:
+                reasoning[target] = kwargs[source]
+        if self.model.lower() == "gpt-5.6-sol-pro":
+            reasoning["mode"] = "pro"
+        if reasoning and supports_reasoning_effort(self.model):
+            request_params["reasoning"] = reasoning
+
+        text_config: Dict[str, Any] = {}
+        if json_schema:
+            text_config["format"] = {
+                "type": "json_schema",
+                "name": "response_schema",
+                "schema": normalize_json_schema(json_schema, SchemaMode.STRICT),
+                "strict": True,
+            }
+        if supports_verbosity(self.model) and kwargs.get("verbosity"):
+            text_config["verbosity"] = kwargs["verbosity"]
+        if text_config:
+            request_params["text"] = text_config
+
+        self._copy_allowed_kwargs(request_params, kwargs, _RESPONSES_PASSTHROUGH)
+        for unsupported in ("frequency_penalty", "presence_penalty"):
+            if unsupported in kwargs and kwargs[unsupported] not in (None, 0, 0.0):
+                logger.warning(
+                    "Ignoring %s for %s because the Responses API does not accept it",
+                    unsupported,
+                    self.model,
+                )
+        return request_params
+
+    async def _create_response(self, request_params: Dict[str, Any]) -> Any:
+        """Create a Response and wait for background work when requested."""
+        response = await asyncio.wait_for(
+            self.client.responses.create(**request_params), timeout=self.timeout
+        )
+        if not request_params.get("background"):
+            return response
+
+        terminal_statuses = {"completed", "failed", "cancelled", "incomplete"}
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.timeout
+        while getattr(response, "status", None) not in terminal_statuses:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            await asyncio.sleep(min(0.5, remaining))
+            response = await asyncio.wait_for(
+                self.client.responses.retrieve(response.id), timeout=remaining
+            )
+
+        if getattr(response, "status", None) in {"failed", "cancelled"}:
+            error = getattr(response, "error", None)
+            message = getattr(error, "message", None) or str(error or response.status)
+            raise ModelError(f"OpenAI background response {message}", self.model)
+        return response
 
     def _apply_reasoning_effort(
         self,
@@ -91,9 +344,7 @@ class OpenAIClient(ModelClient):
         if not supports_reasoning_effort(self.model):
             return
         if has_tools:
-            import logging
-
-            logging.getLogger(__name__).debug(
+            logger.debug(
                 "Dropping reasoning_effort=%s for %s: not supported alongside "
                 "function tools on /v1/chat/completions",
                 reasoning_effort,
@@ -102,7 +353,52 @@ class OpenAIClient(ModelClient):
             return
         request_params["reasoning_effort"] = reasoning_effort
 
-    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def _is_function_tools_reasoning_effort_error(
+        error: openai.BadRequestError,
+    ) -> bool:
+        """Recognize OpenAI's Chat Completions tools/effort incompatibility.
+
+        Keep this deliberately narrower than a generic ``reasoning_effort``
+        check: other 400s are caller errors and must still fail immediately.
+        """
+        message = str(error).lower()
+        return (
+            "function tools with reasoning_effort are not supported" in message
+            and "/v1/chat/completions" in message
+        )
+
+    async def _create_chat_completion(self, request_params: Dict[str, Any]) -> Any:
+        """Create a Chat Completion with one compatibility fallback.
+
+        ``_apply_reasoning_effort`` normally prevents the unsupported
+        function-tools combination before it reaches OpenAI. If request
+        shaping outside that guard ever reintroduces it, the provider rejects
+        the request before doing any work, so it is safe to retry once with
+        the optional effort override removed.
+        """
+        try:
+            return await asyncio.wait_for(
+                self.client.chat.completions.create(**request_params),
+                timeout=self.timeout,
+            )
+        except openai.BadRequestError as error:
+            if (
+                "reasoning_effort" not in request_params
+                or not self._is_function_tools_reasoning_effort_error(error)
+            ):
+                raise
+
+            fallback_params = dict(request_params)
+            fallback_params.pop("reasoning_effort")
+            return await asyncio.wait_for(
+                self.client.chat.completions.create(**fallback_params),
+                timeout=self.timeout,
+            )
+
+    def convert_schema_to_provider_format(
+        self, schema: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Convert universal schema to OpenAI format with name sanitization."""
         original_name = schema["name"]
         sanitized_name = _sanitize_tool_name(original_name)
@@ -188,7 +484,10 @@ class OpenAIClient(ModelClient):
                     content_list.append(
                         {
                             "type": "image_url",
-                            "image_url": {"url": block.image_url, "detail": block.detail},
+                            "image_url": {
+                                "url": block.image_url,
+                                "detail": block.detail,
+                            },
                         }
                     )
                 elif isinstance(block, DocumentBlock):
@@ -202,14 +501,18 @@ class OpenAIClient(ModelClient):
                         else:
                             import httpx
 
-                            resp = httpx.get(block.document_url, timeout=30, follow_redirects=True)
+                            resp = httpx.get(
+                                block.document_url, timeout=30, follow_redirects=True
+                            )
                             resp.raise_for_status()
                             text = resp.content.decode("utf-8", errors="replace")
                             doc_content = f"[Document{filename_info}]\n\n{text}"
                         content_list.append({"type": "text", "text": doc_content})
                     except Exception as e:
                         filename_info = f" {block.filename}" if block.filename else ""
-                        error_content = f"[Error processing document{filename_info}: {str(e)}]"
+                        error_content = (
+                            f"[Error processing document{filename_info}: {str(e)}]"
+                        )
                         content_list.append({"type": "text", "text": error_content})
 
             openai_message["content"] = content_list
@@ -236,7 +539,9 @@ class OpenAIClient(ModelClient):
                 sanitized_tc = copy.deepcopy(tc) if isinstance(tc, dict) else tc
                 if isinstance(sanitized_tc, dict) and "function" in sanitized_tc:
                     original_name = sanitized_tc["function"].get("name", "")
-                    sanitized_tc["function"]["name"] = _sanitize_tool_name(original_name)
+                    sanitized_tc["function"]["name"] = _sanitize_tool_name(
+                        original_name
+                    )
                     # Normalize: Anthropic-style dict arguments → JSON string for OpenAI API
                     args = sanitized_tc["function"].get("arguments")
                     if isinstance(args, dict):
@@ -278,12 +583,21 @@ class OpenAIClient(ModelClient):
         Returns:
             ChatResponse with assistant message and metadata
         """
-        # Auto-detect: use Responses API if MCP servers are provided
-        use_native_mcp = mcp_servers and len(mcp_servers) > 0 and self._supports_native_mcp()
-
-        if use_native_mcp:
+        if json_schema and not supports_json_mode(self.model):
+            raise ModelError(
+                f"Structured outputs are not supported by {self.model}", self.model
+            )
+        if self._should_use_responses_api(
+            tools=tools, mcp_servers=mcp_servers, kwargs=kwargs
+        ):
             return await self._achat_responses_api(
-                messages, temperature, max_tokens, tools, mcp_servers, **kwargs
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                json_schema=json_schema,
+                mcp_servers=mcp_servers,
+                **kwargs,
             )
 
         # Use standard Chat Completions API
@@ -292,11 +606,13 @@ class OpenAIClient(ModelClient):
             # DocumentBlocks (httpx.get, PDF extraction) — offload to a worker
             # thread so the event loop stays free under ASGI servers.
             openai_messages = await asyncio.to_thread(
-                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
+                lambda: [
+                    self.convert_message_to_provider_format(msg) for msg in messages
+                ]
             )
 
-            request_params = {
-                "model": self.model,
+            request_params: Dict[str, Any] = {
+                "model": self._request_model(kwargs),
                 "messages": openai_messages,
             }
 
@@ -310,11 +626,12 @@ class OpenAIClient(ModelClient):
                 request_params[get_token_param_name(self.model)] = 16384
             if tools:
                 request_params["tools"] = tools
-                if "tool_choice" not in request_params:
-                    request_params["tool_choice"] = "auto"
+                request_params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
             if json_schema:
-                normalized_schema = normalize_json_schema(json_schema, SchemaMode.STRICT)
+                normalized_schema = normalize_json_schema(
+                    json_schema, SchemaMode.STRICT
+                )
                 request_params["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
@@ -323,17 +640,27 @@ class OpenAIClient(ModelClient):
                     },
                 }
 
+            if supports_sampling_penalties(self.model):
+                for key in ("frequency_penalty", "presence_penalty"):
+                    if key in kwargs and kwargs[key] is not None:
+                        request_params[key] = kwargs[key]
+            if supports_verbosity(self.model) and kwargs.get("verbosity"):
+                request_params["verbosity"] = kwargs["verbosity"]
+
+            self._copy_allowed_kwargs(
+                request_params, kwargs, _CHAT_COMPLETIONS_PASSTHROUGH
+            )
             self._apply_reasoning_effort(request_params, kwargs, has_tools=bool(tools))
 
-            response = await asyncio.wait_for(
-                self.client.chat.completions.create(**request_params), timeout=self.timeout
-            )
+            response = await self._create_chat_completion(request_params)
 
             choice = response.choices[0]
             content = choice.message.content or ""
 
             response_message = Message(
-                role=MessageRole.ASSISTANT, content=content, tool_calls=choice.message.tool_calls
+                role=MessageRole.ASSISTANT,
+                content=content,
+                tool_calls=choice.message.tool_calls,
             )
 
             usage = extract_usage(getattr(response, "usage", None))
@@ -350,15 +677,17 @@ class OpenAIClient(ModelClient):
         except openai.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)
         except openai.RateLimitError as e:
-            raise RateLimitError(
-                str(e), self.provider_name, original_error=e
-            )
+            raise RateLimitError(str(e), self.provider_name, original_error=e)
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiflowTimeoutError("Request timed out", self.timeout, original_error=e)
+            raise MiiflowTimeoutError(
+                "Request timed out", self.timeout, original_error=e
+            )
         except Exception as e:
-            raise ProviderError(f"OpenAI API error: {str(e)}", self.provider_name, original_error=e)
+            raise ProviderError(
+                f"OpenAI API error: {str(e)}", self.provider_name, original_error=e
+            )
 
     async def _achat_responses_api(
         self,
@@ -366,6 +695,7 @@ class OpenAIClient(ModelClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
         mcp_servers: Optional[List["NativeMCPServerConfig"]] = None,
         **kwargs,
     ) -> ChatResponse:
@@ -379,87 +709,99 @@ class OpenAIClient(ModelClient):
             temperature: Sampling temperature
             max_tokens: Maximum tokens in response
             tools: Regular function tools
+            json_schema: Optional structured-output schema
             mcp_servers: MCP server configurations for native MCP
 
         Returns:
             ChatResponse with assistant message and metadata
         """
         try:
-            # Build tools array with MCP servers
-            response_tools = []
-
-            # Add regular function tools - convert from Chat Completions to Responses API format
-            # Chat Completions: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
-            # Responses API:    {"type": "function", "name": ..., "description": ..., "parameters": ...}
-            if tools:
-                for tool in tools:
-                    if tool.get("type") == "function" and "function" in tool:
-                        # Convert nested format to flat format for Responses API
-                        func_def = tool["function"]
-                        response_tools.append({
-                            "type": "function",
-                            "name": func_def.get("name"),
-                            "description": func_def.get("description", ""),
-                            "parameters": func_def.get("parameters", {}),
-                        })
-                    else:
-                        # Already in correct format or different tool type
-                        response_tools.append(tool)
-
-            # Add MCP servers as native MCP tools
-            if mcp_servers:
-                for server in mcp_servers:
-                    response_tools.append(server.to_openai_format())
-
-            # Convert messages to Responses API input format
-            # Responses API uses a different input structure
-            input_items = self._convert_messages_to_responses_input(messages)
-
-            request_params = {
-                "model": self.model,
-                "input": input_items,
-            }
-
-            if response_tools:
-                request_params["tools"] = response_tools
-
-            if max_tokens:
-                request_params["max_output_tokens"] = max_tokens
-
-            # Use Responses API endpoint
-            response = await asyncio.wait_for(
-                self.client.responses.create(**request_params), timeout=self.timeout
+            request_params = self._build_responses_request(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                json_schema=json_schema,
+                mcp_servers=mcp_servers,
+                kwargs=kwargs,
             )
+            response = await self._create_response(request_params)
 
             return self._parse_responses_api_response(response)
 
         except openai.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)
         except openai.RateLimitError as e:
-            raise RateLimitError(
-                str(e), self.provider_name, original_error=e
-            )
+            raise RateLimitError(str(e), self.provider_name, original_error=e)
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiflowTimeoutError("Request timed out", self.timeout, original_error=e)
+            raise MiiflowTimeoutError(
+                "Request timed out", self.timeout, original_error=e
+            )
+        except ModelError:
+            raise
         except Exception as e:
             raise ProviderError(
-                f"OpenAI Responses API error: {str(e)}", self.provider_name, original_error=e
+                f"OpenAI Responses API error: {str(e)}",
+                self.provider_name,
+                original_error=e,
             )
 
-    def _convert_messages_to_responses_input(self, messages: List[Message]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _convert_blocks_to_responses_content(
+        blocks: List[Any],
+    ) -> List[Dict[str, Any]]:
+        """Convert universal multimodal blocks to Responses content items."""
+        content_parts: List[Dict[str, Any]] = []
+        for block in blocks:
+            if isinstance(block, TextBlock):
+                content_parts.append({"type": "input_text", "text": block.text})
+            elif isinstance(block, ImageBlock):
+                content_parts.append(
+                    {
+                        "type": "input_image",
+                        "image_url": block.image_url,
+                        "detail": block.detail,
+                    }
+                )
+            elif isinstance(block, DocumentBlock):
+                file_part: Dict[str, Any] = {"type": "input_file"}
+                if block.document_url.startswith("data:"):
+                    file_part["file_data"] = block.document_url
+                else:
+                    file_part["file_url"] = block.document_url
+                if block.filename:
+                    file_part["filename"] = block.filename
+                content_parts.append(file_part)
+            elif isinstance(block, VideoBlock):
+                content_parts.append(
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "[OpenAI cannot view this video; reference URL: "
+                            f"{block.video_url}]"
+                        ),
+                    }
+                )
+        return content_parts
+
+    def _convert_messages_to_responses_input(
+        self, messages: List[Message]
+    ) -> List[Dict[str, Any]]:
         """Convert messages to Responses API input format.
 
         The Responses API uses a different input structure than Chat Completions.
         It expects an array of input items rather than messages.
         """
-        input_items = []
+        input_items: List[Dict[str, Any]] = []
 
         for msg in messages:
             if msg.role == MessageRole.SYSTEM:
                 # System messages become system items
-                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                content = (
+                    msg.content if isinstance(msg.content, str) else str(msg.content)
+                )
                 input_items.append(
                     {
                         "type": "message",
@@ -478,18 +820,9 @@ class OpenAIClient(ModelClient):
                         }
                     )
                 else:
-                    # Handle multimodal content
-                    content_parts = []
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            content_parts.append({"type": "input_text", "text": block.text})
-                        elif isinstance(block, ImageBlock):
-                            content_parts.append(
-                                {
-                                    "type": "input_image",
-                                    "image_url": block.image_url,
-                                }
-                            )
+                    content_parts = self._convert_blocks_to_responses_content(
+                        msg.content
+                    )
                     input_items.append(
                         {
                             "type": "message",
@@ -498,22 +831,52 @@ class OpenAIClient(ModelClient):
                         }
                     )
             elif msg.role == MessageRole.ASSISTANT:
-                # Assistant messages
-                content = msg.content if isinstance(msg.content, str) else str(msg.content)
-                input_items.append(
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": content,
-                    }
+                content = (
+                    msg.content if isinstance(msg.content, str) else str(msg.content)
                 )
+                if content:
+                    input_items.append(
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": content,
+                        }
+                    )
+                # Responses represents assistant function calls as peer input
+                # items, not as a ``tool_calls`` property on the message.
+                for tool_call in msg.tool_calls or []:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function = tool_call.get("function") or {}
+                    if not isinstance(function, dict):
+                        function = {
+                            "name": getattr(function, "name", ""),
+                            "arguments": getattr(function, "arguments", "{}"),
+                        }
+                    call_id = tool_call.get("call_id") or tool_call.get("id") or ""
+                    arguments = function.get("arguments", "{}")
+                    if isinstance(arguments, dict):
+                        arguments = json.dumps(arguments)
+                    input_items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": call_id,
+                            "name": function.get("name", ""),
+                            "arguments": arguments,
+                        }
+                    )
             elif msg.role == MessageRole.TOOL:
                 # Tool results
+                output: Any
+                if isinstance(msg.content, str):
+                    output = msg.content
+                else:
+                    output = self._convert_blocks_to_responses_content(msg.content)
                 input_items.append(
                     {
                         "type": "function_call_output",
                         "call_id": msg.tool_call_id or "",
-                        "output": msg.content if isinstance(msg.content, str) else str(msg.content),
+                        "output": output,
                     }
                 )
 
@@ -542,12 +905,15 @@ class OpenAIClient(ModelClient):
 
             elif item_type == "function_call":
                 # Regular function call
+                sanitized_name = getattr(item, "name", "")
                 tool_calls.append(
                     {
                         "id": getattr(item, "call_id", ""),
                         "type": "function",
                         "function": {
-                            "name": getattr(item, "name", ""),
+                            "name": self._tool_name_mapping.get(
+                                sanitized_name, sanitized_name
+                            ),
                             "arguments": getattr(item, "arguments", "{}"),
                         },
                     }
@@ -610,12 +976,43 @@ class OpenAIClient(ModelClient):
         Yields:
             StreamChunk with delta content and metadata
         """
-        # Auto-detect: use Responses API if MCP servers are provided
-        use_native_mcp = mcp_servers and len(mcp_servers) > 0 and self._supports_native_mcp()
+        if json_schema and not supports_json_mode(self.model):
+            raise ModelError(
+                f"Structured outputs are not supported by {self.model}", self.model
+            )
+        use_responses_api = self._should_use_responses_api(
+            tools=tools, mcp_servers=mcp_servers, kwargs=kwargs
+        )
+        if use_responses_api and (
+            not supports_streaming(self.model) or kwargs.get("background")
+        ):
+            response = await self._achat_responses_api(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                json_schema=json_schema,
+                mcp_servers=mcp_servers,
+                **kwargs,
+            )
+            yield StreamChunk(
+                content=response.message.content,
+                delta=response.message.content,
+                finish_reason=response.finish_reason,
+                usage=response.usage,
+                tool_calls=response.message.tool_calls,
+            )
+            return
 
-        if use_native_mcp:
+        if use_responses_api:
             async for chunk in self._astream_chat_responses_api(
-                messages, temperature, max_tokens, tools, mcp_servers, **kwargs
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                json_schema=json_schema,
+                mcp_servers=mcp_servers,
+                **kwargs,
             ):
                 yield chunk
             return
@@ -624,11 +1021,13 @@ class OpenAIClient(ModelClient):
         try:
             # Offload sync DocumentBlock I/O / PDF extraction off the event loop.
             openai_messages = await asyncio.to_thread(
-                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
+                lambda: [
+                    self.convert_message_to_provider_format(msg) for msg in messages
+                ]
             )
 
-            request_params = {
-                "model": self.model,
+            request_params: Dict[str, Any] = {
+                "model": self._request_model(kwargs),
                 "messages": openai_messages,
                 "stream": True,
                 "stream_options": {"include_usage": True},
@@ -644,11 +1043,12 @@ class OpenAIClient(ModelClient):
                 request_params[get_token_param_name(self.model)] = 16384
             if tools:
                 request_params["tools"] = tools
-                if "tool_choice" not in request_params:
-                    request_params["tool_choice"] = "auto"
+                request_params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
             if json_schema:
-                normalized_schema = normalize_json_schema(json_schema, SchemaMode.STRICT)
+                normalized_schema = normalize_json_schema(
+                    json_schema, SchemaMode.STRICT
+                )
                 request_params["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
@@ -657,11 +1057,19 @@ class OpenAIClient(ModelClient):
                     },
                 }
 
+            if supports_sampling_penalties(self.model):
+                for key in ("frequency_penalty", "presence_penalty"):
+                    if key in kwargs and kwargs[key] is not None:
+                        request_params[key] = kwargs[key]
+            if supports_verbosity(self.model) and kwargs.get("verbosity"):
+                request_params["verbosity"] = kwargs["verbosity"]
+
+            self._copy_allowed_kwargs(
+                request_params, kwargs, _CHAT_COMPLETIONS_PASSTHROUGH
+            )
             self._apply_reasoning_effort(request_params, kwargs, has_tools=bool(tools))
 
-            stream = await asyncio.wait_for(
-                self.client.chat.completions.create(**request_params), timeout=self.timeout
-            )
+            stream = await self._create_chat_completion(request_params)
 
             # Reset stream state for new streaming session
             self._stream_normalizer.reset_state()
@@ -693,16 +1101,18 @@ class OpenAIClient(ModelClient):
         except openai.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)
         except openai.RateLimitError as e:
-            raise RateLimitError(
-                str(e), self.provider_name, original_error=e
-            )
+            raise RateLimitError(str(e), self.provider_name, original_error=e)
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiflowTimeoutError("Streaming request timed out", self.timeout, original_error=e)
+            raise MiiflowTimeoutError(
+                "Streaming request timed out", self.timeout, original_error=e
+            )
         except Exception as e:
             raise ProviderError(
-                f"OpenAI streaming error: {str(e)}", self.provider_name, original_error=e
+                f"OpenAI streaming error: {str(e)}",
+                self.provider_name,
+                original_error=e,
             )
 
     async def _astream_chat_responses_api(
@@ -711,6 +1121,7 @@ class OpenAIClient(ModelClient):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
         mcp_servers: Optional[List["NativeMCPServerConfig"]] = None,
         **kwargs,
     ) -> AsyncIterator[StreamChunk]:
@@ -723,52 +1134,23 @@ class OpenAIClient(ModelClient):
             temperature: Sampling temperature
             max_tokens: Maximum tokens in response
             tools: Regular function tools
+            json_schema: Optional structured-output schema
             mcp_servers: MCP server configurations for native MCP
 
         Yields:
             StreamChunk with delta content and metadata
         """
         try:
-            # Build tools array with MCP servers
-            response_tools = []
-
-            # Add regular function tools - convert from Chat Completions to Responses API format
-            # Chat Completions: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
-            # Responses API:    {"type": "function", "name": ..., "description": ..., "parameters": ...}
-            if tools:
-                for tool in tools:
-                    if tool.get("type") == "function" and "function" in tool:
-                        # Convert nested format to flat format for Responses API
-                        func_def = tool["function"]
-                        response_tools.append({
-                            "type": "function",
-                            "name": func_def.get("name"),
-                            "description": func_def.get("description", ""),
-                            "parameters": func_def.get("parameters", {}),
-                        })
-                    else:
-                        # Already in correct format or different tool type
-                        response_tools.append(tool)
-
-            # Add MCP servers as native MCP tools
-            if mcp_servers:
-                for server in mcp_servers:
-                    response_tools.append(server.to_openai_format())
-
-            # Convert messages to Responses API input format
-            input_items = self._convert_messages_to_responses_input(messages)
-
-            request_params = {
-                "model": self.model,
-                "input": input_items,
-                "stream": True,
-            }
-
-            if response_tools:
-                request_params["tools"] = response_tools
-
-            if max_tokens:
-                request_params["max_output_tokens"] = max_tokens
+            request_params = self._build_responses_request(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                json_schema=json_schema,
+                mcp_servers=mcp_servers,
+                kwargs=kwargs,
+                stream=True,
+            )
 
             # Use Responses API streaming
             stream = await asyncio.wait_for(
@@ -792,6 +1174,7 @@ class OpenAIClient(ModelClient):
 
                 elif event_type == "response.function_call_arguments.done":
                     # Function call complete
+                    sanitized_name = getattr(event, "name", "")
                     yield StreamChunk(
                         content=accumulated_content,
                         delta="",
@@ -801,7 +1184,9 @@ class OpenAIClient(ModelClient):
                                 "id": getattr(event, "call_id", ""),
                                 "type": "function",
                                 "function": {
-                                    "name": getattr(event, "name", ""),
+                                    "name": self._tool_name_mapping.get(
+                                        sanitized_name, sanitized_name
+                                    ),
                                     "arguments": getattr(event, "arguments", "{}"),
                                 },
                             }
@@ -846,13 +1231,13 @@ class OpenAIClient(ModelClient):
         except openai.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)
         except openai.RateLimitError as e:
-            raise RateLimitError(
-                str(e), self.provider_name, original_error=e
-            )
+            raise RateLimitError(str(e), self.provider_name, original_error=e)
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiflowTimeoutError("Streaming request timed out", self.timeout, original_error=e)
+            raise MiiflowTimeoutError(
+                "Streaming request timed out", self.timeout, original_error=e
+            )
         except Exception as e:
             raise ProviderError(
                 f"OpenAI Responses API streaming error: {str(e)}",

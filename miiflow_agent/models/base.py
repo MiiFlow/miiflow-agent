@@ -55,6 +55,7 @@ class ModelConfig:
     supports_tool_call: bool = False
     supports_structured_outputs: bool = False  # Native JSON schema support (e.g., Anthropic)
     reasoning: bool = False
+    api_path: Optional[str] = None  # Override the provider's default API endpoint
 
     # Token limits
     maximum_context_tokens: int = 0

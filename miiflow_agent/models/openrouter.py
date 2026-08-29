@@ -1,201 +1,99 @@
-"""OpenRouter model configurations.
+"""OpenRouter model configurations and model-family whitelist.
 
 OpenRouter is a gateway service that provides access to models from multiple providers.
-All models use OpenAI-compatible API with max_tokens parameter.
+Miiflow intentionally exposes only the DeepSeek, GLM, and Grok families. All models use
+the OpenAI-compatible API with the ``max_tokens`` parameter.
 """
 
+import re
 from typing import Dict
 
 from .base import ModelConfig, ParameterConfig, ParameterType
 
-# OpenRouter provides access to many models via a unified API
-# Pricing varies by the underlying model provider
+# Keep the provider slug and family prefix coupled so a model merely based on one of
+# these families is not admitted. Concrete model slugs may use ``:free``; other
+# OpenRouter routing modifiers (for example ``:online``) are intentionally excluded.
+# Moving aliases use the documented ``~provider/family-latest`` shape. All suffixes are
+# slash-free so another provider or endpoint cannot be smuggled into an allowed prefix.
+_OPENROUTER_MODEL_SUFFIX = r"(?:[-.][a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)?"
+OPENROUTER_MODEL_WHITELIST: tuple[str, ...] = (
+    rf"\A(?:~deepseek(?:-ai)?/deepseek-latest|"
+    rf"deepseek(?:-ai)?/deepseek{_OPENROUTER_MODEL_SUFFIX}(?::free)?)\Z",
+    rf"\A(?:~(?:z-ai|thudm)/glm-latest|(?:z-ai|thudm)/glm{_OPENROUTER_MODEL_SUFFIX}(?::free)?)\Z",
+    rf"\A(?:~x-ai/grok-latest|x-ai/grok{_OPENROUTER_MODEL_SUFFIX}(?::free)?)\Z",
+)
 
+_OPENROUTER_MODEL_WHITELIST_REGEX = tuple(
+    re.compile(pattern) for pattern in OPENROUTER_MODEL_WHITELIST
+)
+
+
+def is_openrouter_model_allowed(model_identifier: str) -> bool:
+    """Return whether an OpenRouter model ID belongs to an allowed family."""
+    if not isinstance(model_identifier, str):
+        return False
+    return any(pattern.fullmatch(model_identifier) for pattern in _OPENROUTER_MODEL_WHITELIST_REGEX)
+
+
+# Fallback configurations used when OpenRouter's model catalog is unavailable. The
+# normal path dynamically imports every catalog entry that passes the whitelist.
 OPENROUTER_MODELS: Dict[str, ModelConfig] = {
-    # OpenAI models via OpenRouter
-    "openai/gpt-4o": ModelConfig(
-        model_identifier="openai/gpt-4o",
-        name="openai/gpt-4o",
-        description="OpenAI GPT-4o via OpenRouter - flagship multimodal model.",
-        support_images=True,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=128000,
-        maximum_output_tokens=16384,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=2.50,
-        output_cost_hint=10.0,
-    ),
-    "openai/gpt-4o-mini": ModelConfig(
-        model_identifier="openai/gpt-4o-mini",
-        name="openai/gpt-4o-mini",
-        description="OpenAI GPT-4o Mini via OpenRouter - fast and efficient.",
-        support_images=True,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=128000,
-        maximum_output_tokens=16384,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.15,
-        output_cost_hint=0.60,
-    ),
-    # Anthropic models via OpenRouter
-    "anthropic/claude-3.5-sonnet": ModelConfig(
-        model_identifier="anthropic/claude-3.5-sonnet",
-        name="anthropic/claude-3.5-sonnet",
-        description="Anthropic Claude 3.5 Sonnet via OpenRouter.",
-        support_images=True,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=200000,
-        maximum_output_tokens=8192,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=3.0,
-        output_cost_hint=15.0,
-    ),
-    "anthropic/claude-3-haiku": ModelConfig(
-        model_identifier="anthropic/claude-3-haiku",
-        name="anthropic/claude-3-haiku",
-        description="Anthropic Claude 3 Haiku via OpenRouter - fast and affordable.",
-        support_images=True,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=200000,
-        maximum_output_tokens=4096,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.25,
-        output_cost_hint=1.25,
-    ),
-    # Google models via OpenRouter
-    "google/gemini-pro-1.5": ModelConfig(
-        model_identifier="google/gemini-pro-1.5",
-        name="google/gemini-pro-1.5",
-        description="Google Gemini Pro 1.5 via OpenRouter.",
-        support_images=True,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=1000000,
-        maximum_output_tokens=8192,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=1.25,
-        output_cost_hint=5.0,
-    ),
-    "google/gemini-flash-1.5": ModelConfig(
-        model_identifier="google/gemini-flash-1.5",
-        name="google/gemini-flash-1.5",
-        description="Google Gemini Flash 1.5 via OpenRouter - fast and efficient.",
-        support_images=True,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=1000000,
-        maximum_output_tokens=8192,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.075,
-        output_cost_hint=0.30,
-    ),
-    # Meta Llama models
-    "meta-llama/llama-3.1-405b-instruct": ModelConfig(
-        model_identifier="meta-llama/llama-3.1-405b-instruct",
-        name="meta-llama/llama-3.1-405b-instruct",
-        description="Meta Llama 3.1 405B via OpenRouter - largest open model.",
+    "deepseek/deepseek-v4-pro-0813": ModelConfig(
+        model_identifier="deepseek/deepseek-v4-pro-0813",
+        name="DeepSeek V4 Pro 0813",
+        description="DeepSeek V4 Pro 0813 via OpenRouter.",
         support_images=False,
         support_files=False,
         support_streaming=True,
         supports_json_mode=True,
         supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=4096,
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=1048576,
+        maximum_output_tokens=384000,
         token_param_name="max_tokens",
         supports_temperature=True,
-        input_cost_hint=2.70,
-        output_cost_hint=2.70,
+        input_cost_hint=0.66,
+        output_cost_hint=1.98,
+        cache_read_cost_hint=0.022,
     ),
-    "meta-llama/llama-3.1-70b-instruct": ModelConfig(
-        model_identifier="meta-llama/llama-3.1-70b-instruct",
-        name="meta-llama/llama-3.1-70b-instruct",
-        description="Meta Llama 3.1 70B via OpenRouter.",
+    "z-ai/glm-5.3": ModelConfig(
+        model_identifier="z-ai/glm-5.3",
+        name="GLM 5.3",
+        description="Z.ai GLM 5.3 via OpenRouter.",
         support_images=False,
         support_files=False,
         support_streaming=True,
         supports_json_mode=True,
         supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=4096,
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=1310720,
+        maximum_output_tokens=131072,
         token_param_name="max_tokens",
         supports_temperature=True,
-        input_cost_hint=0.52,
-        output_cost_hint=0.75,
+        input_cost_hint=1.40,
+        output_cost_hint=4.40,
+        cache_read_cost_hint=0.26,
     ),
-    "meta-llama/llama-3.1-8b-instruct": ModelConfig(
-        model_identifier="meta-llama/llama-3.1-8b-instruct",
-        name="meta-llama/llama-3.1-8b-instruct",
-        description="Meta Llama 3.1 8B via OpenRouter - fast and efficient.",
-        support_images=False,
-        support_files=False,
+    "x-ai/grok-4.6": ModelConfig(
+        model_identifier="x-ai/grok-4.6",
+        name="Grok 4.6",
+        description="xAI Grok 4.6 via OpenRouter.",
+        support_images=True,
+        support_files=True,
         support_streaming=True,
         supports_json_mode=True,
         supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=4096,
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=500000,
+        maximum_output_tokens=450000,
         token_param_name="max_tokens",
         supports_temperature=True,
-        input_cost_hint=0.055,
-        output_cost_hint=0.055,
-    ),
-    # Free models for testing
-    "meta-llama/llama-3.2-3b-instruct:free": ModelConfig(
-        model_identifier="meta-llama/llama-3.2-3b-instruct:free",
-        name="meta-llama/llama-3.2-3b-instruct:free",
-        description="Free Llama 3.2 3B model for testing.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=False,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=4096,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.0,
-        output_cost_hint=0.0,
+        input_cost_hint=2.0,
+        output_cost_hint=6.0,
+        cache_read_cost_hint=0.5,
     ),
 }
 
@@ -228,7 +126,7 @@ OPENROUTER_PARAMETERS: list[ParameterConfig] = [
         parameter_type=ParameterType.NUMBER,
         default_value=4096,
         min_value=1,
-        max_value=16384,
+        max_value=450000,
         step=4,
     ),
     ParameterConfig(

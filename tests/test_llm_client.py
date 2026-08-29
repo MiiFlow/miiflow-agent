@@ -169,7 +169,7 @@ class TestLLMClient:
             ("anthropic", "claude-3-haiku-20240307"),
             ("gemini", "gemini-1.5-flash"),
             ("xai", "grok-beta"),
-            ("openrouter", "meta-llama/llama-3.2-3b-instruct:free"),
+            ("openrouter", "deepseek/deepseek-r1"),
             ("ollama", "llama3.1:8b"),
         ]
 

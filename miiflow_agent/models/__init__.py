@@ -38,7 +38,12 @@ from .openai import get_token_param_name as openai_get_token_param_name
 from .openai import supports_temperature as openai_supports_temperature
 
 # OpenRouter
-from .openrouter import OPENROUTER_MODELS, OPENROUTER_PARAMETERS
+from .openrouter import (
+    OPENROUTER_MODEL_WHITELIST,
+    OPENROUTER_MODELS,
+    OPENROUTER_PARAMETERS,
+    is_openrouter_model_allowed,
+)
 
 # xAI
 from .xai import XAI_MODELS, XAI_PARAMETERS
@@ -78,8 +83,10 @@ __all__ = [
     "OLLAMA_PARAMETERS",
     "ollama_get_token_param_name",
     # OpenRouter
+    "OPENROUTER_MODEL_WHITELIST",
     "OPENROUTER_MODELS",
     "OPENROUTER_PARAMETERS",
+    "is_openrouter_model_allowed",
     # xAI
     "XAI_MODELS",
     "XAI_PARAMETERS",

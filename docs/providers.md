@@ -64,14 +64,14 @@ client = LLMClient.create("groq", model="llama-3.3-70b-versatile")
 ## OpenRouter
 
 ```python
-client = LLMClient.create("openrouter", model="anthropic/claude-3.5-sonnet")
+client = LLMClient.create("openrouter", model="deepseek/deepseek-r1")
 ```
 
 **API Key:** `OPENROUTER_API_KEY`
 
-**Example Models:** `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`, `google/gemini-pro-1.5`, `meta-llama/llama-3.3-70b-instruct`
+**Allowed Models:** OpenRouter IDs in the DeepSeek (`deepseek/deepseek-*` or `deepseek-ai/deepseek-*`), GLM (`z-ai/glm-*` or legacy `thudm/glm-*`), and Grok (`x-ai/grok-*`) families. Versioned models, `:free` variants, and OpenRouter's `~...-latest` aliases are accepted.
 
-**Features:** 200+ models, free tier
+**Features:** Streaming, tool calling, structured output, and vision when supported by the selected model
 
 ## Mistral
 

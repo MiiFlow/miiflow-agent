@@ -88,7 +88,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.6": ModelConfig(
         model_identifier="claude-opus-4-6",
         name="claude-opus-4.6",
-        description="Legacy — succeeded by Claude Opus 4.7 (April 2026). Supports adaptive thinking and 128K max output tokens. 1M context window.",
+        description="Legacy — succeeded by Claude Opus 4.7 (April 2026). The oldest model here that still accepts the sampling parameters, and the last before manual extended thinking was removed (it still works but is deprecated). Effort tops out at max — it predates the xhigh level and rejects it. 128K max output tokens, 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -108,7 +108,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-5": ModelConfig(
         model_identifier="claude-sonnet-5",
         name="claude-sonnet-5",
-        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. 1M context window. Priced at $2/$10 per 1M input/output tokens: the launch rate, announced as introductory through August 31, 2026, is now the standard price — Anthropic cancelled the scheduled September 1, 2026 increase to $3/$15.",
+        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. Supports all five effort levels. 1M context window. $2/$10 per 1M input/output tokens is the standard price — the launch rate was announced as introductory through August 31, 2026, and Anthropic then cancelled the scheduled September 1, 2026 increase to $3/$15.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -128,7 +128,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-4.6": ModelConfig(
         model_identifier="claude-sonnet-4-6",
         name="claude-sonnet-4.6",
-        description="Legacy — succeeded by Claude Sonnet 5 (June 2026). High-performance model with excellent balance of intelligence, speed, and cost. Features extended thinking, adaptive thinking, and structured outputs. 1M context window.",
+        description="Legacy — succeeded by Claude Sonnet 5 (June 2026), which is both stronger and cheaper ($2/$10 vs $3/$15), so this is kept for pinned workloads only. Supports adaptive thinking, structured outputs and the sampling parameters; manual extended thinking still works but is deprecated. Effort tops out at max — it predates the xhigh level and rejects it. 1M context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -148,13 +148,17 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-haiku-4.5": ModelConfig(
         model_identifier="claude-haiku-4-5-20251001",
         name="claude-haiku-4.5",
-        description="Anthropic's fastest and most intelligent Haiku model. Delivers Sonnet-4-level coding performance at one-third the cost and more than twice the speed.",
+        description="Anthropic's fastest model with near-frontier intelligence, delivering Sonnet-4-level coding performance at one-third the cost and more than twice the speed. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window; retirement not sooner than October 15, 2026.",
         support_images=True,
         support_files=True,
         support_streaming=True,
         supports_json_mode=True,
         supports_tool_call=True,
-        supports_structured_outputs=False,
+        # Native structured outputs are supported on Haiku 4.5 (Claude API and
+        # the legacy Bedrock endpoint). This was False here, which silently
+        # routed every Haiku 4.5 schema request through the loosened-schema
+        # fallback instead of the strict native format.
+        supports_structured_outputs=True,
         reasoning=True,
         maximum_context_tokens=200000,
         maximum_output_tokens=64000,
@@ -166,6 +170,31 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         cache_write_cost_hint=1.25,  # 1.25x input (5-min TTL)
     ),
 }
+
+
+def _resolve_model_name(model: str) -> Optional[str]:
+    """Resolve any spelling of a model to its key in ``ANTHROPIC_MODELS``.
+
+    One implementation of the match, because every per-model capability lookup
+    below needs the same three tiers and a fourth copy of it is how they drift:
+    the catalog key (``claude-sonnet-4.6``), the API identifier
+    (``claude-sonnet-4-6``), then a substring match so a Bedrock inference
+    profile (``us.anthropic.claude-sonnet-4-6``) or a dated snapshot resolves
+    too. Returns None for a model this catalog does not know; each caller owns
+    what that means, since the safe default differs per capability.
+    """
+    if not model:
+        return None
+    if model in ANTHROPIC_MODELS:
+        return model
+    for name, config in ANTHROPIC_MODELS.items():
+        if config.model_identifier == model:
+            return name
+    model_lower = model.lower()
+    for name, config in ANTHROPIC_MODELS.items():
+        if name in model_lower or config.model_identifier in model_lower:
+            return name
+    return None
 
 
 # Anthropic deprecated `temperature` (and `top_p` / `top_k`) on Claude Opus 4.7
@@ -214,6 +243,11 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
 ]
 
 
+# Models that reject `thinking: {"type": "enabled", "budget_tokens": N}` with a
+# 400. Claude 4.7 and later removed the manual extended-thinking mode entirely;
+# Opus 4.6 and Sonnet 4.6 still accept it but Anthropic marks it deprecated
+# there, and Haiku 4.5 is extended-thinking ONLY (it 400s on adaptive), so both
+# stay out of this set and keep the parameter.
 _NO_EXTENDED_THINKING = {
     "claude-fable-5",
     "claude-opus-5",
@@ -241,27 +275,43 @@ _THINKING_ON_BY_DEFAULT_DISABLEABLE = {
 # Haiku 4.5 and older models 400 on the parameter.
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
-_SUPPORTS_EFFORT = {
-    "claude-fable-5",
-    "claude-opus-5",
-    "claude-opus-4.8",
-    "claude-opus-4.7",
-    "claude-opus-4.6",
-    "claude-sonnet-5",
-    "claude-sonnet-4.6",
+# The levels are NOT uniform across the models that accept the parameter, so a
+# single flat tuple is not the contract: `xhigh` is a newer level, and Opus 4.6
+# / Sonnet 4.6 support `max` but return a 400 on `xhigh`. This map is the wire
+# contract per model; EFFORT_LEVELS above stays the validation vocabulary a
+# caller may configure, so one config survives a model swap and the per-model
+# projection happens at request time (see `effort_levels`).
+_EFFORT_LEVELS_BY_MODEL: Dict[str, tuple] = {
+    "claude-fable-5": EFFORT_LEVELS,
+    "claude-opus-5": EFFORT_LEVELS,
+    "claude-opus-4.8": EFFORT_LEVELS,
+    "claude-opus-4.7": EFFORT_LEVELS,
+    "claude-sonnet-5": EFFORT_LEVELS,
+    "claude-opus-4.6": ("low", "medium", "high", "max"),
+    "claude-sonnet-4.6": ("low", "medium", "high", "max"),
 }
+
+# Models that reject `thinking: {"type": "disabled"}` once effort is `xhigh` or
+# `max` — the combination is a 400, enforced per request. Anthropic documents
+# the restriction as applying to Claude Opus 5 and later; Sonnet 5 predates it
+# and accepts "disabled" at every level.
+_DISABLED_REJECTED_AT_EFFORT = frozenset({"xhigh", "max"})
+_DISABLED_EFFORT_GATED_MODELS = frozenset({"claude-opus-5"})
+
+
+def effort_levels(model: str) -> tuple:
+    """The `output_config.effort` values `model` accepts, or `()` if none."""
+    return _EFFORT_LEVELS_BY_MODEL.get(_resolve_model_name(model) or "", ())
 
 
 def supports_effort(model: str) -> bool:
     """True when `model` accepts `output_config: {"effort": ...}`."""
-    model_lower = (model or "").lower()
-    for name in _SUPPORTS_EFFORT:
-        if name in model_lower or ANTHROPIC_MODELS[name].model_identifier in model_lower:
-            return True
-    return False
+    return bool(effort_levels(model))
 
 
-def thinking_disable_param(model: str) -> Optional[Dict[str, str]]:
+def thinking_disable_param(
+    model: str, effort: Optional[str] = None
+) -> Optional[Dict[str, str]]:
     """The `thinking` request value that turns thinking OFF for `model`, or None.
 
     Callers that want a short, deterministic, cheap completion (a compaction
@@ -269,14 +319,21 @@ def thinking_disable_param(model: str) -> Optional[Dict[str, str]]:
     thinking-by-default models: otherwise adaptive thinking runs first and
     `max_tokens` — a hard cap on thinking PLUS text — can be consumed entirely
     by the thinking block, returning `stop_reason=max_tokens` with no text at
-    all. Returns None where nothing needs sending (defaults to off) or where
-    the API would reject "disabled" (Fable 5).
+    all. Returns None where nothing needs sending (defaults to off), where the
+    API would reject "disabled" outright (Fable 5), or where the model rejects
+    it at the effort level this request carries (Opus 5 at `xhigh` / `max`) —
+    hence `effort`: the answer depends on the whole request, not the model
+    alone, and returning the parameter without it is a guaranteed 400.
     """
-    model_lower = (model or "").lower()
-    for name in _THINKING_ON_BY_DEFAULT_DISABLEABLE:
-        if name in model_lower or ANTHROPIC_MODELS[name].model_identifier in model_lower:
-            return {"type": "disabled"}
-    return None
+    name = _resolve_model_name(model)
+    if name not in _THINKING_ON_BY_DEFAULT_DISABLEABLE:
+        return None
+    if (
+        name in _DISABLED_EFFORT_GATED_MODELS
+        and (effort or "").lower() in _DISABLED_REJECTED_AT_EFFORT
+    ):
+        return None
+    return {"type": "disabled"}
 
 
 def _get_thinking_models() -> list[str]:
@@ -316,21 +373,10 @@ def supports_structured_outputs(model: str) -> bool:
     Returns:
         True if model supports native structured outputs
     """
-    # Check exact match first
-    if model in ANTHROPIC_MODELS:
-        return ANTHROPIC_MODELS[model].supports_structured_outputs
-
-    # Check if model identifier matches any config's model_identifier
-    for config in ANTHROPIC_MODELS.values():
-        if config.model_identifier == model:
-            return config.supports_structured_outputs
-
-    # Check partial match (for versioned models like claude-sonnet-4-6)
-    for name, config in ANTHROPIC_MODELS.items():
-        if name in model or config.model_identifier in model:
-            return config.supports_structured_outputs
-
-    return False
+    name = _resolve_model_name(model)
+    if name is None:
+        return False
+    return ANTHROPIC_MODELS[name].supports_structured_outputs
 
 
 def supports_thinking(model: str) -> bool:
@@ -346,25 +392,10 @@ def supports_thinking(model: str) -> bool:
         True if model supports the extended-thinking parameter
     """
 
-    def _check(name: str, config: ModelConfig) -> bool:
-        return config.reasoning and name not in _NO_EXTENDED_THINKING
-
-    # Check exact match first
-    if model in ANTHROPIC_MODELS:
-        return _check(model, ANTHROPIC_MODELS[model])
-
-    # Check if model identifier matches any config's model_identifier
-    for name, config in ANTHROPIC_MODELS.items():
-        if config.model_identifier == model:
-            return _check(name, config)
-
-    # Check partial match
-    model_lower = model.lower()
-    for name, config in ANTHROPIC_MODELS.items():
-        if name in model_lower or config.model_identifier in model_lower:
-            return _check(name, config)
-
-    return False
+    name = _resolve_model_name(model)
+    if name is None:
+        return False
+    return ANTHROPIC_MODELS[name].reasoning and name not in _NO_EXTENDED_THINKING
 
 
 def supports_temperature(model: str) -> bool:
@@ -382,16 +413,10 @@ def supports_temperature(model: str) -> bool:
         True when the model accepts `temperature`. Defaults to True for
         unknown models so behavior matches the previous implicit default.
     """
-    if model in ANTHROPIC_MODELS:
-        return ANTHROPIC_MODELS[model].supports_temperature
-    for config in ANTHROPIC_MODELS.values():
-        if config.model_identifier == model:
-            return config.supports_temperature
-    model_lower = model.lower()
-    for name, config in ANTHROPIC_MODELS.items():
-        if name in model_lower or config.model_identifier in model_lower:
-            return config.supports_temperature
-    return True
+    name = _resolve_model_name(model)
+    if name is None:
+        return True
+    return ANTHROPIC_MODELS[name].supports_temperature
 
 
 def supports_native_mcp(model: str) -> bool:
@@ -409,18 +434,8 @@ def supports_native_mcp(model: str) -> bool:
         True if model supports native MCP (all Claude models do)
     """
     # All Claude models support native MCP via beta API
-    # Check if it's a known Claude model
-    if model in ANTHROPIC_MODELS:
+    if _resolve_model_name(model) is not None:
         return True
 
-    # Check if model identifier matches any config
-    for config in ANTHROPIC_MODELS.values():
-        if config.model_identifier == model:
-            return True
-
-    # Check partial match for Claude models
-    model_lower = model.lower()
-    if "claude" in model_lower:
-        return True
-
-    return False
+    # An unknown model is still a Claude model if it is named like one.
+    return "claude" in (model or "").lower()

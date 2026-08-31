@@ -76,7 +76,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.5-flash": ModelConfig(
         model_identifier="models/gemini-3.5-flash",
         name="gemini-3.5-flash",
-        description="Legacy — succeeded by Gemini 3.6 Flash (July 2026). Strong coding and agentic performance at Flash-tier pricing. 1M token context window.",
+        description="Legacy — succeeded by Gemini 3.6 Flash (July 2026). No longer a cost saving either: at $1.50/$9.00 it is priced well above both newer Flash generations, which run at $0.75/$3.75 through December 31, 2026. Kept for pinned workloads only; it remains the last Flash generation to honour temperature/top_p/top_k. 1M token context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,

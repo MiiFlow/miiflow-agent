@@ -8,6 +8,19 @@ from ..core.client import ModelClient
 from ..models.anthropic import supports_structured_outputs
 from .anthropic_client import AnthropicClient
 
+# Claude models Bedrock serves through its Messages-API endpoint (Opus 4.7 and
+# later). That endpoint does not offer structured outputs, unlike the legacy
+# ARN-versioned integration that serves Opus 4.6 and earlier. Spelled as API
+# identifiers so a match works against any Bedrock ID shape.
+_NO_STRUCTURED_OUTPUTS_ON_BEDROCK = (
+    "claude-fable-5",
+    "claude-mythos",
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-sonnet-5",
+)
+
 
 class BedrockClient(AnthropicClient):
     """
@@ -32,9 +45,14 @@ class BedrockClient(AnthropicClient):
         Initialize Bedrock client with AWS credentials.
 
         Args:
-            model: Bedrock inference profile ID (e.g., "us.anthropic.claude-sonnet-4-6-v1:0")
-                   IMPORTANT: Must use inference profile IDs (with region prefix like "us.")
-                   for on-demand throughput, not base model IDs.
+            model: Bedrock model ID. The shape depends on which Bedrock
+                   integration serves the model: Opus 4.6 and earlier need a
+                   cross-region inference profile ID (region prefix, e.g.
+                   "us.anthropic.claude-sonnet-4-6") because on-demand
+                   throughput is refused on their base IDs, while Opus 4.7 and
+                   later are served by the Messages-API endpoint and take the
+                   plain provider-prefixed ID ("anthropic.claude-opus-5"),
+                   which has no inference profile to name.
             aws_access_key_id: AWS Access Key ID
             aws_secret_access_key: AWS Secret Access Key
             region_name: AWS region (e.g., "us-east-1", "us-west-2")
@@ -62,9 +80,22 @@ class BedrockClient(AnthropicClient):
         """
         Check if the current Bedrock model supports native structured outputs.
 
-        Bedrock model IDs follow pattern: "us.anthropic.claude-sonnet-4-6-v1:0"
-        We check the base model name against supported models.
+        Support here is a property of the PLATFORM as well as the model, so the
+        first-party answer is not reusable on its own. Bedrock's legacy
+        ARN-versioned integration (Opus 4.6 and earlier: Opus 4.6, Sonnet 4.6,
+        Sonnet 4.5, Opus 4.5, Haiku 4.5) supports structured outputs; the newer
+        Messages-API endpoint that serves Opus 4.7 and later — Fable 5, Opus 5,
+        Opus 4.8, Opus 4.7, Sonnet 5 — does not, and a request carrying the
+        format is rejected there even though the same model accepts it on the
+        Claude API. So a model must clear BOTH gates.
+
+        Bedrock model IDs are matched by substring because they carry a
+        provider prefix and, on the legacy path, a regional inference-profile
+        prefix and version suffix ("us.anthropic.claude-sonnet-4-6").
         """
+        model_lower = (self.model or "").lower()
+        if any(name in model_lower for name in _NO_STRUCTURED_OUTPUTS_ON_BEDROCK):
+            return False
         return supports_structured_outputs(self.model)
 
     def _supports_native_mcp(self) -> bool:

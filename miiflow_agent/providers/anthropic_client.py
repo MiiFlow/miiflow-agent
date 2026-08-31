@@ -18,7 +18,7 @@ from ..core.stream_normalizer import AnthropicStreamNormalizer, extract_mcp_resu
 from ..core.streaming import StreamChunk
 from ..models.anthropic import (
     EFFORT_LEVELS,
-    supports_effort,
+    effort_levels,
     supports_native_mcp,
     supports_structured_outputs,
     supports_temperature,
@@ -41,7 +41,7 @@ class AnthropicClient(ModelClient):
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
         # `effort` scales adaptive thinking on the models that think by default
-        # (`output_config.effort`; see models.anthropic.supports_effort). It is a
+        # (`output_config.effort`; see models.anthropic.effort_levels). It is a
         # per-client setting rather than a per-call kwarg because it arrives the
         # way `max_tokens` does — from the assistant's stored model_config, which
         # is spread into the client constructor — and an unhandled key there
@@ -92,8 +92,25 @@ class AnthropicClient(ModelClient):
         same object for `format`) rather than replacing it. Silently skipped
         on models that would 400 on the parameter, so one config can be
         shared across model swaps.
+
+        The per-model level list matters as much as per-model support: `xhigh`
+        is newer than `max`, so Opus 4.6 and Sonnet 4.6 accept `max` and 400 on
+        `xhigh`. An unsupported level is dropped rather than remapped — omitting
+        `effort` runs the model at its documented default of `high`, which is
+        the nearest honest behavior and never a surprise cost increase.
         """
-        if not self.effort or not supports_effort(self.model):
+        if not self.effort:
+            return
+        levels = effort_levels(self.model)
+        if not levels:
+            return
+        if self.effort not in levels:
+            logger.debug(
+                "Dropping effort=%r for %s: model accepts %s",
+                self.effort,
+                self.model,
+                levels,
+            )
             return
         output_config = request_params.get("output_config")
         if not isinstance(output_config, dict):
@@ -1333,7 +1350,7 @@ class AnthropicClient(ModelClient):
                     f"Anthropic tools parameter:\n{json.dumps(tools, indent=2, default=str)}"
                 )
             elif thinking_disabled and not thinking_enabled:
-                disable = thinking_disable_param(self.model)
+                disable = thinking_disable_param(self.model, self.effort)
                 if disable is not None:
                     request_params["thinking"] = disable
 
@@ -1681,7 +1698,7 @@ class AnthropicClient(ModelClient):
                     f"with budget_tokens={budget_tokens}"
                 )
             elif thinking_disabled and not thinking_enabled:
-                disable = thinking_disable_param(self.model)
+                disable = thinking_disable_param(self.model, self.effort)
                 if disable is not None:
                     request_params["thinking"] = disable
 

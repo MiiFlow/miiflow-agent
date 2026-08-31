@@ -616,6 +616,56 @@ class TestEffort:
             AnthropicClient(model="claude-sonnet-5", api_key="test-key", effort="turbo")
 
     @pytest.mark.asyncio
+    async def test_xhigh_is_dropped_on_a_model_that_only_reaches_max(
+        self, sample_messages, mock_anthropic_response
+    ):
+        """`xhigh` is newer than `max`: Sonnet 4.6 supports effort and `max`, and
+        400s on `xhigh`. Support for the PARAMETER is not support for the LEVEL."""
+        client = AnthropicClient(
+            model="claude-sonnet-4-6", api_key="test-key", effort="xhigh"
+        )
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = mock_anthropic_response
+            await client.achat(sample_messages)
+            assert "output_config" not in mock_create.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_max_still_reaches_a_model_that_rejects_only_xhigh(
+        self, sample_messages, mock_anthropic_response
+    ):
+        client = AnthropicClient(
+            model="claude-sonnet-4-6", api_key="test-key", effort="max"
+        )
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = mock_anthropic_response
+            await client.achat(sample_messages)
+            assert mock_create.call_args.kwargs["output_config"] == {"effort": "max"}
+
+    @pytest.mark.asyncio
+    async def test_thinking_is_not_disabled_on_opus_5_at_xhigh_effort(
+        self, sample_messages, mock_anthropic_response
+    ):
+        """Opus 5 rejects `thinking: disabled` combined with xhigh/max effort, so
+        the pair must never both reach the wire — the request would be a 400."""
+        client = AnthropicClient(model="claude-opus-5", api_key="test-key", effort="xhigh")
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = mock_anthropic_response
+            await client.achat(sample_messages, thinking_disabled=True)
+            kwargs = mock_create.call_args.kwargs
+            assert "thinking" not in kwargs
+            assert kwargs["output_config"] == {"effort": "xhigh"}
+
+    @pytest.mark.asyncio
+    async def test_thinking_is_still_disabled_on_opus_5_at_medium_effort(
+        self, sample_messages, mock_anthropic_response
+    ):
+        client = AnthropicClient(model="claude-opus-5", api_key="test-key", effort="medium")
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = mock_anthropic_response
+            await client.achat(sample_messages, thinking_disabled=True)
+            assert mock_create.call_args.kwargs["thinking"] == {"type": "disabled"}
+
+    @pytest.mark.asyncio
     async def test_no_effort_means_no_output_config(self, sample_messages, mock_anthropic_response):
         client = AnthropicClient(model="claude-sonnet-5", api_key="test-key")
         with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:

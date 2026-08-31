@@ -9,6 +9,7 @@ that can be shared between the SDK and server implementations.
 
 # Anthropic
 from .anthropic import ANTHROPIC_MODELS, ANTHROPIC_PARAMETERS
+from .anthropic import effort_levels as anthropic_effort_levels
 from .anthropic import supports_structured_outputs as anthropic_supports_structured_outputs
 from .anthropic import supports_thinking as anthropic_supports_thinking
 from .base import ModelConfig, ParameterConfig, ParameterType
@@ -61,6 +62,7 @@ __all__ = [
     # Anthropic
     "ANTHROPIC_MODELS",
     "ANTHROPIC_PARAMETERS",
+    "anthropic_effort_levels",
     "anthropic_supports_structured_outputs",
     "anthropic_supports_thinking",
     # Google

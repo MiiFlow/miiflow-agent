@@ -766,13 +766,40 @@ class OpenAIClient(ModelClient):
                     }
                 )
             elif isinstance(block, DocumentBlock):
+                # `filename` is NOT a free-standing label on an input_file --
+                # it is the name that goes WITH inline bytes, and the Responses
+                # API rejects it beside any other file source:
+                #
+                #   400 mutually_exclusive_parameters -- "Ensure you are only
+                #   providing one of: 'file_id' or 'filename'."
+                #
+                # (Verified against the live API on 2026-08-31: `file_url` +
+                # `filename` 400s with exactly that message; `file_url` alone
+                # succeeds. The message names `file_id` whatever the other
+                # source actually was, which is why it reads as unrelated to
+                # the request we sent.) So the filename rides with `file_data`
+                # and only with `file_data`.
+                #
+                # For a URL it becomes a text label instead of being dropped:
+                # the URL is a storage key, not the name the user knows the
+                # file by (`enhanced_response_generator` fills `filename` from
+                # `attachment.original_filename` precisely because the two
+                # differ), and the Anthropic and Gemini paths already label
+                # documents this way.
                 file_part: Dict[str, Any] = {"type": "input_file"}
                 if block.document_url.startswith("data:"):
                     file_part["file_data"] = block.document_url
+                    if block.filename:
+                        file_part["filename"] = block.filename
                 else:
                     file_part["file_url"] = block.document_url
-                if block.filename:
-                    file_part["filename"] = block.filename
+                    if block.filename:
+                        content_parts.append(
+                            {
+                                "type": "input_text",
+                                "text": f"[Document: {block.filename}]",
+                            }
+                        )
                 content_parts.append(file_part)
             elif isinstance(block, VideoBlock):
                 content_parts.append(

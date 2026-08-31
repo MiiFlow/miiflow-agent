@@ -89,17 +89,41 @@ def is_tool_validation_error(exc: BaseException) -> bool:
     return bool(getattr(exc, "is_tool_validation_error", False))
 
 
+def is_declared_tool_failure(exc: BaseException) -> bool:
+    """True when a tool DECLARED this failure — nothing of ours malfunctioned.
+
+    Two markers say so, and they are deliberately separate concepts:
+
+    * ``is_tool_validation_error`` — the MODEL must fix its call. Also steers
+      the recovery ladder, so its meaning must not widen.
+    * a non-empty ``remedy`` — a PERSON must fix something outside the code:
+      a key without the right scope, a connection missing a required field, a
+      suspended ad account. Set by the tool that already knows the fix, and
+      forwarded to the model by ``_tool_error_payload``.
+
+    Neither is a defect, and neither should mint an Error Tracking issue. A
+    failure we can already explain does not need a human to come and diagnose
+    it; one we cannot is exactly what an issue is for. Only *logging* reads
+    this union — nothing about retries or recovery consults it.
+    """
+    if is_tool_validation_error(exc):
+        return True
+    remedy = getattr(exc, "remedy", None)
+    return isinstance(remedy, str) and bool(remedy.strip())
+
+
 def log_tool_failure(logger, message: str, exc: BaseException) -> None:
     """Log a failed tool call at the right severity.
 
     ``logger.exception`` for genuine malfunctions (traceback attached, so the
     PostHog log bridge captures it as an ``$exception`` and Error Tracking
-    alerts). ``logger.warning`` — no traceback — for declared validation
-    rejections, which the model routinely commits and self-corrects on the
-    next turn (e.g. every malformed GAQL query); reporting those as
-    exceptions pages on-call for model typos.
+    alerts). ``logger.warning`` — no traceback — for failures the tool
+    declared (see ``is_declared_tool_failure``): a malformed GAQL query the
+    model self-corrects on the next turn, a Triple Whale key without the
+    Summary Page scope. Reporting those as exceptions pages on-call for model
+    typos and for customer configuration.
     """
-    if is_tool_validation_error(exc):
-        logger.warning("%s [tool_validation_error=%s]", message, type(exc).__name__)
+    if is_declared_tool_failure(exc):
+        logger.warning("%s [declared_tool_failure=%s]", message, type(exc).__name__)
     else:
         logger.exception(message)

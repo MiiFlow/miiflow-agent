@@ -714,18 +714,27 @@ class TestOpenAIRequestMapping:
         ]
 
         converted = client._convert_messages_to_responses_input(messages)
+        # No `filename` beside `file_url`: the Responses API 400s on the pair
+        # ("mutually exclusive parameters ... 'file_id' or 'filename'"), which
+        # is what killed every turn carrying a URL-backed PDF. The name is not
+        # lost — it becomes the label ahead of the file.
         assert converted[0]["content"][1] == {
-            "type": "input_file",
-            "file_url": "https://example.com/brief.pdf",
-            "filename": "brief.pdf",
+            "type": "input_text",
+            "text": "[Document: brief.pdf]",
         }
         assert converted[0]["content"][2] == {
+            "type": "input_file",
+            "file_url": "https://example.com/brief.pdf",
+        }
+        # Inline bytes keep `filename` — that is the one source it pairs with.
+        assert converted[0]["content"][3] == {
             "type": "input_file",
             "file_data": "data:application/pdf;base64,JVBERi0x",
             "filename": "inline.pdf",
         }
-        assert "https://example.com/demo.mp4" in converted[0]["content"][3]["text"]
+        assert "https://example.com/demo.mp4" in converted[0]["content"][4]["text"]
         assert converted[1]["arguments"] == '{"q": "x"}'
+        # An unnamed URL document gets no label and no `filename`.
         assert converted[2]["output"] == [
             {"type": "input_text", "text": "tool text"},
             {"type": "input_file", "file_url": "https://example.com/tool.pdf"},

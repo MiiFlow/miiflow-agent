@@ -18,6 +18,7 @@ import pytest
 
 from miiflow_agent.core.agent import RunContext
 from miiflow_agent.core.tools import ToolRegistry, tool
+from miiflow_agent.core.tools.exceptions import is_declared_tool_failure
 
 
 class _QueryShapeError(Exception):
@@ -132,3 +133,55 @@ async def test_flag_is_stamped_on_every_function_tool_except_branch(caplog):
     assert all(r.levelno < logging.ERROR for r in recs), [
         (r.levelname, r.getMessage()) for r in recs
     ]
+
+
+class _NeedsAScope(Exception):
+    """A failure whose fix a PERSON must apply, and which already says so.
+
+    Triple Whale's 403 is the live example: the key is real and simply not
+    entitled to this shop, and only Triple Whale's own console can change
+    that. Nothing in our code is broken, so an Error Tracking issue for it
+    pages on-call for a customer's connection settings.
+    """
+
+    remedy = "Regenerate the key in Triple Whale > Data > APIs."
+
+
+@tool(description="Fails with a remedy the operator must apply")
+async def unentitled(ctx: RunContext, query: str) -> dict:
+    raise _NeedsAScope("Access Denied")
+
+
+@pytest.mark.asyncio
+async def test_a_failure_carrying_a_remedy_is_not_an_error_tracking_issue(caplog):
+    registry = ToolRegistry()
+    registry.register(unentitled)
+
+    with caplog.at_level(logging.DEBUG):
+        result = await registry.execute_safe_with_context(
+            "unentitled", object(), query="SELECT 1"
+        )
+
+    assert not result.success
+    # Logging only. `remedy` must NOT widen `is_validation_error`, which also
+    # steers the recovery ladder — the model cannot fix a missing scope by
+    # rewriting its call, so this is not a "fix your input" rejection.
+    assert result.metadata["is_validation_error"] is False
+
+    recs = [r for r in caplog.records if "unentitled" in r.getMessage()]
+    assert recs, "the failure must still be logged"
+    assert all(r.levelno < logging.ERROR for r in recs), [
+        (r.levelname, r.getMessage()) for r in recs
+    ]
+    assert all(r.exc_info is None for r in recs)
+
+
+def test_a_blank_remedy_is_not_a_declaration():
+    """`remedy = ""` is an attribute nobody filled in, not a diagnosis."""
+
+    class _Blank(Exception):
+        remedy = "   "
+
+    assert not is_declared_tool_failure(_Blank("boom"))
+    assert is_declared_tool_failure(_NeedsAScope("Access Denied"))
+    assert not is_declared_tool_failure(RuntimeError("connection reset"))

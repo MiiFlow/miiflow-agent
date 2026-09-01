@@ -24,6 +24,7 @@ from ..models.anthropic import (
     supports_temperature,
     supports_thinking,
     thinking_disable_param,
+    thinks_by_default,
 )
 from ..utils.image import data_uri_to_base64_and_mimetype
 
@@ -1353,6 +1354,20 @@ class AnthropicClient(ModelClient):
                 disable = thinking_disable_param(self.model, self.effort)
                 if disable is not None:
                     request_params["thinking"] = disable
+                elif thinks_by_default(self.model):
+                    # The caller asked for a cheap text-only completion, but
+                    # this model/effort combination rejects "disabled":
+                    # thinking still runs and shares max_tokens with the
+                    # text. A silent no-op here is how starved compaction
+                    # notes shipped with no trace of why — a fail-open
+                    # default needs a voice.
+                    logger.warning(
+                        "thinking_disabled has no effect: model=%s effort=%s "
+                        "thinks by default and rejects 'disabled'; max_tokens "
+                        "is shared with the thinking block",
+                        self.model,
+                        self.effort,
+                    )
 
             # Handle native MCP servers
             if use_native_mcp:
@@ -1701,6 +1716,20 @@ class AnthropicClient(ModelClient):
                 disable = thinking_disable_param(self.model, self.effort)
                 if disable is not None:
                     request_params["thinking"] = disable
+                elif thinks_by_default(self.model):
+                    # The caller asked for a cheap text-only completion, but
+                    # this model/effort combination rejects "disabled":
+                    # thinking still runs and shares max_tokens with the
+                    # text. A silent no-op here is how starved compaction
+                    # notes shipped with no trace of why — a fail-open
+                    # default needs a voice.
+                    logger.warning(
+                        "thinking_disabled has no effect: model=%s effort=%s "
+                        "thinks by default and rejects 'disabled'; max_tokens "
+                        "is shared with the thinking block",
+                        self.model,
+                        self.effort,
+                    )
 
             # Handle native MCP servers
             if use_native_mcp:

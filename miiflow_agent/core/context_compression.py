@@ -71,10 +71,18 @@ _SUMMARY_INPUT_CLIP_CHARS = 2_000
 # disabled for this call where the API allows it, and the floor gives real
 # headroom where it does not (Fable 5).
 _SUMMARY_MIN_TOKENS = 2_000
-_SUMMARY_MAX_TOKENS = 6_000
-# One retry with this budget when the note still hits `max_tokens` — a
-# truncated note is a partial handoff, but no note at all is a hard reset.
-_SUMMARY_RETRY_TOKENS = 12_000
+# The ceiling is deliberately generous: prod (2026-08) showed essentially
+# every compaction finishing at the old 6,000-token cap — the prompt asks for
+# verbatim identifiers across the whole dropped history, so a capped note
+# ends mid-sentence and the tail of the handoff is lost. Compaction fires a
+# handful of times per DAY fleet-wide and output tokens are only billed as
+# generated, so a higher ceiling costs nothing unless the model actually has
+# more to say — which is exactly the content the cap was discarding.
+_SUMMARY_MAX_TOKENS = 12_000
+# One retry with this budget when the note comes back EMPTY at `max_tokens`
+# (thinking consumed the whole budget on models where it can't be disabled) —
+# a truncated note is a partial handoff, but no note at all is a hard reset.
+_SUMMARY_RETRY_TOKENS = 24_000
 
 
 # Provider spellings of "output was cut off by max_tokens".
@@ -458,7 +466,20 @@ class ContextCompressor:
             set_span_attribute(span, "compaction.finish_reason", finish)
             set_span_attribute(span, "compaction.summary_chars", len(text))
             set_span_attribute(span, "compaction.truncated", finish in _TRUNCATED_FINISH_REASONS)
-            set_span_attribute(span, "output.value", text[:4000])
+            # The budget the FINAL response was generated under — the attr set
+            # at span start records only the first attempt's budget, which
+            # understates a retried call.
+            set_span_attribute(
+                span,
+                "compaction.max_tokens",
+                _SUMMARY_RETRY_TOKENS if retried else max_tokens,
+            )
+            # No local clip: the SDK's span limit (spans.attribute_value_limit,
+            # 32k default) owns attribute bounding. The old 4,000-char clip
+            # made every complete note LOOK cut off in Arize, which is how
+            # "notes still truncated" survived two audits after the empty-note
+            # bug was actually fixed.
+            set_span_attribute(span, "output.value", text)
         return text or "Previous conversation context unavailable."
 
     async def _summarize(

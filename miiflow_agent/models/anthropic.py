@@ -309,6 +309,18 @@ def supports_effort(model: str) -> bool:
     return bool(effort_levels(model))
 
 
+def thinks_by_default(model: str) -> bool:
+    """True when `model` runs adaptive thinking unless the request disables it.
+
+    A superset of `_THINKING_ON_BY_DEFAULT_DISABLEABLE`: Fable 5 thinks by
+    default but rejects `thinking: {"type": "disabled"}`, so there are models
+    where thinking is on and cannot be turned off. Callers that budget
+    `max_tokens` for text alone need this to know when the budget is shared.
+    """
+    name = _resolve_model_name(model) or ""
+    return name in _THINKING_ON_BY_DEFAULT_DISABLEABLE or name == "claude-fable-5"
+
+
 def thinking_disable_param(
     model: str, effort: Optional[str] = None
 ) -> Optional[Dict[str, str]]:

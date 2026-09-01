@@ -52,6 +52,16 @@ def _tools_fingerprint(formatted_tools: Optional[List[Any]]) -> Optional[str]:
     TTFT path). A deep schema edit with an unchanged description length is
     invisible here; accepted trade. Best-effort — telemetry never fails a
     call.
+
+    Entries marked ``defer_loading`` are EXCLUDED from the digest: the
+    Anthropic API strips deferred tools from the prompt (native tool
+    search), so churn confined to them — an MCP manager reconnect moving a
+    server's block to the tail, a keyword-suffix description edit — cannot
+    bust the cache. Hashing them anyway made prod drift stats cry wolf:
+    turns with a changed hash, an identical name set, and a FULL cache hit.
+    A tool FLIPPING between deferred and loaded still changes the digest,
+    because the entry enters or leaves the hashed subset — which matches
+    the prefix actually changing.
     """
     fingerprint, _ = _tools_fingerprint_and_names(formatted_tools)
     return fingerprint
@@ -81,9 +91,14 @@ def _tools_fingerprint_and_names(
                 continue
             fn = tool.get("function") if isinstance(tool.get("function"), dict) else {}
             name = tool.get("name") or fn.get("name") or tool.get("type", "?")
+            names.append(str(name))
+            if tool.get("defer_loading"):
+                # Stripped from the prompt by the API — not part of the
+                # cached prefix, so not part of the digest. Still listed in
+                # `names` so set-level drift stays diffable.
+                continue
             desc = tool.get("description") or fn.get("description") or ""
             parts.append(f"{name}:{len(str(desc))}:{','.join(sorted(tool.keys()))}")
-            names.append(str(name))
         digest = hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
         return digest, names
     except Exception:  # noqa: BLE001

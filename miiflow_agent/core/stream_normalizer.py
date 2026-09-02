@@ -113,6 +113,9 @@ class StreamState:
     # Anthropic: input-side token total (input + prompt-cache buckets) captured
     # from message_start, since later message_delta events may omit it.
     input_tokens_total: int = 0
+    # Anthropic: a real stop_reason was delivered on message_delta, so the
+    # trailing message_stop must not fabricate a "stop" over it.
+    stop_reason_seen: bool = False
     # Prompt-cache split captured alongside, for cache-hit observability.
     cache_read_tokens_total: int = 0
     cache_write_tokens_total: int = 0
@@ -322,11 +325,17 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
                     ) = self._handle_content_block_stop()
 
                 elif chunk.type == "message_delta":
-                    if hasattr(chunk.delta, "stop_reason"):
+                    if getattr(chunk.delta, "stop_reason", None):
                         finish_reason = chunk.delta.stop_reason
+                        self._state.stop_reason_seen = True
 
                 elif chunk.type == "message_stop":
-                    finish_reason = "stop"
+                    # message_stop carries no reason of its own; the real one
+                    # arrived on the preceding message_delta. Emitting "stop"
+                    # here overwrote a "max_tokens" already delivered, so the
+                    # loop never saw Anthropic truncations.
+                    if not self._state.stop_reason_seen:
+                        finish_reason = "stop"
 
             usage = self._extract_usage(chunk)
 

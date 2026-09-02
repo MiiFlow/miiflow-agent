@@ -508,9 +508,18 @@ class TestReActTurnClassification:
         assert step.answer == "Hello world."
 
     @pytest.mark.asyncio
-    async def test_truncated_answer_text_is_retracted_not_final(self):
+    @pytest.mark.parametrize(
+        "finish_reasons",
+        [
+            ["length"],  # OpenAI
+            ["max_tokens", "stop"],  # Anthropic: message_delta then message_stop
+            ["MAX_TOKENS"],  # Gemini
+        ],
+    )
+    async def test_truncated_answer_text_is_retracted_not_final(self, finish_reasons):
         """A length-truncated answer streams live but is retracted and demoted —
-        never committed as final text."""
+        never committed as final text — whichever provider spelling arrives, and
+        even when a trailing "stop" follows the truncation reason."""
 
         class FakeExecutor:
             agent = SimpleNamespace(temperature=0, max_tokens=8)
@@ -525,8 +534,17 @@ class TestReActTurnClassification:
                     tool_calls=None,
                     usage=None,
                     cost=0,
-                    finish_reason="length",
+                    finish_reason=finish_reasons[0],
                 )
+                for reason in finish_reasons[1:]:
+                    yield SimpleNamespace(
+                        delta="",
+                        thinking_delta=None,
+                        tool_calls=None,
+                        usage=None,
+                        cost=0,
+                        finish_reason=reason,
+                    )
 
         orch = ReActOrchestrator.__new__(ReActOrchestrator)
         orch.tool_executor = FakeExecutor()

@@ -16,6 +16,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from ..message import Message, MessageRole
+from ..streaming import canonical_finish_reason
 from .events import EventFactory
 from .models import ReActStep
 from .orchestrator import (
@@ -409,7 +410,13 @@ class StepStreamer:
                 if hasattr(chunk, "cost"):
                     cost += chunk.cost
                 if getattr(chunk, "finish_reason", None):
-                    finish_reason = chunk.finish_reason
+                    # Canonical: "length" for every provider's truncation
+                    # spelling. Never let a later "stop" (Anthropic's
+                    # message_stop follows the message_delta that carried
+                    # max_tokens) hide a truncation already seen.
+                    incoming = canonical_finish_reason(chunk.finish_reason)
+                    if finish_reason != "length" or incoming == "length":
+                        finish_reason = incoming
 
             step.tokens_used = tokens_used
             step.cost = cost

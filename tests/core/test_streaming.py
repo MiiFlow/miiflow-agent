@@ -111,6 +111,34 @@ class TestStreamNormalizers:
 
         assert result.finish_reason == "stop"
 
+    def test_anthropic_message_stop_keeps_delivered_stop_reason(self, anthropic_normalizer):
+        """message_delta carries the real reason; the trailing message_stop must
+        not overwrite it with a fabricated "stop" (live 2026-09-01: a truncated
+        turn reached the loop as ["max_tokens", "stop"] and was treated as complete)."""
+        anthropic_normalizer.reset_state()
+        delta = MagicMock()
+        delta.type = "message_delta"
+        delta.delta = MagicMock()
+        delta.delta.stop_reason = "max_tokens"
+        stop = MagicMock()
+        stop.type = "message_stop"
+
+        first = anthropic_normalizer.normalize_chunk(delta)
+        second = anthropic_normalizer.normalize_chunk(stop)
+
+        assert first.finish_reason == "max_tokens"
+        assert second.finish_reason is None
+
+    def test_canonical_finish_reason_collapses_provider_spellings(self):
+        from miiflow_agent.core.streaming import canonical_finish_reason
+
+        assert canonical_finish_reason("length") == "length"
+        assert canonical_finish_reason("max_tokens") == "length"
+        assert canonical_finish_reason("MAX_TOKENS") == "length"
+        assert canonical_finish_reason("stop") == "stop"
+        assert canonical_finish_reason("end_turn") == "end_turn"
+        assert canonical_finish_reason(None) is None
+
     def test_groq_chunk_normalization(self, openai_normalizer):
         """Test Groq chunk normalization (uses OpenAI-compatible format)."""
         # Reset state for fresh test

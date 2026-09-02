@@ -12,6 +12,26 @@ from .metrics import TokenCount
 from .exceptions import ParsingError
 
 
+#: Every provider spelling of "the output was cut off by the token limit".
+#: OpenAI says "length", Anthropic "max_tokens", Gemini "MAX_TOKENS". The
+#: ReAct loop compared against "length" only, so Anthropic and Gemini
+#: truncations were committed as complete final answers (verified live
+#: 2026-09-01: Anthropic delivers ["max_tokens", "stop"]; Gemini "MAX_TOKENS").
+TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens", "MAX_TOKENS"})
+
+
+def canonical_finish_reason(reason: Optional[str]) -> Optional[str]:
+    """Collapse provider truncation spellings to the one the loop checks.
+
+    Everything else passes through untouched — only truncation has
+    behaviour attached to it (retract the streamed text, nudge the model),
+    and that behaviour must not depend on which provider served the turn.
+    """
+    if reason in TRUNCATED_FINISH_REASONS:
+        return "length"
+    return reason
+
+
 @dataclass
 class StreamChunk:
     """Chunk from a streaming response."""

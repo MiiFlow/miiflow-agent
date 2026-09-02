@@ -324,6 +324,45 @@ class TestGeminiClient:
         assert tc["function_call_metadata"]["thought_signature"] == "stream_sig_456"
 
     @pytest.mark.asyncio
+    async def test_stream_truncation_reaches_consumer_as_length(self, client, sample_messages):
+        """Gemini spells truncation "MAX_TOKENS" on the wire. It must survive the
+        client untouched and canonicalize to the "length" the ReAct loop checks —
+        otherwise a cut-off answer is committed as complete (the gap found while
+        double-checking Gemini after the Responses-API fix)."""
+        from miiflow_agent.core.streaming import canonical_finish_reason
+
+        chunk1_data = _make_rest_response(text="The answer is", finish_reason=None)
+        chunk2_data = _make_rest_response(
+            text=" cut off mid", finish_reason="MAX_TOKENS", prompt_tokens=12, completion_tokens=8
+        )
+        sse_lines = [f"data: {json.dumps(chunk1_data)}", "", f"data: {json.dumps(chunk2_data)}", ""]
+
+        async def aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_stream_resp = MagicMock()
+        mock_stream_resp.status_code = 200
+        mock_stream_resp.aiter_lines = aiter_lines
+        mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
+        mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock(return_value=mock_stream_resp)
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
+            chunks = [c async for c in client.astream_chat(sample_messages)]
+
+        reasons = [c.finish_reason for c in chunks if c.finish_reason]
+        assert reasons == ["MAX_TOKENS"]
+        assert canonical_finish_reason(reasons[-1]) == "length"
+        # Usage rides on the same final chunk, so the truncated call still bills.
+        assert chunks[-1].usage is not None
+        assert chunks[-1].usage.completion_tokens == 8
+
+    @pytest.mark.asyncio
     async def test_system_message_handling(self, client):
         """Test system message handling in Gemini format."""
         messages = [

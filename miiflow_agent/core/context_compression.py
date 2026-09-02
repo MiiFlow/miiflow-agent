@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from .message import Message, MessageRole
+from .streaming import TRUNCATED_FINISH_REASONS
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +86,9 @@ _SUMMARY_MAX_TOKENS = 12_000
 _SUMMARY_RETRY_TOKENS = 24_000
 
 
-# Provider spellings of "output was cut off by max_tokens".
-_TRUNCATED_FINISH_REASONS = {"max_tokens", "length"}
+# Provider spellings of "output was cut off by max_tokens" — one shared set,
+# so a provider added to the loop is added here too.
+_TRUNCATED_FINISH_REASONS = TRUNCATED_FINISH_REASONS
 
 
 def _response_text(response: Any) -> str:

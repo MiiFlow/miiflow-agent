@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import (
@@ -485,6 +486,7 @@ class LLMClient:
 
         # Get callback context
         ctx = get_callback_context()
+        usage_event_id = f"llm_{uuid.uuid4().hex}"
 
         start_time = time.time()
         try:
@@ -509,8 +511,10 @@ class LLMClient:
             # Emit POST_CALL callback
             post_event = CallbackEvent(
                 event_type=CallbackEventType.POST_CALL,
+                event_id=usage_event_id,
                 provider=self.client.provider_name,
                 model=self.client.model,
+                credential_metadata=getattr(self, "credential_metadata", None),
                 tokens=response.usage,
                 latency_ms=latency_ms,
                 context=ctx,
@@ -541,8 +545,10 @@ class LLMClient:
             # Emit ON_ERROR callback
             error_event = CallbackEvent(
                 event_type=CallbackEventType.ON_ERROR,
+                event_id=usage_event_id,
                 provider=self.client.provider_name,
                 model=self.client.model,
+                credential_metadata=getattr(self, "credential_metadata", None),
                 error=e,
                 error_type=type(e).__name__,
                 latency_ms=latency_ms,
@@ -672,6 +678,7 @@ class LLMClient:
 
         # Get callback context
         ctx = get_callback_context()
+        usage_event_id = f"llm_{uuid.uuid4().hex}"
 
         start_time = time.time()
         total_tokens = TokenCount()
@@ -792,8 +799,10 @@ class LLMClient:
                     # Emit ON_ERROR callback
                     error_event = CallbackEvent(
                         event_type=CallbackEventType.ON_ERROR,
+                        event_id=usage_event_id,
                         provider=self.client.provider_name,
                         model=self.client.model,
+                        credential_metadata=getattr(self, "credential_metadata", None),
                         tokens=total_tokens,
                         error=error_occurred,
                         error_type=type(error_occurred).__name__,
@@ -807,8 +816,9 @@ class LLMClient:
                         context=ctx,
                         success=False,
                     )
-                    # Use sync emit in finally block since we can't await
-                    self.callback_registry.emit_sync(error_event)
+                    # Await recorder callbacks before the stream closes so a
+                    # surrounding usage session cannot settle first.
+                    await self._emit_callback(error_event)
                 else:
                     logger.info(
                         "[LLM_CALL] provider=%s model=%s mode=astream status=ok "
@@ -830,8 +840,10 @@ class LLMClient:
                     # Emit POST_CALL callback
                     post_event = CallbackEvent(
                         event_type=CallbackEventType.POST_CALL,
+                        event_id=usage_event_id,
                         provider=self.client.provider_name,
                         model=self.client.model,
+                        credential_metadata=getattr(self, "credential_metadata", None),
                         tokens=total_tokens,
                         latency_ms=latency_ms,
                         ttft_ms=ttft_ms,
@@ -843,8 +855,9 @@ class LLMClient:
                         context=ctx,
                         success=True,
                     )
-                    # Use sync emit in finally block since we can't await
-                    self.callback_registry.emit_sync(post_event)
+                    # Await recorder callbacks before the stream closes so a
+                    # surrounding usage session cannot settle first.
+                    await self._emit_callback(post_event)
 
                 callback_emitted = True
 

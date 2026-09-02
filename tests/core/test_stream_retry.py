@@ -267,6 +267,7 @@ class TestStreamTimingDecomposition:
 
         assert len(events) == 1
         event = events[0]
+        assert event.event_id and event.event_id.startswith("llm_")
         assert event.ttft_ms is not None and event.ttft_ms >= 15
         assert event.stream_ms is not None and event.stream_ms >= 15
         assert event.request_build_ms is not None

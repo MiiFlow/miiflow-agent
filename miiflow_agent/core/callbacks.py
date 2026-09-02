@@ -80,10 +80,15 @@ class CallbackEvent:
 
     event_type: CallbackEventType
     timestamp: datetime = field(default_factory=datetime.now)
+    # Stable logical provider-call id. LLMClient creates it before opening the
+    # request and reuses it across transport retries and the final callback.
+    event_id: Optional[str] = None
 
     # LLM call information
     provider: Optional[str] = None
     model: Optional[str] = None
+    # Secret-free account ownership snapshot supplied by the host registry.
+    credential_metadata: Optional[Dict[str, Any]] = None
 
     # Usage information (for POST_CALL)
     tokens: Optional[TokenCount] = None

@@ -68,10 +68,22 @@ def is_structural_message_error(error: BaseException) -> bool:
 
 
 def _call_ids(message: Message) -> List[str]:
+    """Ids of the calls a TOOL message must answer.
+
+    Provider-executed MCP calls (``type == "mcp_function"``) are excluded:
+    nothing ran on our side, their result rides on the assistant message as
+    ``metadata["mcp_tool_results"]`` and goes on the wire as an inline
+    ``mcp_tool_result`` block. Counting them as pending would "repair" a valid
+    history by synthesizing a local ``tool_result`` for an ``mcptoolu_`` id,
+    which the provider rejects in its own right.
+    """
     ids = []
     for call in message.tool_calls or []:
-        if isinstance(call, dict) and call.get("id"):
-            ids.append(str(call["id"]))
+        if not isinstance(call, dict) or not call.get("id"):
+            continue
+        if call.get("type") == "mcp_function":
+            continue
+        ids.append(str(call["id"]))
     return ids
 
 

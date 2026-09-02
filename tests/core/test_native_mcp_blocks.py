@@ -229,6 +229,60 @@ class TestMessageRoundTrip:
         assert [b["type"] for b in converted["content"]] == ["tool_use"]
         assert converted["content"][0]["id"] == "toolu_123"
 
+    def test_client_tool_use_blocks_follow_every_mcp_pair(self, client):
+        """thread_9Fm7LXCFbePThEBd1qnvv7Dg (2026-09-01): a replayed turn held
+        local calls, then a GitHub call the provider ran, then more local
+        calls. Emitted in that order, the inline `mcp_tool_result` sat between
+        the earlier `tool_use` blocks and the next message's `tool_result`s,
+        and the API 400'd on every `tool_use` before it. Client `tool_use`
+        blocks must therefore be the tail of the message, after every
+        provider-executed pair, whatever order the calls were made in."""
+        msg = Message(
+            role=MessageRole.ASSISTANT,
+            content="Let me check.",
+            tool_calls=[
+                {
+                    "id": "toolu_before",
+                    "type": "function",
+                    "function": {"name": "grep_files", "arguments": {"pattern": "a"}},
+                },
+                {
+                    "id": "mcptoolu_017CQkNV6chUEvYzibnddrGr",
+                    "type": "mcp_function",
+                    "function": {"name": "search_repositories", "arguments": {"q": "x"}},
+                    "server_name": "GitHub",
+                },
+                {
+                    "id": "toolu_after",
+                    "type": "function",
+                    "function": {"name": "grep_files", "arguments": {"pattern": "b"}},
+                },
+            ],
+            metadata={
+                "mcp_tool_results": [
+                    {
+                        "tool_use_id": "mcptoolu_017CQkNV6chUEvYzibnddrGr",
+                        "is_error": True,
+                        "content": "Validation Failed",
+                    }
+                ]
+            },
+        )
+        converted = client.convert_message_to_provider_format(msg)
+        blocks = converted["content"]
+        types = [b["type"] for b in blocks]
+
+        assert types == ["text", "mcp_tool_use", "mcp_tool_result", "tool_use", "tool_use"]
+        last_mcp_result = max(i for i, t in enumerate(types) if t == "mcp_tool_result")
+        for i, t in enumerate(types):
+            if t == "tool_use":
+                assert i > last_mcp_result, f"tool_use at {i} precedes an mcp_tool_result"
+        # Relative order among the client calls is preserved.
+        assert [b["id"] for b in blocks if b["type"] == "tool_use"] == [
+            "toolu_before",
+            "toolu_after",
+        ]
+
 
 class TestOrchestratorDispatch:
     """The production failure itself: a provider-executed call must never be

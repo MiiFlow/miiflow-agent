@@ -271,7 +271,21 @@ class AnthropicClient(ModelClient):
                 for r in (message.metadata or {}).get("mcp_tool_results", [])
             }
 
-            # Add tool use blocks
+            # Client `tool_use` blocks must be the LAST blocks of the message.
+            # The API answers each of them with a `tool_result` at the head of
+            # the NEXT message and validates that nothing sits in between — an
+            # inline `mcp_tool_result` after a `tool_use` breaks that
+            # adjacency for every `tool_use` before it. A replayed turn can
+            # hold both kinds in any order (thread_9Fm7LXCFbePThEBd1qnvv7Dg,
+            # 2026-09-01: eight local calls, one GitHub call, three more local
+            # calls, then a clarification — every request 400'd on the eight
+            # that preceded the GitHub pair), so the two kinds are collected
+            # separately and the provider-executed pairs go first. That is
+            # also the only order the API itself ever produces: a client
+            # `tool_use` ends the turn.
+            server_blocks: List[Dict[str, Any]] = []
+            client_blocks: List[Dict[str, Any]] = []
+
             for tool_call in message.tool_calls:
                 import json
 
@@ -321,7 +335,7 @@ class AnthropicClient(ModelClient):
                         )
                         continue
 
-                    content_list.append(
+                    server_blocks.append(
                         {
                             "type": "mcp_tool_use",
                             "id": call_id,
@@ -330,7 +344,7 @@ class AnthropicClient(ModelClient):
                             "server_name": server_name,
                         }
                     )
-                    content_list.append(
+                    server_blocks.append(
                         {
                             "type": "mcp_tool_result",
                             "tool_use_id": call_id,
@@ -342,7 +356,7 @@ class AnthropicClient(ModelClient):
                     )
                     continue
 
-                content_list.append(
+                client_blocks.append(
                     {
                         "type": "tool_use",
                         "id": tool_call.get("id", ""),
@@ -351,6 +365,8 @@ class AnthropicClient(ModelClient):
                     }
                 )
 
+            content_list.extend(server_blocks)
+            content_list.extend(client_blocks)
             anthropic_message["content"] = content_list
             return anthropic_message
 

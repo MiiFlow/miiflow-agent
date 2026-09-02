@@ -49,6 +49,59 @@ def _responses_response(text="ok", *, tool_calls=None):
     )
 
 
+def _function_call_events(item_id, call_id, name, arguments, *, index=0):
+    """The real event sequence for one streamed function call: the name and
+    call_id ride on the output-item events, the arguments-done event has
+    neither (its `name` is None on the wire)."""
+    started = SimpleNamespace(
+        type="function_call", id=item_id, call_id=call_id, name=name, arguments=""
+    )
+    done = SimpleNamespace(
+        type="function_call",
+        id=item_id,
+        call_id=call_id,
+        name=name,
+        arguments=arguments,
+        status="completed",
+    )
+    return [
+        SimpleNamespace(type="response.output_item.added", output_index=index, item=started),
+        SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            item_id=item_id,
+            output_index=index,
+            delta=arguments,
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id=item_id,
+            output_index=index,
+            name=None,
+            arguments=arguments,
+        ),
+        SimpleNamespace(type="response.output_item.done", output_index=index, item=done),
+    ]
+
+
+def _responses_stream(events, *, terminal=None):
+    async def _gen():
+        for event in events:
+            yield event
+        yield terminal or SimpleNamespace(type="response.completed", response=_responses_response())
+
+    return _gen()
+
+
+def _final_tool_calls(chunks):
+    """Last emission per call id — the finalized item that replaces the
+    announce-time placeholder, as the orchestrator merges them."""
+    final = {}
+    for chunk in chunks:
+        for call in chunk.tool_calls or []:
+            final[call["id"]] = call
+    return list(final.values())
+
+
 class TestOpenAIClient:
     """Test suite for OpenAI client."""
 
@@ -66,9 +119,7 @@ class TestOpenAIClient:
         assert client.provider_name == "openai"
 
     @pytest.mark.asyncio
-    async def test_chat_completion_success(
-        self, client, sample_messages, mock_openai_response
-    ):
+    async def test_chat_completion_success(self, client, sample_messages, mock_openai_response):
         """Test successful chat completion."""
         with patch.object(
             client.client.chat.completions, "create", new_callable=AsyncMock
@@ -80,10 +131,7 @@ class TestOpenAIClient:
             # Verify response format
             assert isinstance(response, ChatResponse)
             assert response.message.role == MessageRole.ASSISTANT
-            assert (
-                response.message.content
-                == "Hello! I'm doing well, thank you for asking."
-            )
+            assert response.message.content == "Hello! I'm doing well, thank you for asking."
             assert response.usage.prompt_tokens == 10
             assert response.usage.completion_tokens == 20
             assert response.usage.total_tokens == 30
@@ -98,9 +146,7 @@ class TestOpenAIClient:
             assert len(call_args.kwargs["messages"]) == 2
 
     @pytest.mark.asyncio
-    async def test_stream_chat_success(
-        self, client, sample_messages, mock_openai_stream_chunks
-    ):
+    async def test_stream_chat_success(self, client, sample_messages, mock_openai_stream_chunks):
         """Test successful streaming chat."""
 
         async def mock_stream_generator():
@@ -230,9 +276,7 @@ class TestOpenAIClient:
         multimodal_message = Message.user(
             [
                 TextBlock(text="What's in this image?"),
-                ImageBlock(
-                    image_url="data:image/jpeg;base64,/9j/4AAQSkZJRg...", detail="high"
-                ),
+                ImageBlock(image_url="data:image/jpeg;base64,/9j/4AAQSkZJRg...", detail="high"),
             ]
         )
 
@@ -309,13 +353,9 @@ class TestReasoningEffort:
     @pytest.mark.asyncio
     async def test_reasoning_effort_with_tools_uses_responses(self, sample_messages):
         client = self._client()
-        with patch.object(
-            client.client.responses, "create", new_callable=AsyncMock
-        ) as mock_create:
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
             mock_create.return_value = _responses_response()
-            await client.achat(
-                sample_messages, tools=self._TOOLS, reasoning_effort="high"
-            )
+            await client.achat(sample_messages, tools=self._TOOLS, reasoning_effort="high")
 
         request = mock_create.call_args.kwargs
         assert request["reasoning"] == {"effort": "high"}
@@ -342,17 +382,13 @@ class TestReasoningEffort:
         assert "reasoning_effort" not in mock_create.call_args.kwargs
 
     @pytest.mark.asyncio
-    async def test_reasoning_effort_with_tools_streaming_uses_responses(
-        self, sample_messages
-    ):
+    async def test_reasoning_effort_with_tools_streaming_uses_responses(self, sample_messages):
         client = self._client()
 
         async def _gen():
-            yield SimpleNamespace(type="response.done", response=_responses_response())
+            yield SimpleNamespace(type="response.completed", response=_responses_response())
 
-        with patch.object(
-            client.client.responses, "create", new_callable=AsyncMock
-        ) as mock_create:
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
             mock_create.return_value = _gen()
             async for _ in client.astream_chat(
                 sample_messages, tools=self._TOOLS, reasoning_effort="high"
@@ -373,9 +409,7 @@ class TestReasoningEffort:
             ),
             response=httpx.Response(
                 400,
-                request=httpx.Request(
-                    "POST", "https://api.openai.com/v1/chat/completions"
-                ),
+                request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"),
             ),
             body=None,
         )
@@ -404,9 +438,7 @@ class TestReasoningEffort:
             message="Invalid tool schema",
             response=httpx.Response(
                 400,
-                request=httpx.Request(
-                    "POST", "https://api.openai.com/v1/chat/completions"
-                ),
+                request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"),
             ),
             body=None,
         )
@@ -478,18 +510,14 @@ class TestOpenAIRequestMapping:
         assert mock_create.call_args.kwargs["verbosity"] == "low"
 
     @pytest.mark.asyncio
-    async def test_responses_forwards_reasoning_text_schema_and_tool_choice(
-        self, sample_messages
-    ):
+    async def test_responses_forwards_reasoning_text_schema_and_tool_choice(self, sample_messages):
         client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
         schema = {
             "type": "object",
             "properties": {"answer": {"type": "string"}},
             "required": ["answer"],
         }
-        with patch.object(
-            client.client.responses, "create", new_callable=AsyncMock
-        ) as mock_create:
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
             mock_create.return_value = _responses_response()
             await client.achat(
                 sample_messages,
@@ -521,9 +549,7 @@ class TestOpenAIRequestMapping:
     @pytest.mark.asyncio
     async def test_current_endpoint_options_are_forwarded(self, sample_messages):
         client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
-        with patch.object(
-            client.client.responses, "create", new_callable=AsyncMock
-        ) as mock_create:
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
             mock_create.return_value = _responses_response()
             await client.achat(
                 sample_messages,
@@ -542,9 +568,7 @@ class TestOpenAIRequestMapping:
     @pytest.mark.asyncio
     async def test_legacy_sol_pro_alias_maps_to_sol_pro_mode(self, sample_messages):
         client = OpenAIClient(model="gpt-5.6-sol-pro", api_key="test-key")
-        with patch.object(
-            client.client.responses, "create", new_callable=AsyncMock
-        ) as mock_create:
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
             mock_create.return_value = _responses_response()
             await client.achat(sample_messages)
 
@@ -555,22 +579,16 @@ class TestOpenAIRequestMapping:
     @pytest.mark.asyncio
     async def test_gpt54_pro_always_uses_responses(self, sample_messages):
         client = OpenAIClient(model="gpt-5.4-pro", api_key="test-key")
-        with patch.object(
-            client.client.responses, "create", new_callable=AsyncMock
-        ) as mock_create:
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
             mock_create.return_value = _responses_response()
             await client.achat(sample_messages, reasoning_effort="xhigh")
 
         assert mock_create.call_args.kwargs["reasoning"] == {"effort": "xhigh"}
 
     @pytest.mark.asyncio
-    async def test_nonstreaming_pro_model_adapts_to_stream_interface(
-        self, sample_messages
-    ):
+    async def test_nonstreaming_pro_model_adapts_to_stream_interface(self, sample_messages):
         client = OpenAIClient(model="gpt-5.5-pro", api_key="test-key")
-        with patch.object(
-            client.client.responses, "create", new_callable=AsyncMock
-        ) as mock_create:
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
             mock_create.return_value = _responses_response("complete answer")
             chunks = [chunk async for chunk in client.astream_chat(sample_messages)]
 
@@ -580,9 +598,7 @@ class TestOpenAIRequestMapping:
         assert chunks[0].usage.cache_write_tokens == 3
 
     @pytest.mark.asyncio
-    async def test_background_response_is_polled_and_adapted_to_stream(
-        self, sample_messages
-    ):
+    async def test_background_response_is_polled_and_adapted_to_stream(self, sample_messages):
         client = OpenAIClient(model="gpt-5.6-sol", api_key="test-key")
         queued = SimpleNamespace(id="resp_bg", status="queued")
         completed = _responses_response("background answer")
@@ -624,26 +640,167 @@ class TestOpenAIRequestMapping:
             )
         ]
 
-        async def _gen():
-            yield SimpleNamespace(
-                type="response.function_call_arguments.done",
-                call_id="call_3",
-                name="lookup_item",
-                arguments='{"q":"x"}',
+        with patch.object(
+            client.client.responses,
+            "create",
+            new_callable=AsyncMock,
+            return_value=_responses_stream(
+                _function_call_events("fc_1", "call_3", "lookup_item", '{"q":"x"}')
+            ),
+        ):
+            chunks = [chunk async for chunk in client.astream_chat(sample_messages, tools=tools)]
+
+        final = _final_tool_calls(chunks)
+        assert final == [
+            {
+                "id": "call_3",
+                "type": "function",
+                "index": 0,
+                "function": {"name": "lookup.item", "arguments": '{"q":"x"}'},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_responses_stream_names_tool_call_from_output_item(self, sample_messages):
+        """The name and call_id are NOT on `function_call_arguments.done`.
+
+        Live Responses API (gpt-5.6-terra, 2026-09-01): that event carries
+        only item_id + arguments, `name` is None. Reading the name there
+        produced a nameless call the orchestrator rejected as malformed —
+        three in a row halted the turn. The name must come from the
+        output-item events.
+        """
+        client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
+        tools = [
+            client.convert_schema_to_provider_format(
+                {"name": "generate_image", "description": "", "parameters": {}}
             )
+        ]
 
         with patch.object(
             client.client.responses,
             "create",
             new_callable=AsyncMock,
-            return_value=_gen(),
+            return_value=_responses_stream(
+                _function_call_events("fc_1", "call_1", "generate_image", '{"prompt":"a dog"}')
+            ),
+        ):
+            chunks = [chunk async for chunk in client.astream_chat(sample_messages, tools=tools)]
+
+        # The call is announced as soon as its item starts, already named …
+        first = next(c for c in chunks if c.tool_calls)
+        assert first.tool_calls[0]["function"]["name"] == "generate_image"
+        assert first.tool_calls[0]["id"] == "call_1"
+        # … and finalized with the complete arguments.
+        final = _final_tool_calls(chunks)
+        assert len(final) == 1
+        assert final[0]["id"] == "call_1"
+        assert final[0]["function"] == {
+            "name": "generate_image",
+            "arguments": '{"prompt":"a dog"}',
+        }
+
+    @pytest.mark.asyncio
+    async def test_responses_stream_keeps_parallel_calls_distinct(self, sample_messages):
+        client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
+        events = _function_call_events("fc_1", "call_1", "a", '{"x":1}', index=0)
+        events += _function_call_events("fc_2", "call_2", "b", '{"y":2}', index=1)
+
+        with patch.object(
+            client.client.responses,
+            "create",
+            new_callable=AsyncMock,
+            return_value=_responses_stream(events),
+        ):
+            chunks = [
+                chunk async for chunk in client.astream_chat(sample_messages, tools=self._TOOLS)
+            ]
+
+        final = _final_tool_calls(chunks)
+        assert [(c["index"], c["id"], c["function"]["name"]) for c in final] == [
+            (0, "call_1", "a"),
+            (1, "call_2", "b"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_responses_stream_captures_usage_on_completed(self, sample_messages):
+        """`response.completed` is the terminal event — not `response.done`,
+        which never fires. Matching the wrong name meant streamed Responses
+        calls reported no usage and billed as zero tokens."""
+        client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
+
+        with patch.object(
+            client.client.responses,
+            "create",
+            new_callable=AsyncMock,
+            return_value=_responses_stream(
+                [SimpleNamespace(type="response.output_text.delta", delta="hi")]
+            ),
         ):
             chunks = [
                 chunk
-                async for chunk in client.astream_chat(sample_messages, tools=tools)
+                async for chunk in client.astream_chat(sample_messages, use_responses_api=True)
             ]
 
-        assert chunks[0].tool_calls[0]["function"]["name"] == "lookup.item"
+        last = chunks[-1]
+        assert last.finish_reason == "stop"
+        assert last.usage is not None
+        assert last.usage.prompt_tokens == 10
+        assert last.usage.completion_tokens == 20
+
+    @pytest.mark.asyncio
+    async def test_responses_stream_incomplete_max_tokens_is_length(self, sample_messages):
+        client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
+        response = _responses_response()
+        response.incomplete_details = SimpleNamespace(reason="max_output_tokens")
+
+        with patch.object(
+            client.client.responses,
+            "create",
+            new_callable=AsyncMock,
+            return_value=_responses_stream(
+                [], terminal=SimpleNamespace(type="response.incomplete", response=response)
+            ),
+        ):
+            chunks = [
+                chunk
+                async for chunk in client.astream_chat(sample_messages, use_responses_api=True)
+            ]
+
+        assert chunks[-1].finish_reason == "length"
+
+    @pytest.mark.asyncio
+    async def test_responses_stream_yields_native_mcp_call_with_result(self, sample_messages):
+        client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
+        item = SimpleNamespace(
+            type="mcp_call",
+            id="mcp_1",
+            name="list_prs",
+            arguments='{"repo":"x"}',
+            server_label="github",
+            output="3 open PRs",
+            error=None,
+        )
+
+        with patch.object(
+            client.client.responses,
+            "create",
+            new_callable=AsyncMock,
+            return_value=_responses_stream(
+                [SimpleNamespace(type="response.output_item.done", output_index=0, item=item)]
+            ),
+        ):
+            chunks = [
+                chunk
+                async for chunk in client.astream_chat(sample_messages, use_responses_api=True)
+            ]
+
+        mcp = next(c for c in chunks if c.tool_calls)
+        assert mcp.tool_calls[0]["type"] == "mcp_function"
+        assert mcp.tool_calls[0]["function"]["name"] == "list_prs"
+        assert mcp.mcp_tool_results == [
+            {"tool_use_id": "mcp_1", "is_error": False, "content": "3 open PRs"}
+        ]
 
     @pytest.mark.asyncio
     async def test_structured_outputs_fail_fast_for_gpt54_pro(self, sample_messages):

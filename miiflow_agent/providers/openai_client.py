@@ -152,9 +152,7 @@ class OpenAIClient(ModelClient):
 
         # Stream normalizer for unified streaming handling
         # Note: Pass class-level mapping for tool name restoration
-        self._stream_normalizer = OpenAIStreamNormalizer(
-            OpenAIClient._tool_name_mapping
-        )
+        self._stream_normalizer = OpenAIStreamNormalizer(OpenAIClient._tool_name_mapping)
 
     def _supports_native_mcp(self) -> bool:
         """Check if current model supports native MCP via Responses API."""
@@ -162,9 +160,7 @@ class OpenAIClient(ModelClient):
 
     def _request_model(self, kwargs: Dict[str, Any]) -> str:
         """Resolve a valid request model, including legacy/fine-tune aliases."""
-        configured = (
-            kwargs.get("fine_tuned_model") or self.fine_tuned_model or self.model
-        )
+        configured = kwargs.get("fine_tuned_model") or self.fine_tuned_model or self.model
         return normalize_model_name(configured)
 
     def _should_use_responses_api(
@@ -396,9 +392,7 @@ class OpenAIClient(ModelClient):
                 timeout=self.timeout,
             )
 
-    def convert_schema_to_provider_format(
-        self, schema: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def convert_schema_to_provider_format(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Convert universal schema to OpenAI format with name sanitization."""
         original_name = schema["name"]
         sanitized_name = _sanitize_tool_name(original_name)
@@ -465,9 +459,7 @@ class OpenAIClient(ModelClient):
                     f"[NOTE: OpenAI cannot view videos in tool messages. "
                     f"{len(dropped_videos)} video(s) referenced: {dropped_videos}]"
                 )
-            openai_message["content"] = (
-                "\n".join(text_parts) if text_parts else "[empty result]"
-            )
+            openai_message["content"] = "\n".join(text_parts) if text_parts else "[empty result]"
             openai_message["tool_call_id"] = message.tool_call_id
             if message.name:
                 openai_message["name"] = message.name
@@ -501,18 +493,14 @@ class OpenAIClient(ModelClient):
                         else:
                             import httpx
 
-                            resp = httpx.get(
-                                block.document_url, timeout=30, follow_redirects=True
-                            )
+                            resp = httpx.get(block.document_url, timeout=30, follow_redirects=True)
                             resp.raise_for_status()
                             text = resp.content.decode("utf-8", errors="replace")
                             doc_content = f"[Document{filename_info}]\n\n{text}"
                         content_list.append({"type": "text", "text": doc_content})
                     except Exception as e:
                         filename_info = f" {block.filename}" if block.filename else ""
-                        error_content = (
-                            f"[Error processing document{filename_info}: {str(e)}]"
-                        )
+                        error_content = f"[Error processing document{filename_info}: {str(e)}]"
                         content_list.append({"type": "text", "text": error_content})
 
             openai_message["content"] = content_list
@@ -539,9 +527,7 @@ class OpenAIClient(ModelClient):
                 sanitized_tc = copy.deepcopy(tc) if isinstance(tc, dict) else tc
                 if isinstance(sanitized_tc, dict) and "function" in sanitized_tc:
                     original_name = sanitized_tc["function"].get("name", "")
-                    sanitized_tc["function"]["name"] = _sanitize_tool_name(
-                        original_name
-                    )
+                    sanitized_tc["function"]["name"] = _sanitize_tool_name(original_name)
                     # Normalize: Anthropic-style dict arguments → JSON string for OpenAI API
                     args = sanitized_tc["function"].get("arguments")
                     if isinstance(args, dict):
@@ -584,12 +570,8 @@ class OpenAIClient(ModelClient):
             ChatResponse with assistant message and metadata
         """
         if json_schema and not supports_json_mode(self.model):
-            raise ModelError(
-                f"Structured outputs are not supported by {self.model}", self.model
-            )
-        if self._should_use_responses_api(
-            tools=tools, mcp_servers=mcp_servers, kwargs=kwargs
-        ):
+            raise ModelError(f"Structured outputs are not supported by {self.model}", self.model)
+        if self._should_use_responses_api(tools=tools, mcp_servers=mcp_servers, kwargs=kwargs):
             return await self._achat_responses_api(
                 messages=messages,
                 temperature=temperature,
@@ -606,9 +588,7 @@ class OpenAIClient(ModelClient):
             # DocumentBlocks (httpx.get, PDF extraction) — offload to a worker
             # thread so the event loop stays free under ASGI servers.
             openai_messages = await asyncio.to_thread(
-                lambda: [
-                    self.convert_message_to_provider_format(msg) for msg in messages
-                ]
+                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
             )
 
             request_params: Dict[str, Any] = {
@@ -629,9 +609,7 @@ class OpenAIClient(ModelClient):
                 request_params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
             if json_schema:
-                normalized_schema = normalize_json_schema(
-                    json_schema, SchemaMode.STRICT
-                )
+                normalized_schema = normalize_json_schema(json_schema, SchemaMode.STRICT)
                 request_params["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
@@ -647,9 +625,7 @@ class OpenAIClient(ModelClient):
             if supports_verbosity(self.model) and kwargs.get("verbosity"):
                 request_params["verbosity"] = kwargs["verbosity"]
 
-            self._copy_allowed_kwargs(
-                request_params, kwargs, _CHAT_COMPLETIONS_PASSTHROUGH
-            )
+            self._copy_allowed_kwargs(request_params, kwargs, _CHAT_COMPLETIONS_PASSTHROUGH)
             self._apply_reasoning_effort(request_params, kwargs, has_tools=bool(tools))
 
             response = await self._create_chat_completion(request_params)
@@ -681,13 +657,9 @@ class OpenAIClient(ModelClient):
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiflowTimeoutError(
-                "Request timed out", self.timeout, original_error=e
-            )
+            raise MiiflowTimeoutError("Request timed out", self.timeout, original_error=e)
         except Exception as e:
-            raise ProviderError(
-                f"OpenAI API error: {str(e)}", self.provider_name, original_error=e
-            )
+            raise ProviderError(f"OpenAI API error: {str(e)}", self.provider_name, original_error=e)
 
     async def _achat_responses_api(
         self,
@@ -736,9 +708,7 @@ class OpenAIClient(ModelClient):
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiflowTimeoutError(
-                "Request timed out", self.timeout, original_error=e
-            )
+            raise MiiflowTimeoutError("Request timed out", self.timeout, original_error=e)
         except ModelError:
             raise
         except Exception as e:
@@ -806,16 +776,13 @@ class OpenAIClient(ModelClient):
                     {
                         "type": "input_text",
                         "text": (
-                            "[OpenAI cannot view this video; reference URL: "
-                            f"{block.video_url}]"
+                            "[OpenAI cannot view this video; reference URL: " f"{block.video_url}]"
                         ),
                     }
                 )
         return content_parts
 
-    def _convert_messages_to_responses_input(
-        self, messages: List[Message]
-    ) -> List[Dict[str, Any]]:
+    def _convert_messages_to_responses_input(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """Convert messages to Responses API input format.
 
         The Responses API uses a different input structure than Chat Completions.
@@ -826,9 +793,7 @@ class OpenAIClient(ModelClient):
         for msg in messages:
             if msg.role == MessageRole.SYSTEM:
                 # System messages become system items
-                content = (
-                    msg.content if isinstance(msg.content, str) else str(msg.content)
-                )
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
                 input_items.append(
                     {
                         "type": "message",
@@ -847,9 +812,7 @@ class OpenAIClient(ModelClient):
                         }
                     )
                 else:
-                    content_parts = self._convert_blocks_to_responses_content(
-                        msg.content
-                    )
+                    content_parts = self._convert_blocks_to_responses_content(msg.content)
                     input_items.append(
                         {
                             "type": "message",
@@ -858,9 +821,7 @@ class OpenAIClient(ModelClient):
                         }
                     )
             elif msg.role == MessageRole.ASSISTANT:
-                content = (
-                    msg.content if isinstance(msg.content, str) else str(msg.content)
-                )
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
                 if content:
                     input_items.append(
                         {
@@ -938,9 +899,7 @@ class OpenAIClient(ModelClient):
                         "id": getattr(item, "call_id", ""),
                         "type": "function",
                         "function": {
-                            "name": self._tool_name_mapping.get(
-                                sanitized_name, sanitized_name
-                            ),
+                            "name": self._tool_name_mapping.get(sanitized_name, sanitized_name),
                             "arguments": getattr(item, "arguments", "{}"),
                         },
                     }
@@ -1004,15 +963,11 @@ class OpenAIClient(ModelClient):
             StreamChunk with delta content and metadata
         """
         if json_schema and not supports_json_mode(self.model):
-            raise ModelError(
-                f"Structured outputs are not supported by {self.model}", self.model
-            )
+            raise ModelError(f"Structured outputs are not supported by {self.model}", self.model)
         use_responses_api = self._should_use_responses_api(
             tools=tools, mcp_servers=mcp_servers, kwargs=kwargs
         )
-        if use_responses_api and (
-            not supports_streaming(self.model) or kwargs.get("background")
-        ):
+        if use_responses_api and (not supports_streaming(self.model) or kwargs.get("background")):
             response = await self._achat_responses_api(
                 messages=messages,
                 temperature=temperature,
@@ -1048,9 +1003,7 @@ class OpenAIClient(ModelClient):
         try:
             # Offload sync DocumentBlock I/O / PDF extraction off the event loop.
             openai_messages = await asyncio.to_thread(
-                lambda: [
-                    self.convert_message_to_provider_format(msg) for msg in messages
-                ]
+                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
             )
 
             request_params: Dict[str, Any] = {
@@ -1073,9 +1026,7 @@ class OpenAIClient(ModelClient):
                 request_params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
             if json_schema:
-                normalized_schema = normalize_json_schema(
-                    json_schema, SchemaMode.STRICT
-                )
+                normalized_schema = normalize_json_schema(json_schema, SchemaMode.STRICT)
                 request_params["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
@@ -1091,9 +1042,7 @@ class OpenAIClient(ModelClient):
             if supports_verbosity(self.model) and kwargs.get("verbosity"):
                 request_params["verbosity"] = kwargs["verbosity"]
 
-            self._copy_allowed_kwargs(
-                request_params, kwargs, _CHAT_COMPLETIONS_PASSTHROUGH
-            )
+            self._copy_allowed_kwargs(request_params, kwargs, _CHAT_COMPLETIONS_PASSTHROUGH)
             self._apply_reasoning_effort(request_params, kwargs, has_tools=bool(tools))
 
             stream = await self._create_chat_completion(request_params)
@@ -1132,15 +1081,32 @@ class OpenAIClient(ModelClient):
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiflowTimeoutError(
-                "Streaming request timed out", self.timeout, original_error=e
-            )
+            raise MiiflowTimeoutError("Streaming request timed out", self.timeout, original_error=e)
         except Exception as e:
             raise ProviderError(
                 f"OpenAI streaming error: {str(e)}",
                 self.provider_name,
                 original_error=e,
             )
+
+    def _responses_function_call_dict(
+        self, item: Any, *, output_index: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Normalize a Responses `function_call` output item to the shared
+        tool-call dict. `index` lets the consumer keep parallel calls in
+        distinct slots; the sanitized name is mapped back to the original."""
+        sanitized_name = getattr(item, "name", "") or ""
+        call: Dict[str, Any] = {
+            "id": getattr(item, "call_id", "") or "",
+            "type": "function",
+            "function": {
+                "name": self._tool_name_mapping.get(sanitized_name, sanitized_name),
+                "arguments": getattr(item, "arguments", "") or "",
+            },
+        }
+        if isinstance(output_index, int):
+            call["index"] = output_index
+        return call
 
     async def _astream_chat_responses_api(
         self,
@@ -1185,6 +1151,19 @@ class OpenAIClient(ModelClient):
             )
 
             accumulated_content = ""
+            # Function calls are assembled from THREE event families and the
+            # name/call_id live on only one of them. `output_item.added`
+            # carries the item (name + call_id, empty arguments);
+            # `function_call_arguments.delta/.done` carry ONLY item_id +
+            # arguments — no name, no call_id (verified live against
+            # gpt-5.6-terra, 2026-09-01: `name` is None on the done event
+            # even though the SDK type declares the field); `output_item.done`
+            # carries the finished item with all three. Reading the name off
+            # the arguments-done event produced a nameless call every time,
+            # which the orchestrator rejected as "Malformed tool call:
+            # function name is missing" — three in a row halted the turn and
+            # the model then told the user it had no image tool.
+            pending_calls: Dict[str, Dict[str, Any]] = {}
 
             async for event in stream:
                 event_type = getattr(event, "type", None)
@@ -1199,60 +1178,115 @@ class OpenAIClient(ModelClient):
                         finish_reason=None,
                     )
 
-                elif event_type == "response.function_call_arguments.done":
-                    # Function call complete
-                    sanitized_name = getattr(event, "name", "")
-                    yield StreamChunk(
-                        content=accumulated_content,
-                        delta="",
-                        finish_reason=None,
-                        tool_calls=[
-                            {
-                                "id": getattr(event, "call_id", ""),
-                                "type": "function",
-                                "function": {
-                                    "name": self._tool_name_mapping.get(
-                                        sanitized_name, sanitized_name
+                elif event_type == "response.reasoning_summary_text.delta":
+                    delta = getattr(event, "delta", "")
+                    if delta:
+                        yield StreamChunk(
+                            content=accumulated_content,
+                            delta="",
+                            thinking_delta=delta,
+                            finish_reason=None,
+                        )
+
+                elif event_type == "response.output_item.added":
+                    item = getattr(event, "item", None)
+                    if getattr(item, "type", None) == "function_call":
+                        call = self._responses_function_call_dict(
+                            item, output_index=getattr(event, "output_index", None)
+                        )
+                        pending_calls[getattr(item, "id", "") or ""] = call
+                        # Announce the call the moment it starts: argument
+                        # generation can run for seconds with no other event,
+                        # and the consumer turns a named call into
+                        # ACTION_STREAMING (the pending tool chip).
+                        yield StreamChunk(
+                            content=accumulated_content,
+                            delta="",
+                            finish_reason=None,
+                            tool_calls=[dict(call, function=dict(call["function"]))],
+                        )
+
+                elif event_type == "response.function_call_arguments.delta":
+                    call = pending_calls.get(getattr(event, "item_id", "") or "")
+                    if call is not None:
+                        call["function"]["arguments"] += getattr(event, "delta", "") or ""
+
+                elif event_type == "response.output_item.done":
+                    item = getattr(event, "item", None)
+                    item_type = getattr(item, "type", None)
+                    if item_type == "function_call":
+                        call = self._responses_function_call_dict(
+                            item, output_index=getattr(event, "output_index", None)
+                        )
+                        pending = pending_calls.pop(getattr(item, "id", "") or "", None)
+                        if not call["function"]["arguments"] and pending:
+                            call["function"]["arguments"] = pending["function"]["arguments"]
+                        yield StreamChunk(
+                            content=accumulated_content,
+                            delta="",
+                            finish_reason=None,
+                            tool_calls=[call],
+                        )
+                    elif item_type == "mcp_call":
+                        # The provider already ran this call server-side: hand
+                        # the consumer the call AND its result, as the Anthropic
+                        # path does, so it is recorded and never dispatched.
+                        error = getattr(item, "error", None)
+                        yield StreamChunk(
+                            content=accumulated_content,
+                            delta="",
+                            finish_reason=None,
+                            tool_calls=[
+                                {
+                                    "id": getattr(item, "id", ""),
+                                    "type": "mcp_function",
+                                    "function": {
+                                        "name": getattr(item, "name", ""),
+                                        "arguments": getattr(item, "arguments", "{}"),
+                                    },
+                                    "server_label": getattr(item, "server_label", None),
+                                }
+                            ],
+                            mcp_tool_results=[
+                                {
+                                    "tool_use_id": getattr(item, "id", ""),
+                                    "is_error": bool(error),
+                                    "content": str(
+                                        error if error else (getattr(item, "output", None) or "")
                                     ),
-                                    "arguments": getattr(event, "arguments", "{}"),
-                                },
-                            }
-                        ],
-                    )
+                                }
+                            ],
+                        )
 
-                elif event_type == "response.mcp_call.done":
-                    # MCP call complete
-                    yield StreamChunk(
-                        content=accumulated_content,
-                        delta="",
-                        finish_reason=None,
-                        tool_calls=[
-                            {
-                                "id": getattr(event, "id", ""),
-                                "type": "mcp_function",
-                                "function": {
-                                    "name": getattr(event, "name", ""),
-                                    "arguments": getattr(event, "arguments", "{}"),
-                                },
-                                "server_label": getattr(event, "server_label", None),
-                            }
-                        ],
-                    )
-
-                elif event_type == "response.done":
-                    # Response complete
+                elif event_type in ("response.completed", "response.incomplete"):
+                    # Terminal events. (`response.done` is not a Responses API
+                    # event; matching on it meant usage was never captured and
+                    # every streamed call billed as zero tokens.)
                     response_data = getattr(event, "response", None)
                     usage = None
+                    finish_reason = "stop"
                     if response_data:
                         usage_data = getattr(response_data, "usage", None)
                         if usage_data:
                             usage = extract_usage(usage_data)
+                        details = getattr(response_data, "incomplete_details", None)
+                        if getattr(details, "reason", None) == "max_output_tokens":
+                            finish_reason = "length"
 
                     yield StreamChunk(
                         content=accumulated_content,
                         delta="",
-                        finish_reason="stop",
+                        finish_reason=finish_reason,
                         usage=usage,
+                    )
+
+                elif event_type == "response.failed":
+                    response_data = getattr(event, "response", None)
+                    error = getattr(response_data, "error", None)
+                    raise ProviderError(
+                        f"OpenAI Responses API stream failed: "
+                        f"{getattr(error, 'message', None) or error or 'unknown error'}",
+                        self.provider_name,
                     )
 
         except openai.AuthenticationError as e:
@@ -1262,9 +1296,7 @@ class OpenAIClient(ModelClient):
         except openai.BadRequestError as e:
             raise ModelError(str(e), self.model, original_error=e)
         except asyncio.TimeoutError as e:
-            raise MiiflowTimeoutError(
-                "Streaming request timed out", self.timeout, original_error=e
-            )
+            raise MiiflowTimeoutError("Streaming request timed out", self.timeout, original_error=e)
         except Exception as e:
             raise ProviderError(
                 f"OpenAI Responses API streaming error: {str(e)}",

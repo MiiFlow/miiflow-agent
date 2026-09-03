@@ -11,6 +11,7 @@ is the orchestrator.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -31,6 +32,28 @@ if TYPE_CHECKING:
     from .orchestrator import ReActOrchestrator
 
 logger = logging.getLogger(__name__)
+
+
+def _call_arguments(raw: Any) -> Dict[str, Any]:
+    """The arguments of a provider-executed call, whatever shape it arrived in.
+
+    Anthropic hands back a parsed dict; OpenAI's Responses API hands back the
+    JSON *string* it sent (`mcp_call.arguments`). Keeping only the dict left
+    every native-MCP call on the OpenAI path recorded with `input: {}` — which
+    is how a run that shipped a bad argument to a connected MCP server showed a
+    validation failure in the server's logs and an empty, blameless call in our
+    own timeline. Record what was actually sent.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
 
 
 class OutcomeRecording:
@@ -214,7 +237,7 @@ class OutcomeRecording:
 
         for call_id, call in calls.items():
             fn = call.get("function", {}) or {}
-            arguments = fn.get("arguments") if isinstance(fn.get("arguments"), dict) else {}
+            arguments = _call_arguments(fn.get("arguments"))
             result = results_by_id.get(call_id) or {}
             server_name = call.get("server_name")
 

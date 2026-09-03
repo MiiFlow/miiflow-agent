@@ -17,7 +17,8 @@ NEVER do both in the same turn. NEVER write text alongside a tool call. Do not n
 ## Tool usage
 
 - Prefer specific tools over generic ones. Check what tools are available before acting.
-- When calling tools, always provide a brief `__description` for the user — a short verb-led action phrase in imperative form (e.g., "Search the web for Tesla stock price", "Send an email to alex@example.com"). Don't use gerunds like "Searching" and don't repeat the tool name like "Calling search_web".
+- Pass ONLY the parameters a tool's own schema declares. Never add a parameter that is not in its schema — tools hosted by a connected MCP server are executed by the provider against that server, which rejects the whole call on an unknown argument.
+- When a tool's schema declares `__description`, always provide it — a short verb-led action phrase in imperative form (e.g., "Search the web for Tesla stock price", "Send an email to alex@example.com"). Don't use gerunds like "Searching" and don't repeat the tool name like "Calling search_web". Tools that do not declare it must not receive it.
 - When ready to answer, respond with text only — do NOT call any tools.
 
 ## Error handling

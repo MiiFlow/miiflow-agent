@@ -39,6 +39,7 @@ from typing import (
     Sequence,
 )
 
+from ..tools.schemas import ToolFailure
 from .enums import ReActEventType
 from .events.bus import EventFactory
 from .react_events import ReActEvent
@@ -690,6 +691,14 @@ def _render_dispatcher_description(
         "most recent user message. Include any other context the child "
         "needs in `structured_handoff_data`."
     )
+    parts.append("")
+    parts.append(
+        "Runtime policy limits how many times each handle may be dispatched in "
+        "one turn. Treat remaining calls as a recovery budget, not a planning "
+        "target: combine independent questions for the same sub-agent into one "
+        "self-contained task, and reuse completed findings instead of spending "
+        "another call. A rejection reports the effective limit."
+    )
     if transfer_allowed:
         parts.append("")
         parts.append(
@@ -822,14 +831,15 @@ def _build_dispatcher_schema(
     )
 
 
-def _err(kind: str, message: str) -> Dict[str, Any]:
-    """Synthesize a structured tool observation for the parent LLM."""
-    return {
+def _err(kind: str, message: str) -> "ToolFailure[Dict[str, Any]]":
+    """Return an explicit failure with a structured diagnostic payload."""
+    output = {
         "status": "rejected",
         "error_kind": kind,
         "error": message,
         "answer": None,
     }
+    return ToolFailure(error=message, output=output, error_type=kind)
 
 
 def make_subagent_dispatcher_tool(
@@ -902,7 +912,7 @@ def make_subagent_dispatcher_tool(
         intent_summary: str,
         structured_handoff_data: Optional[Dict[str, Any]] = None,
         mode: str = "report",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any] | ToolFailure[Dict[str, Any]]:
         from ..subagent import SubAgentHandoff
 
         child = child_map.get(handle)
@@ -1161,6 +1171,12 @@ def make_subagent_dispatcher_tool(
         # Django-side dispatch_assistant tool returns so consumers of the
         # observation (recovery, citation, the parent's own reasoning)
         # don't need to fork.
+        if result.status == "failed":
+            return ToolFailure(
+                error=result.error or f"Sub-agent '{handle}' failed.",
+                output=observation,
+                error_type="subagent_failed",
+            )
         return observation
 
     _dispatch._tool_schema = schema  # type: ignore[attr-defined]

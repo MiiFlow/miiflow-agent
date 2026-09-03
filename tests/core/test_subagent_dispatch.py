@@ -69,6 +69,21 @@ def test_subagent_protocol_runtime_check():
     assert isinstance(desc, SubAgent)
 
 
+def test_dispatch_description_exposes_per_handle_recovery_budget():
+    """The model should batch a sub-agent's work before the guard rejects it."""
+    from miiflow_agent.core.react.dispatch import _render_dispatcher_description
+    from miiflow_agent.core.subagent import SubAgentDescriptor
+
+    description = _render_dispatcher_description(
+        [SubAgentDescriptor(handle="google", name="Google", description="Ads")]
+    )
+
+    assert "Runtime policy limits" in description
+    assert "combine independent questions" in description
+    assert "recovery budget" in description
+    assert "same sub-agent" in description
+
+
 # ── AgentConfig ──────────────────────────────────────────────────────────
 
 
@@ -996,6 +1011,7 @@ def test_dispatcher_tool_unknown_handle_returns_error():
     from miiflow_agent.core.react.dispatch import (
         make_subagent_dispatcher_tool,
     )
+    from miiflow_agent.core.tools import ToolFailure
 
     sub = _FakeSubAgent()
     tool = make_subagent_dispatcher_tool([sub], parent_assistant_id="p")
@@ -1013,7 +1029,9 @@ def test_dispatcher_tool_unknown_handle_returns_error():
             intent_summary="s",
         )
 
-    out = asyncio.run(_go())
+    failure = asyncio.run(_go())
+    assert isinstance(failure, ToolFailure)
+    out = failure.output
     assert out["status"] == "rejected"
     assert out["error_kind"] == "unknown_handle"
 

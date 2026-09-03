@@ -40,9 +40,9 @@ class CallbackEventType(Enum):
     ON_ERROR = "on_error"  # On LLM call error
     AGENT_RUN_START = "agent_run_start"  # When agent execution begins
     AGENT_RUN_END = "agent_run_end"  # When agent execution completes
-    TOOL_EXECUTED = "tool_executed"  # After a tool is executed (with tool info)
+    TOOL_EXECUTED = "tool_executed"  # Final outcome, after POST_TOOL_USE transforms
     PRE_TOOL_USE = "pre_tool_use"  # Before a tool is executed (can block/modify)
-    POST_TOOL_USE = "post_tool_use"  # After a tool is executed (can transform result)
+    POST_TOOL_USE = "post_tool_use"  # After callable execution; before final outcome
 
 
 @dataclass
@@ -543,9 +543,11 @@ def on_pre_tool_use(callback: CallbackFn) -> CallbackFn:
 def on_post_tool_use(callback: CallbackFn) -> CallbackFn:
     """Decorator to register a POST_TOOL_USE callback.
 
-    POST_TOOL_USE callbacks fire after a tool has executed. They can:
+    POST_TOOL_USE callbacks fire after the tool callable and before the final
+    TOOL_EXECUTED event. They can:
     - Inspect tool_output
     - Transform the output by setting event.transformed_output and event.output_transformed = True
+      (return ``ToolFailure`` there to explicitly change the final outcome)
     - Enrich output with additional metadata (e.g., source references for citations)
 
     Example:

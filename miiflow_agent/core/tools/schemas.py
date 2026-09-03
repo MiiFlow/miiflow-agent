@@ -72,8 +72,28 @@ class ParameterSchema:
 
 
 @dataclass
+class ToolFailure(Generic[ResultType]):
+    """Explicit failure returned by a tool body or result adapter.
+
+    Tool output is deliberately opaque to the framework: ordinary mappings may
+    contain fields such as ``status``, ``error`` or ``success`` as domain data.
+    Returning this wrapper is the unambiguous way to say that the *invocation*
+    failed while optionally preserving a structured payload for diagnostics.
+    """
+
+    error: str
+    output: Optional[ResultType] = None
+    error_type: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class ToolResult(Generic[ResultType]):
-    """Production-grade tool execution result."""
+    """Production-grade tool execution result.
+
+    ``success`` and ``error`` are the execution envelope. ``output`` is opaque
+    application data and is never inspected to infer whether execution failed.
+    """
     name: str
     input: Dict[str, Any]
     output: Optional[ResultType] = None
@@ -81,6 +101,19 @@ class ToolResult(Generic[ResultType]):
     success: bool = True
     execution_time: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def apply_failure(
+        self, failure: ToolFailure[ResultType]
+    ) -> "ToolResult[ResultType]":
+        """Apply an explicit failure while retaining this result's identity."""
+
+        self.output = failure.output
+        self.error = failure.error
+        self.success = False
+        self.metadata.update(failure.metadata)
+        if failure.error_type:
+            self.metadata.setdefault("error_type", failure.error_type)
+        return self
     
     @property
     def is_success(self) -> bool:

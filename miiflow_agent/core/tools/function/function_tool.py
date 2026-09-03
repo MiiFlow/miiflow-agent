@@ -5,7 +5,7 @@ import time
 import logging
 from typing import Any, Callable, Dict, Optional
 
-from ..schemas import ToolResult
+from ..schemas import ToolFailure, ToolResult
 from ..types import FunctionType
 from ..exceptions import ToolExecutionError, is_tool_validation_error, log_tool_failure
 from ..schema_utils import detect_function_type, get_fun_schema
@@ -17,11 +17,20 @@ logger = logging.getLogger(__name__)
 class FunctionTool:
     """Function tool with safe execution."""
     
-    def __init__(self, fn: Callable, name: Optional[str] = None, description: Optional[str] = None):
+    def __init__(
+        self,
+        fn: Callable,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        result_adapter: Optional[Callable[[Any], Any]] = None,
+    ):
         from ..schemas import ToolSchema, ParameterSchema
         from ..types import ToolType, ParameterType
 
         self.fn = fn
+        # Hosts may opt into their own legacy/domain result conventions. The
+        # core framework itself never assigns meaning to ordinary output keys.
+        self.result_adapter = result_adapter
         self.function_type = detect_function_type(fn)
         self.context_injection = analyze_context_pattern(fn)
 
@@ -148,7 +157,18 @@ class FunctionTool:
             else:
                 raise ToolExecutionError(f"Unsupported function type: {self.function_type}")
 
+            if self.result_adapter is not None:
+                result = self.result_adapter(result)
+
             execution_time = time.time() - start_time
+
+            if isinstance(result, ToolFailure):
+                return ToolResult(
+                    name=self.name,
+                    input=validated_inputs,
+                    execution_time=execution_time,
+                    metadata={"function_type": self.function_type.value},
+                ).apply_failure(result)
 
             return ToolResult(
                 name=self.name,

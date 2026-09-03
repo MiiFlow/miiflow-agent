@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from ..callbacks import CallbackEvent, CallbackEventType, get_active_registry
 from ..callback_context import get_callback_context
-from ..tools import ToolResult
+from ..tools import ToolFailure, ToolResult
 from .adaptive_concurrency import looks_like_rate_limit
 
 logger = logging.getLogger(__name__)
@@ -101,11 +101,10 @@ class AgentToolExecutor:
         self._readonly_parallel = (
             os.getenv("MIIFLOW_READONLY_PARALLEL", "0") == "1"
         )
-        # Framework-level POST_TOOL_USE emission. Deliberately OPT-IN:
-        # adapter frameworks that wrap tool bodies and emit POST_TOOL_USE
-        # themselves (miiflow-web's DynamicFunctionBuilder does) would
-        # double-fire their output-transforming callbacks if the executor
-        # also emitted — enable only when no wrapper-level emission exists.
+        # Framework-level POST_TOOL_USE emission. Deliberately OPT-IN for
+        # compatibility with hosts that already own this callback seam. A
+        # host that enables it receives one framework event after the callable
+        # returns and before the finalized TOOL_EXECUTED event.
         self._emit_post_tool_use = (
             os.getenv("MIIFLOW_EMIT_POST_TOOL_USE", "0") == "1"
         )
@@ -260,16 +259,10 @@ class AgentToolExecutor:
 
         execution_time_ms = (time.time() - start_time) * 1000
 
-        # Emit TOOL_EXECUTED callback for billing/tracking
-        await self._emit_tool_executed_callback(
-            tool_name=tool_name,
-            inputs=inputs,
-            result=result,
-            execution_time_ms=execution_time_ms,
-        )
-
         # Framework POST_TOOL_USE (opt-in — see __init__). Callbacks may
-        # transform the output; the transformed value is what the model sees.
+        # transform the output. Finish that processing before TOOL_EXECUTED so
+        # billing, audit and approval callbacks observe the same final outcome
+        # that is returned to the orchestrator and model.
         if self._emit_post_tool_use:
             try:
                 event = CallbackEvent(
@@ -283,9 +276,21 @@ class AgentToolExecutor:
                 )
                 await get_active_registry().emit(event)
                 if event.output_transformed and event.transformed_output is not None:
-                    result.output = event.transformed_output
+                    transformed = event.transformed_output
+                    if isinstance(transformed, ToolFailure):
+                        result.apply_failure(transformed)
+                    else:
+                        result.output = transformed
             except Exception as exc:  # noqa: BLE001 — hooks must not fail the run
                 logger.warning("POST_TOOL_USE emission failed: %s", exc)
+
+        # Emit the finalized outcome once, after optional transformation.
+        await self._emit_tool_executed_callback(
+            tool_name=tool_name,
+            inputs=inputs,
+            result=result,
+            execution_time_ms=execution_time_ms,
+        )
 
         return result
 

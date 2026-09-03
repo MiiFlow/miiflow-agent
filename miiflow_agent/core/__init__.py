@@ -22,6 +22,7 @@ from .tools import (
     # Production-grade modular tools
     FunctionTool,
     ToolRegistry,
+    ToolFailure,
     ToolResult,
     FunctionType,
     ParameterType,
@@ -153,6 +154,7 @@ __all__ = [
 
     "FunctionTool",
     "ToolRegistry",
+    "ToolFailure",
     "ToolResult",
     "FunctionType",
     "ParameterType",

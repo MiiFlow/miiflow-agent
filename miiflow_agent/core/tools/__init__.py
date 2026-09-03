@@ -45,6 +45,7 @@ from .mcp import (
 # Schemas and types
 from .schemas import (
     ParameterSchema,
+    ToolFailure,
     ToolResult,
     ToolSchema,
     PreparedCall
@@ -155,6 +156,7 @@ __all__ = [
 
     # Schemas and types
     "ParameterSchema",
+    "ToolFailure",
     "ToolResult",
     "ToolSchema",
     "PreparedCall",

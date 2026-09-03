@@ -19,11 +19,18 @@ enum, an ``integer`` param whose tool body happily takes ``"10,20"`` — and
 providers only check them in strict mode, so turning enforcement on at
 library-upgrade time rejects calls that worked yesterday, with the defect
 in the schema rather than the call (retries cannot self-correct). Until a
-deployment audits its schemas and opts in, violations are logged, values
-pass through untouched, and only the two base-era rules apply: presence of
+deployment audits its schemas and opts in, violations are logged and the
+value passes through, and only the two base-era rules apply: presence of
 required parameters, and unknown parameters dropped before dispatch.
+
+Coercion is separate from enforcement. A coercion that SUCCEEDS is a
+repair, not a rejection, so it applies in both modes: `limit="10"` reaches
+the tool as ``10`` and ``rows='[{...}]'`` as a list. Withholding a
+successful coercion until strict mode only moved the failure downstream to
+whatever could not name it.
 """
 
+import json
 import logging
 import os
 import re
@@ -46,6 +53,28 @@ def _type_label(param_type: ParameterType) -> str:
     if param_type in _STRING_TYPES:
         return "string"
     return param_type.value
+
+
+def _parse_json_string(value: Any, expected: type) -> Tuple[Any, bool]:
+    """Decode a JSON-encoded string into ``expected``; return (value, ok).
+
+    Models routinely hand structured parameters over as JSON *text* rather
+    than as structure — ``rows="[{...}]"``, ``breakdowns='["age","gender"]'``.
+    Scalars have always been coerced from their string form here; arrays and
+    objects were not, so the string flowed through untouched and the failure
+    surfaced somewhere downstream that could not name it (for `render_table`,
+    a zod error in the browser). Same narrow rule as the scalar branches: the
+    text must parse, and it must parse to the declared type.
+    """
+    if not isinstance(value, str):
+        return value, False
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError):
+        return value, False
+    if isinstance(parsed, expected):
+        return parsed, True
+    return value, False
 
 
 def _coerce(param_type: ParameterType, value: Any) -> Tuple[Any, bool]:
@@ -93,10 +122,14 @@ def _coerce(param_type: ParameterType, value: Any) -> Tuple[Any, bool]:
         return value, False
 
     if param_type == ParameterType.ARRAY:
-        return (value, True) if isinstance(value, list) else (value, False)
+        if isinstance(value, list):
+            return value, True
+        return _parse_json_string(value, list)
 
     if param_type == ParameterType.OBJECT:
-        return (value, True) if isinstance(value, dict) else (value, False)
+        if isinstance(value, dict):
+            return value, True
+        return _parse_json_string(value, dict)
 
     if param_type == ParameterType.NULL:
         return (value, value is None)
@@ -170,10 +203,10 @@ def validate_inputs_against(
 
     ``enforce=None`` reads ``MIIFLOW_STRICT_TOOL_VALIDATION`` (default off).
     Off: presence of required params is the only hard rule; type/enum/range/
-    pattern violations are logged and values pass through UNTOUCHED (no
-    coercion), matching pre-enforcement behavior exactly. On: violations are
+    pattern violations are logged and the call proceeds. On: violations are
     collected into errors — all of them, so the model fixes everything in a
-    single retry — and unambiguous coercions apply.
+    single retry. Unambiguous coercions apply in both modes; only whether a
+    violation *raises* depends on ``enforce``.
     """
     if enforce is None:
         enforce = strict_validation_enabled()
@@ -219,9 +252,9 @@ def validate_inputs_against(
                         name,
                         problem,
                     )
-                validated[name] = value
+                validated[name] = coerced
             continue
 
-        validated[name] = coerced if enforce else value
+        validated[name] = coerced
 
     return validated, errors

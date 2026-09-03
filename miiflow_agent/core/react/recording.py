@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -61,6 +62,78 @@ class OutcomeRecording:
 
     def __init__(self, orch: "ReActOrchestrator"):
         self._orch = orch
+
+    #: An observation that already opens with a label (a resumed run, a tool
+    #: that injects its own) must not be labelled twice.
+    _REF_PREFIX_RE = re.compile(r"^\[ref:[\w]+\]")
+
+    #: Artifact receipts, not data sources. A `render_*` call returns a
+    #: `[VIZ:id]` marker that the model places in its answer and the host
+    #: swaps for the card; citing it would mean citing the chart rather than
+    #: the numbers behind it. It is also unsafe: the host's
+    #: `is_visualization_result` matches a bare marker with an ANCHORED
+    #: `^\[VIZ:...\]$`, so a `[ref:...]` prefix in front of one would stop
+    #: the visualization from being recognised at all.
+    _ARTIFACT_MARKER_RE = re.compile(r"^\[(?:VIZ|SA|MEDIA):")
+
+    @staticmethod
+    def _short_tool_name(tool_name: str) -> str:
+        """`meta_ads_insights` -> `ads_insights`; short names pass through.
+
+        Same rule as `tool_config_converter._generate_reference_label` on the
+        server's other tool path, so a reader never sees two conventions.
+        """
+        parts = tool_name.split("_")
+        return "_".join(parts[-2:]) if len(parts) > 2 else tool_name
+
+    @classmethod
+    def _is_artifact_observation(cls, observation: Optional[str]) -> bool:
+        """Whether this observation is a render receipt rather than a source."""
+        return bool(observation) and bool(cls._ARTIFACT_MARKER_RE.match(observation))
+
+    def _mint_reference_label(self, state: "ExecutionState", tool_name: str) -> str:
+        """Allocate this run's next citation label for ``tool_name``.
+
+        ``state`` is a duck-typed seam (resume paths and tests pass stand-ins),
+        so the counter store is created on demand rather than assumed — the
+        alternative is numbering that silently restarts at 1 mid-run and hands
+        two different calls the same citation key.
+        """
+        counters = getattr(state, "reference_label_counters", None)
+        if counters is None:
+            counters = {}
+            try:
+                state.reference_label_counters = counters
+            except AttributeError:  # frozen/slotted stand-in — label anyway
+                pass
+        short_name = self._short_tool_name(tool_name)
+        counters[short_name] = counters.get(short_name, 0) + 1
+        return f"{short_name}_{counters[short_name]}"
+
+    def _apply_reference_label(
+        self, reference_label: Optional[str], observation: str
+    ) -> str:
+        """Open the observation with the `[ref:LABEL]` tag that cites it.
+
+        The prompt already instructs the model that "tool results open with a
+        reference tag like [ref:tool_name_N] ... append that exact tag", and
+        `citation_processor` already resolves markers by scanning the timeline
+        for a matching `reference_label` — which `streaming_service`
+        `_extract_reference_label` reads back off this very prefix. Only the
+        tag itself was never emitted on this path, so the model invented
+        plausible-looking labels from tool names, nothing resolved them, and
+        the raw marker shipped to the reader: "...blending Smart Bidding's
+        target [ref:google_ads_query_2]." Minting here — the one seam every
+        finalized observation passes through — closes the loop for local and
+        provider-executed calls alike.
+        """
+        if not reference_label:
+            return observation
+        if observation and self._REF_PREFIX_RE.match(observation):
+            return observation
+        if not observation:
+            return f"[ref:{reference_label}]"
+        return f"[ref:{reference_label}]\n{observation}"
 
     async def record_tool_observation(
         self,
@@ -114,6 +187,17 @@ class OutcomeRecording:
             if isinstance(run_deps, dict):
                 produced_by_path = run_deps.get("ledger_producer_path")
 
+        # Minted before the sink write so the stored row, the string the model
+        # reads, and the citation the model writes back all name the same call.
+        # Artifact receipts are skipped outright — no label, and no number
+        # consumed, so citation keys stay dense over the calls that produced
+        # actual data.
+        reference_label = (
+            None
+            if self._is_artifact_observation(observation)
+            else self._mint_reference_label(state, tool_name)
+        )
+
         ref: Optional[str] = None
         sink = get_observation_sink(context)
         if sink is not None:
@@ -131,6 +215,7 @@ class OutcomeRecording:
                         step_number=state.current_step,
                         produced_by_path=list(produced_by_path or ["root"]),
                         source=source,
+                        reference_label=reference_label,
                     )
                 )
             except Exception as sink_err:  # noqa: BLE001 — never fail the run
@@ -196,7 +281,12 @@ class OutcomeRecording:
                 len(bounded),
                 ref,
             )
-        return RecordedObservation(ref=ref, observation=bounded)
+        # Prefix AFTER bounding so the tag survives truncation — it is the
+        # only thing tying the model's citation to this call.
+        return RecordedObservation(
+            ref=ref,
+            observation=self._apply_reference_label(reference_label, bounded),
+        )
 
     async def record_provider_executed_calls(
         self,
@@ -275,8 +365,17 @@ class OutcomeRecording:
             # These results are replayed to the provider verbatim by
             # `_convert_message` (as mcp_tool_result blocks), so the bound has
             # to land on the payload itself — not just on the event.
+            #
+            # The citation key is stripped back off for the replay copy.
+            # Labels are numbered per RUN, so a stale one riding into a later
+            # turn would collide with that turn's freshly minted key of the
+            # same name — two different results wearing one tag, in front of
+            # the model and in the resolver. The label's job is done once this
+            # turn's event carries it.
             if has_result and isinstance(result, dict):
-                result["content"] = observation
+                result["content"] = self._REF_PREFIX_RE.sub(
+                    "", observation, count=1
+                ).lstrip("\n")
 
             await self._orch.event_bus.publish(
                 EventFactory.observation(

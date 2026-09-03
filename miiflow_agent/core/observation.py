@@ -81,6 +81,11 @@ class ObservationRecord:
     step_number: int = 0
     produced_by_path: List[str] = field(default_factory=list)
     source: str = "react"  # "react" | "resume"
+    # Citation key for this call, `{short_tool_name}_{n}` within the run. The
+    # observation shown to the model opens with `[ref:<this>]`, and the answer
+    # cites it back; storing it on the row is what lets a persisted answer's
+    # markers be resolved to the call that produced them.
+    reference_label: Optional[str] = None
 
 
 @dataclass

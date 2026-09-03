@@ -113,12 +113,15 @@ class TestRecordToolObservationSeam:
         )
 
         assert recorded.ref == "agent_obs_abc"
-        assert recorded.observation == "3 accounts"
+        # The observation the model reads opens with its citation key; the
+        # stored row keeps the same label as a field (asserted below).
+        assert recorded.observation == "[ref:ad_accounts_1]\n3 accounts"
         assert len(sink.records) == 1
         rec = sink.records[0]
         assert rec.tool_name == "list_all_ad_accounts"
         assert rec.tool_call_id == "tc_1"
         assert rec.observation_text == "3 accounts"
+        assert rec.reference_label == "ad_accounts_1"
         assert rec.raw_output == {"accounts": []}
         assert rec.step_number == 7
         # Ledger reduced regardless of sink
@@ -142,7 +145,7 @@ class TestRecordToolObservationSeam:
         )
 
         assert recorded.ref is None
-        assert recorded.observation == "rows"
+        assert recorded.observation == "[ref:ads_query_1]\nrows"
         assert len(cp.dispatch_ledger) == 1
 
     def test_sink_failure_is_swallowed(self):
@@ -184,6 +187,7 @@ class TestRecordToolObservationSeam:
         )
 
         assert recorded.ref is None
+        # No tool name means nothing to cite — no label, no prefix.
         assert recorded.observation == "x"
         assert sink.records == []
         assert cp.dispatch_ledger == []
@@ -216,7 +220,7 @@ class TestRecordToolObservationSeam:
 
         assert sink.records[0].observation_text == huge
         assert len(recorded.observation) < len(huge)
-        assert recorded.observation.startswith("x" * 1000)
+        assert recorded.observation.startswith("[ref:ads_query_1]\n" + "x" * 1000)
         assert "truncated" in recorded.observation
 
     def test_sink_excerpt_policy_wins_over_the_framework_default(self):
@@ -239,7 +243,71 @@ class TestRecordToolObservationSeam:
             )
         )
 
-        assert recorded.observation == "[google_ads_query:agent_obs_p] 0123456789"
+        # Labelling happens AFTER the sink's excerpt policy runs, so the
+        # citation key survives whatever truncation the policy applies.
+        assert recorded.observation == (
+            "[ref:ads_query_1]\n[google_ads_query:agent_obs_p] 0123456789"
+        )
+
+
+class TestReferenceLabelling:
+    """Every observation the model reads opens with the key it must cite.
+
+    The prompt tells the model "tool results open with a reference tag like
+    [ref:tool_name_N] ... append that exact tag", and citation_processor
+    resolves those markers against the timeline. This path emitted no tag, so
+    the model guessed labels, nothing resolved, and raw `[ref:google_ads_query_2]`
+    shipped inside a client-facing audit.
+    """
+
+    def _run(self, coro):
+        return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+
+    def _record_one(self, sink, state, tool_name, observation):
+        return self._run(
+            _record(
+                SimpleNamespace(),
+                _context(sink, checkpoint=Checkpoint(thread_id="t")),
+                state,
+                tool_name=tool_name,
+                inputs={},
+                observation=observation,
+                success=True,
+            )
+        )
+
+    def test_labels_increment_per_tool_within_a_run(self):
+        sink = _RecordingSink(ref="agent_obs_1")
+        state = _state()
+        first = self._record_one(sink, state, "meta_ads_insights", "a")
+        second = self._record_one(sink, state, "meta_ads_insights", "b")
+        other = self._record_one(sink, state, "google_ads_query", "c")
+
+        assert first.observation.startswith("[ref:ads_insights_1]")
+        assert second.observation.startswith("[ref:ads_insights_2]")
+        assert other.observation.startswith("[ref:ads_query_1]")
+
+    def test_artifact_receipts_are_not_labelled(self):
+        """A `[VIZ:id]` marker is a render receipt, not a source — and
+        `sse_converters` matches that marker ANCHORED, so a prefix in front of
+        it would stop the visualization from being recognised at all."""
+        sink = _RecordingSink(ref="agent_obs_1")
+        state = _state()
+        viz = self._record_one(sink, state, "render_table", "[VIZ:abc-123]")
+        assert viz.observation == "[VIZ:abc-123]"
+        assert sink.records[-1].reference_label is None
+
+        # ...and the skipped call consumes no number, so keys stay dense over
+        # the calls that actually produced data.
+        real = self._record_one(sink, state, "render_table", "rows")
+        assert real.observation.startswith("[ref:render_table_1]")
+
+    def test_an_existing_label_is_not_doubled(self):
+        sink = _RecordingSink(ref="agent_obs_1")
+        recorded = self._record_one(
+            sink, _state(), "google_ads_query", "[ref:already_9]\nrows"
+        )
+        assert recorded.observation == "[ref:already_9]\nrows"
 
 
 class TestBoundObservationForLlm:

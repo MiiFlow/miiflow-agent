@@ -145,6 +145,52 @@ class TestValidateInputsAgainst:
         assert errors == []
         assert validated == {"limit": "not-a-number", "platform": "tiktok"}
 
+    def test_json_string_coerces_to_array_or_object(self):
+        """Models hand structured params over as JSON text — `render_table`
+        emitted rows='[{...}]' and the string reached the browser, where zod
+        rejected it. Scalars have always coerced from their string form; so
+        must arrays and objects."""
+        params = _params(
+            rows=_p("rows", ParameterType.ARRAY),
+            config=_p("config", ParameterType.OBJECT),
+        )
+        for enforce in (True, False):
+            validated, errors = validate_inputs_against(
+                params,
+                {"rows": '[{"a": 1}]', "config": '{"sortable": true}'},
+                enforce=enforce,
+            )
+            assert errors == []
+            assert validated["rows"] == [{"a": 1}]
+            assert validated["config"] == {"sortable": True}
+
+    def test_json_string_of_the_wrong_shape_is_not_coerced(self):
+        """Narrow rule, same as the scalar branches: it must parse AND parse
+        to the declared type. An object is not an array."""
+        params = _params(rows=_p("rows", ParameterType.ARRAY))
+        _, errors = validate_inputs_against(
+            params, {"rows": '{"a": 1}'}, enforce=True
+        )
+        assert len(errors) == 1
+        _, errors = validate_inputs_against(
+            params, {"rows": "not json at all"}, enforce=True
+        )
+        assert len(errors) == 1
+
+    def test_lax_mode_applies_successful_coercions(self):
+        """A coercion that succeeds is a repair, not a rejection. Withholding
+        it until strict mode only moved the failure downstream to whatever
+        could not name it."""
+        params = _params(
+            limit=_p("limit", ParameterType.INTEGER),
+            rows=_p("rows", ParameterType.ARRAY),
+        )
+        validated, errors = validate_inputs_against(
+            params, {"limit": "10", "rows": "[1, 2]"}, enforce=False
+        )
+        assert errors == []
+        assert validated == {"limit": 10, "rows": [1, 2]}
+
     def test_lax_mode_still_enforces_presence(self):
         params = _params(q=_p("q", ParameterType.STRING))
         _, errors = validate_inputs_against(params, {}, enforce=False)

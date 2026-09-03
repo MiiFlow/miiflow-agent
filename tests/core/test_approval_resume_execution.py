@@ -190,7 +190,9 @@ def test_child_owned_tool_routes_to_child_resumer_hook():
         assert ex.calls == []
         assert calls == [("google_ads_mutate", "thread_child")]
         assert deps["pending_approved_action"] is None
-        assert '{"created": true}' == messages[0].content
+        # The resumed result reaches the model as an ordinary observation,
+        # citation key and all.
+        assert messages[0].content == '[ref:ads_mutate_1]\n{"created": true}'
         assert orch.event_bus.events
         assert state.is_running is True
 
@@ -255,7 +257,9 @@ def test_legacy_approval_descriptor_recovers_child_path_from_checkpoint():
         assert deps["pending_approved_action"] is None
         assert cp.active_interrupt() is None
         assert "root/sub_1" not in cp.agent_frames
-        assert '{"created": true}' == messages[0].content
+        # The resumed result reaches the model as an ordinary observation,
+        # citation key and all.
+        assert messages[0].content == '[ref:ads_mutate_1]\n{"created": true}'
         assert state.is_running is True
 
     asyncio.run(go())

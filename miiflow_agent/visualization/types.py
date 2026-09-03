@@ -11,6 +11,8 @@ import hashlib
 import json
 import uuid
 
+from .text_normalization import RAW_DATA_TYPES, normalize_payload, normalize_text
+
 
 @dataclass
 class VisualizationConfig:
@@ -115,8 +117,32 @@ class VisualizationResult:
     id: str = ""
 
     def __post_init__(self) -> None:
+        self._normalize_display_text()
         if not self.id:
             self.id = self._content_id()
+
+    def _normalize_display_text(self) -> None:
+        r"""Repair text that arrived still encoded, before the id is derived.
+
+        Tool arguments come straight from the model, and it sometimes hands
+        over display copy with another layer of encoding intact — a literal
+        ``\u2014`` where an em dash belongs, ``&amp;`` where an ampersand
+        does. Nothing downstream objects (it is a valid string) and the
+        browser renders text nodes verbatim, so the escape is what the reader
+        sees. Normalizing here covers every producer rather than each tool.
+
+        Ordered before ``_content_id`` so the hash is over what is actually
+        rendered: two renders that differ only in how they were encoded are
+        the same card, and re-rendering replaces rather than stacks.
+        """
+        if self.title:
+            self.title = normalize_text(self.title)
+        if self.description:
+            self.description = normalize_text(self.description)
+        # `code_preview` / `form` carry a verbatim payload — source code and
+        # user-entered values must survive byte-for-byte.
+        if self.type not in RAW_DATA_TYPES and isinstance(self.data, dict):
+            self.data = normalize_payload(self.data)
 
     def _content_id(self) -> str:
         """A stable id for this visualization's content.

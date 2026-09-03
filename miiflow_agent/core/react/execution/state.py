@@ -50,6 +50,11 @@ class ExecutionState:
     # (e.g. image editing) can reference generated images via media_ref:<id>
     media_store: Dict[str, str] = field(default_factory=dict)
 
+    # Per-run citation-label counters, keyed by shortened tool name. Every
+    # observation opens with `[ref:{short_tool_name}_{n}]` so the model can
+    # cite the call it is reading; see `OutcomeRecording._mint_reference_label`.
+    reference_label_counters: Dict[str, int] = field(default_factory=dict)
+
     # Content blocks queued by tools (via LlmBlockInjection) that must be
     # materialized on the next provider prompt. Drained immediately before
     # each LLM call in the orchestrator. Each entry is a serialized block

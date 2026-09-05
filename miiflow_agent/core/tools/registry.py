@@ -69,6 +69,15 @@ class ToolRegistry:
         self._sanitized_to_original: Dict[str, str] = {}
         # Native MCP servers (for provider-side execution)
         self._native_mcp_servers: List[NativeMCPServerConfig] = []
+        # Connector servers registered LAZILY: prepared (auth resolved, tool
+        # selection applied) but not yet on the wire. The provider attaches a
+        # connector on every request that names it — connecting to the MCP
+        # server and listing its tools before generating a token — and in
+        # production that cost 5–7s of first-token latency on system-agent
+        # turns of which 1 in 70 ever called a connector tool (Sept 2026).
+        # A pending server is promoted by `activate_native_mcp_server`, which
+        # the host exposes to the model as a one-line "attach X" stub tool.
+        self._pending_native_mcp_servers: List[NativeMCPServerConfig] = []
 
         # ToolSearch: provider-agnostic deferred-tool discovery.
         from . import tool_search as _tool_search_mod
@@ -327,7 +336,9 @@ class ToolRegistry:
         resolved_name = self._resolve_name(name)
         return self.mcp_tools.get(resolved_name)
 
-    def register_native_mcp_server(self, config: NativeMCPServerConfig) -> None:
+    def register_native_mcp_server(
+        self, config: NativeMCPServerConfig, *, lazy: bool = False
+    ) -> None:
         """Register an MCP server for native provider-side execution.
 
         Native MCP servers are handled directly by the LLM provider (Anthropic, OpenAI)
@@ -335,10 +346,61 @@ class ToolRegistry:
 
         Args:
             config: NativeMCPServerConfig with server URL and auth details
+            lazy: keep the server PENDING — known to the registry (so misrouted
+                calls and diagnostics can name it) but absent from the wire
+                until `activate_native_mcp_server(config.name)` promotes it.
         """
+        if lazy:
+            self._pending_native_mcp_servers.append(config)
+            if self.enable_logging:
+                logger.info(f"Registered native MCP server (pending): {config.name}")
+            return
         self._native_mcp_servers.append(config)
         if self.enable_logging:
             logger.info(f"Registered native MCP server: {config.name} -> {config.url}")
+
+    def get_pending_native_mcp_configs(self) -> List[NativeMCPServerConfig]:
+        """Connector servers prepared for this run but not yet attached."""
+        return self._pending_native_mcp_servers
+
+    def activate_native_mcp_server(self, name: str) -> Optional[NativeMCPServerConfig]:
+        """Promote a pending connector server onto the wire for the NEXT request.
+
+        Returns the config when a pending server matched, the already-active
+        config when it was attached earlier in the run (idempotent), and None
+        when no server of that name is known. Tool schemas are rebuilt per
+        step, so the request after the call carries the server and its
+        toolset — one deliberate cache miss, paid only on turns that reach
+        for the server.
+        """
+        for config in self._native_mcp_servers:
+            if config.name == name:
+                return config
+        for index, config in enumerate(self._pending_native_mcp_servers):
+            if config.name == name:
+                self._pending_native_mcp_servers.pop(index)
+                self._native_mcp_servers.append(config)
+                if self.enable_logging:
+                    logger.info(f"Activated native MCP server: {config.name}")
+                return config
+        return None
+
+    def native_mcp_tool_count(self) -> int:
+        """Tools the ATTACHED connector servers are known to serve.
+
+        Counted toward the ToolSearch threshold (see `should_use_tool_search`):
+        a connector's definitions land in the prompt exactly like local ones
+        unless the run defers them, and deferral of an `mcp_toolset` is gated
+        on tool search being active. A 3-local-tool assistant attached to a
+        75-tool server used to ship every one of the 75 eagerly, ~280K prompt
+        tokens per call, because only the 3 were counted.
+        """
+        total = 0
+        for config in self._native_mcp_servers:
+            known = config.known_tools or []
+            disabled = set(config.disabled_tools or [])
+            total += sum(1 for name in known if name not in disabled)
+        return total
 
     def get_native_mcp_configs(self) -> List[NativeMCPServerConfig]:
         """Get all registered native MCP server configurations.
@@ -356,7 +418,7 @@ class ToolRegistry:
         one of their names has been misrouted — it is not evidence the tool is
         unavailable. Returns None when no registered server claims the name.
         """
-        for config in self._native_mcp_servers:
+        for config in (*self._native_mcp_servers, *self._pending_native_mcp_servers):
             for source in (config.known_tools, config.allowed_tools):
                 if source and name in source:
                     return config.name
@@ -371,8 +433,9 @@ class ToolRegistry:
         return len(self._native_mcp_servers) > 0
 
     def clear_native_mcp_servers(self) -> None:
-        """Remove all registered native MCP servers."""
+        """Remove all registered native MCP servers (attached and pending)."""
         self._native_mcp_servers.clear()
+        self._pending_native_mcp_servers.clear()
         if self.enable_logging:
             logger.info("Cleared all native MCP servers")
 
@@ -454,7 +517,7 @@ class ToolRegistry:
         if not self.tool_search_enabled:
             return False
         limit = threshold if threshold is not None else self.tool_search_threshold
-        return self.total_tool_count() > limit
+        return self.total_tool_count() + self.native_mcp_tool_count() > limit
 
     def get_always_load_names(self) -> List[str]:
         """Names of tools flagged ``always_load`` in their schema metadata."""

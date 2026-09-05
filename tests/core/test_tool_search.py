@@ -574,3 +574,75 @@ def test_no_keyword_suffix_on_non_anthropic_providers():
     ex = _executor_with_keywords(provider="openai")
     by_name = {s["name"]: s for s in ex._build_native_tool_schemas() if "name" in s}
     assert "Keywords:" not in by_name["ask"]["description"]
+
+
+# ── Connector (native MCP) tools count toward the threshold ─────────────────
+# Deferral of an `mcp_toolset` is gated on tool search being active, so a
+# registry that counted only LOCAL tools shipped a 75-tool connector server
+# eagerly on an assistant with 3 local tools (~280K prompt tokens per call).
+
+
+def _native_server(name, tools, disabled=None):
+    from miiflow_agent.core.tools.mcp import NativeMCPServerConfig
+
+    return NativeMCPServerConfig(
+        name=name, url=f"https://{name}.example/mcp", known_tools=tools,
+        disabled_tools=disabled,
+    )
+
+
+def test_attached_connector_tools_activate_tool_search():
+    reg = _make_registry(3)
+    assert reg.should_use_tool_search() is False
+    reg.register_native_mcp_server(_native_server("admin", [f"t{i}" for i in range(75)]))
+    assert reg.native_mcp_tool_count() == 75
+    assert reg.should_use_tool_search() is True
+
+
+def test_disabled_connector_tools_do_not_count():
+    reg = _make_registry(3)
+    tools = [f"t{i}" for i in range(9)]
+    reg.register_native_mcp_server(_native_server("s", tools, disabled=tools[:2]))
+    # 3 local + 7 usable = 10, not > 10 → still below the threshold.
+    assert reg.native_mcp_tool_count() == 7
+    assert reg.should_use_tool_search() is False
+
+
+def test_unsnapshotted_server_counts_nothing():
+    reg = _make_registry(3)
+    reg.register_native_mcp_server(_native_server("fresh", None))
+    assert reg.native_mcp_tool_count() == 0
+    assert reg.should_use_tool_search() is False
+
+
+# ── Lazy (pending) connector servers ─────────────────────────────────────────
+
+
+def test_pending_server_is_off_the_wire_until_activated():
+    reg = _make_registry(3)
+    cfg = _native_server("Triple Whale", [f"tw_{i}" for i in range(20)])
+    reg.register_native_mcp_server(cfg, lazy=True)
+    assert reg.has_native_mcp_servers() is False
+    assert reg.get_native_mcp_configs() == []
+    assert reg.get_pending_native_mcp_configs() == [cfg]
+    # Not counted toward tool search while pending, either.
+    assert reg.native_mcp_tool_count() == 0
+    # ...but a misrouted call to one of its tools is still diagnosable.
+    assert reg.native_mcp_server_for_tool("tw_3") == "Triple Whale"
+
+    assert reg.activate_native_mcp_server("Triple Whale") is cfg
+    assert reg.has_native_mcp_servers() is True
+    assert reg.get_pending_native_mcp_configs() == []
+    assert reg.native_mcp_tool_count() == 20
+    # Idempotent: a second activation returns the attached config.
+    assert reg.activate_native_mcp_server("Triple Whale") is cfg
+    assert reg.activate_native_mcp_server("nope") is None
+
+
+def test_clear_drops_pending_servers_too():
+    reg = _make_registry(1)
+    reg.register_native_mcp_server(_native_server("a", ["x"]), lazy=True)
+    reg.register_native_mcp_server(_native_server("b", ["y"]))
+    reg.clear_native_mcp_servers()
+    assert reg.get_pending_native_mcp_configs() == []
+    assert reg.get_native_mcp_configs() == []

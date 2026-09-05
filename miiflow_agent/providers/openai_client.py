@@ -201,6 +201,39 @@ class OpenAIClient(ModelClient):
             if key in kwargs and kwargs[key] is not None:
                 request_params[key] = kwargs[key]
 
+    @staticmethod
+    def _server_name_for_label(
+        label: Optional[str],
+        mcp_servers: Optional[List["NativeMCPServerConfig"]],
+    ) -> Optional[str]:
+        """The configured server's real name behind an OpenAI ``server_label``.
+
+        ``mcp_function`` is the shared shape both providers normalize into, and
+        every consumer of it reads ``server_name``: `recording`, which stamps
+        the event and the persisted timeline item, `AnthropicClient
+        ._convert_message`, and the server's `enhanced_response_generator`,
+        which drops a native-MCP timeline item that has no server name rather
+        than replay it as a local `tool_use`. Leaking OpenAI's wire spelling
+        upward meant every OpenAI-originated connector call was recorded with
+        ``server_name=None`` and then silently dropped from turn-boundary
+        replay — the model loses the raw payload from a turn it already
+        summarized, so grounding degrades with no error anywhere.
+
+        The label cannot be reversed by string surgery: ``to_openai_format``
+        sanitizes the name (``"Kopperfield Admin"`` -> ``"Kopperfield_Admin"``),
+        which is lossy. Match it against the servers actually on this request
+        instead, and fall back to the label when none matches.
+        """
+        if not label:
+            return None
+        for server in mcp_servers or []:
+            try:
+                if server.to_openai_format().get("server_label") == label:
+                    return getattr(server, "name", None) or label
+            except Exception:  # noqa: BLE001 — a malformed config must not kill the turn
+                continue
+        return label
+
     def _build_responses_request(
         self,
         *,
@@ -699,7 +732,7 @@ class OpenAIClient(ModelClient):
             )
             response = await self._create_response(request_params)
 
-            return self._parse_responses_api_response(response)
+            return self._parse_responses_api_response(response, mcp_servers)
 
         except openai.AuthenticationError as e:
             raise AuthenticationError(str(e), self.provider_name, original_error=e)
@@ -870,13 +903,28 @@ class OpenAIClient(ModelClient):
 
         return input_items
 
-    def _parse_responses_api_response(self, response: Any) -> ChatResponse:
+    def _parse_responses_api_response(
+        self,
+        response: Any,
+        mcp_servers: Optional[List["NativeMCPServerConfig"]] = None,
+    ) -> ChatResponse:
         """Parse Responses API output format.
 
         The Responses API returns output items instead of choices/messages.
+
+        ``mcp_servers`` are the connector servers on this request; they are
+        what turns an item's sanitized ``server_label`` back into the server's
+        real name. Without them a provider-executed call is recorded with
+        ``server_name=None`` and later dropped from turn-boundary replay.
         """
         content = ""
         tool_calls = []
+        # An `mcp_call` item carries the call AND its result. The streaming
+        # path has always surfaced both halves; this one used to keep only the
+        # call, so every provider-executed call on a non-streaming Responses
+        # request was recorded as "No result returned by the provider" and
+        # nothing could replay the pair on the next turn.
+        mcp_tool_results: List[Dict[str, Any]] = []
 
         # Extract content and tool calls from output items
         for item in getattr(response, "output", []):
@@ -907,6 +955,7 @@ class OpenAIClient(ModelClient):
 
             elif item_type == "mcp_call":
                 # Native MCP call result
+                call_error = getattr(item, "error", None)
                 tool_calls.append(
                     {
                         "id": getattr(item, "id", ""),
@@ -915,7 +964,20 @@ class OpenAIClient(ModelClient):
                             "name": getattr(item, "name", ""),
                             "arguments": getattr(item, "arguments", "{}"),
                         },
-                        "server_label": getattr(item, "server_label", None),
+                        "server_name": self._server_name_for_label(
+                            getattr(item, "server_label", None), mcp_servers
+                        ),
+                    }
+                )
+                mcp_tool_results.append(
+                    {
+                        "tool_use_id": getattr(item, "id", ""),
+                        "is_error": bool(call_error),
+                        "content": str(
+                            call_error
+                            if call_error
+                            else (getattr(item, "output", None) or "")
+                        ),
                     }
                 )
 
@@ -928,13 +990,18 @@ class OpenAIClient(ModelClient):
             tool_calls=tool_calls if tool_calls else None,
         )
 
+        metadata: Dict[str, Any] = {"response_id": getattr(response, "id", "")}
+        if mcp_tool_results:
+            metadata["mcp_tool_results"] = mcp_tool_results
+            metadata["native_mcp"] = True
+
         return ChatResponse(
             message=response_message,
             usage=usage,
             model=self.model,
             provider=self.provider_name,
             finish_reason=getattr(response, "status", "stop"),
-            metadata={"response_id": getattr(response, "id", "")},
+            metadata=metadata,
         )
 
     async def astream_chat(
@@ -1244,7 +1311,10 @@ class OpenAIClient(ModelClient):
                                         "name": getattr(item, "name", ""),
                                         "arguments": getattr(item, "arguments", "{}"),
                                     },
-                                    "server_label": getattr(item, "server_label", None),
+                                    "server_name": self._server_name_for_label(
+                                        getattr(item, "server_label", None),
+                                        mcp_servers,
+                                    ),
                                 }
                             ],
                             mcp_tool_results=[

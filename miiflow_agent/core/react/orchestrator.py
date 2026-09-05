@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from ..agent import RunContext
 from ..checkpoint import (
@@ -1322,12 +1322,26 @@ class ReActOrchestrator:
         collab = getattr(self, "_recording", None) or OutcomeRecording(self)
         return await collab.record_tool_observation(context, state, tool_name=tool_name, inputs=inputs, observation=observation, success=success, tool_call_id=tool_call_id, raw_output=raw_output, error=error, execution_time_ms=execution_time_ms, produced_by_path=produced_by_path, source=source)
 
-    async def _record_provider_executed_calls(self, context: RunContext, state: "ExecutionState", *, calls: Dict[str, Dict[str, Any]], results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _record_provider_executed_calls(self, context: RunContext, state: "ExecutionState", *, calls: Dict[str, Dict[str, Any]], results: List[Dict[str, Any]], already_planned: Optional[Set[str]] = None, already_recorded: Optional[Set[str]] = None) -> Dict[str, Any]:
         """Delegates to _recording.record_provider_executed_calls — see that module."""
         from .recording import OutcomeRecording
 
         collab = getattr(self, "_recording", None) or OutcomeRecording(self)
-        return await collab.record_provider_executed_calls(context, state, calls=calls, results=results)
+        return await collab.record_provider_executed_calls(context, state, calls=calls, results=results, already_planned=already_planned, already_recorded=already_recorded)
+
+    async def _publish_provider_call_planned(self, state: "ExecutionState", *, call: Dict[str, Any], call_id: str) -> None:
+        """Delegates to _recording.publish_provider_call_planned — see that module."""
+        from .recording import OutcomeRecording
+
+        collab = getattr(self, "_recording", None) or OutcomeRecording(self)
+        return await collab.publish_provider_call_planned(state, call=call, call_id=call_id)
+
+    async def _record_provider_call_observation(self, context: RunContext, state: "ExecutionState", *, call: Dict[str, Any], call_id: str, result: Optional[Dict[str, Any]], execution_time_ms: Optional[int] = None) -> None:
+        """Delegates to _recording.record_provider_call_observation — see that module."""
+        from .recording import OutcomeRecording
+
+        collab = getattr(self, "_recording", None) or OutcomeRecording(self)
+        return await collab.record_provider_call_observation(context, state, call=call, call_id=call_id, result=result, execution_time_ms=execution_time_ms)
 
     async def _execute_reasoning_step_native(self, context: RunContext, state: "ExecutionState") -> ReActStep:
         """Delegates to _step_streamer.execute_reasoning_step_native — see that module."""

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Set
 
 from ..message import Message, MessageRole
 from ..streaming import canonical_finish_reason
@@ -96,6 +96,17 @@ class StepStreamer:
             # turn an action turn nor reach the local dispatcher.
             provider_executed_calls: Dict[str, Dict[str, Any]] = {}  # id -> call
             provider_tool_results: List[Dict[str, Any]] = []
+            # Halves of the event pair already published DURING the stream, so
+            # the post-stream sweep knows what is left to do. Recording inline
+            # is what keeps the tool events ahead of the answer deltas the
+            # model generates after the last mcp_tool_result.
+            provider_planned_ids: Set[str] = set()
+            provider_recorded_ids: Set[str] = set()
+            # When each call's mcp_tool_use block finished streaming — the only
+            # clock we have for a call we did not run. The provider reports no
+            # duration, which is why every native-MCP observation in production
+            # carried a NULL execution_time_ms.
+            provider_call_started_at: Dict[str, float] = {}
             finish_reason = None
 
             logger.debug(f"Step {state.current_step} - Calling LLM with tools enabled")
@@ -186,10 +197,19 @@ class StepStreamer:
                 # Split off calls the provider ran server-side before anything
                 # else looks at this chunk's tool calls. They carry provider
                 # ids (Anthropic `mcptoolu_*`) and have no pending work, so
-                # they are recorded as observations after the stream, never
-                # dispatched. Re-keying by id means the finalized block
-                # (emitted at content_block_stop with parsed args) replaces the
-                # placeholder emitted at content_block_start.
+                # they are recorded as observations rather than dispatched.
+                # Re-keying by id means the finalized block (emitted at
+                # content_block_stop with parsed args) replaces the placeholder
+                # emitted at content_block_start.
+                #
+                # The pair is published HERE, at the blocks that carry it, not
+                # from a drain after the stream closes. Anthropic's block order
+                # in an MCP turn is mcp_tool_use -> mcp_tool_result -> text, so
+                # a post-stream drain put every tool event AFTER the whole
+                # answer had already streamed: the reasoning panel materialized
+                # above a finished answer, and streaming_service's
+                # ACTION_PLANNED heuristic discarded the real answer as
+                # "preamble" and then re-emitted it whole (a visible double).
                 if chunk.tool_calls:
                     for provider_call in chunk.tool_calls:
                         if provider_call.get("type") != "mcp_function":
@@ -229,8 +249,58 @@ class StepStreamer:
                                     state.current_step, preamble, buffer
                                 )
                             )
+
+                        if is_new_call:
+                            # content_block_start: the name is known, the
+                            # arguments are still generating. Same immediate
+                            # chip the local tool path shows.
+                            await self._orch.event_bus.publish(
+                                EventFactory.action_streaming(
+                                    state.current_step,
+                                    (provider_call.get("function") or {}).get("name"),
+                                    call_id,
+                                )
+                            )
+                        elif call_id and call_id not in provider_planned_ids:
+                            # content_block_stop: the same dict, arguments now
+                            # parsed by the normalizer.
+                            provider_planned_ids.add(call_id)
+                            provider_call_started_at[call_id] = time.time()
+                            await self._orch._publish_provider_call_planned(
+                                state, call=provider_call, call_id=call_id
+                            )
                 if getattr(chunk, "mcp_tool_results", None):
-                    provider_tool_results.extend(chunk.mcp_tool_results)
+                    for mcp_result in chunk.mcp_tool_results:
+                        provider_tool_results.append(mcp_result)
+                        result_id = mcp_result.get("tool_use_id") or ""
+                        matching_call = provider_executed_calls.get(result_id)
+                        if not matching_call or result_id in provider_recorded_ids:
+                            # A result with no matching call, or a duplicate:
+                            # leave it to the post-stream sweep rather than
+                            # inventing a call row for it here.
+                            continue
+                        if result_id not in provider_planned_ids:
+                            # Providers that hand back the call and its result
+                            # in ONE event (OpenAI's Responses `mcp_call`) never
+                            # reach the content_block_stop branch above.
+                            provider_planned_ids.add(result_id)
+                            await self._orch._publish_provider_call_planned(
+                                state, call=matching_call, call_id=result_id
+                            )
+                        started_at = provider_call_started_at.pop(result_id, None)
+                        provider_recorded_ids.add(result_id)
+                        await self._orch._record_provider_call_observation(
+                            context,
+                            state,
+                            call=matching_call,
+                            call_id=result_id,
+                            result=mcp_result,
+                            execution_time_ms=(
+                                None
+                                if started_at is None
+                                else int((time.time() - started_at) * 1000)
+                            ),
+                        )
                 if getattr(chunk, "tool_search_blocks", None):
                     provider_search_blocks.extend(chunk.tool_search_blocks)
 
@@ -421,11 +491,12 @@ class StepStreamer:
             step.tokens_used = tokens_used
             step.cost = cost
 
-            # Native-MCP calls finished server-side during the stream. Record
-            # them on the observation trail now so the timeline, citations and
-            # read_observation see the same history they would for a locally
-            # dispatched tool, and carry the results on the assistant message
-            # so the next request can replay the blocks.
+            # Sweep: every call whose result arrived was already recorded
+            # inline, above. What can be left is a call the provider never
+            # answered (turn cut short mid-block, or paused) — recorded as a
+            # visible failure so the trail has no silent gap. This also returns
+            # the results to carry on the assistant message so the next request
+            # can replay the blocks.
             provider_mcp_metadata: Dict[str, Any] = {}
             if provider_executed_calls:
                 provider_mcp_metadata = await self._orch._record_provider_executed_calls(
@@ -433,6 +504,8 @@ class StepStreamer:
                     state=state,
                     calls=provider_executed_calls,
                     results=provider_tool_results,
+                    already_planned=provider_planned_ids,
+                    already_recorded=provider_recorded_ids,
                 )
 
             assistant_content = buffer.strip()

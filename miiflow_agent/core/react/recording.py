@@ -15,7 +15,7 @@ import json
 import logging
 import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from ..checkpoint import DispatchLedgerEntry, PendingInterrupt, make_ledger_digest
 from ..interrupt import mint_interrupt_id
@@ -57,6 +57,21 @@ def _call_arguments(raw: Any) -> Dict[str, Any]:
     return {}
 
 
+def short_tool_name(tool_name: str) -> str:
+    """`meta_ads_insights` -> `ads_insights`; short names pass through.
+
+    THE citation-label shortening rule. Three places depend on it agreeing
+    exactly: this module mints labels for the ReAct path, the server's
+    `tool_config_converter._generate_reference_label` mints them for its own
+    tool path, and the server's `citation_processor` reconstructs a label the
+    model invented by applying the same rule to the tool name it wrote. If a
+    copy of this drifts, citations stop resolving silently — the marker simply
+    ships to the reader as raw `[ref:...]` text. Hence one function, imported.
+    """
+    parts = tool_name.split("_")
+    return "_".join(parts[-2:]) if len(parts) > 2 else tool_name
+
+
 class OutcomeRecording:
     """The durable-state seams for finalized tool outcomes."""
 
@@ -76,15 +91,9 @@ class OutcomeRecording:
     #: the visualization from being recognised at all.
     _ARTIFACT_MARKER_RE = re.compile(r"^\[(?:VIZ|SA|MEDIA):")
 
-    @staticmethod
-    def _short_tool_name(tool_name: str) -> str:
-        """`meta_ads_insights` -> `ads_insights`; short names pass through.
-
-        Same rule as `tool_config_converter._generate_reference_label` on the
-        server's other tool path, so a reader never sees two conventions.
-        """
-        parts = tool_name.split("_")
-        return "_".join(parts[-2:]) if len(parts) > 2 else tool_name
+    #: Kept as a method for the call sites already using it; the rule itself
+    #: lives at module level so every minter and the resolver share one copy.
+    _short_tool_name = staticmethod(short_tool_name)
 
     @classmethod
     def _is_artifact_observation(cls, observation: Optional[str]) -> bool:
@@ -288,6 +297,111 @@ class OutcomeRecording:
             observation=self._apply_reference_label(reference_label, bounded),
         )
 
+    async def publish_provider_call_planned(
+        self,
+        state: "ExecutionState",
+        *,
+        call: Dict[str, Any],
+        call_id: str,
+    ) -> None:
+        """Announce a call the provider is running server-side.
+
+        These never pass through the local dispatcher, so nothing else on the
+        run would record them — without this the timeline shows an answer that
+        cites data no visible tool call produced.
+
+        Published the moment the ``mcp_tool_use`` block FINALIZES (its
+        `content_block_stop`, where the arguments have been parsed), not when
+        it starts: the normalizer never parses MCP arguments mid-block, so the
+        start-event placeholder still carries ``{}`` and a row built from it
+        shows an argument-less, blameless call.
+
+        ACTION_PLANNED must precede the call's OBSERVATION even though the work
+        is already finished by the time we see either. Consumers build their
+        tool row on the action event and only update it on the observation
+        (streaming_service's execution_timeline, both frontend chunk reducers),
+        so an observation-only call is invisible: no reasoning-panel row live,
+        an empty execution_timeline on reload, and `has_tool_events` left False
+        so the turn is mislabeled `single_hop`. The event pair is the contract —
+        keep it whole here rather than teaching every consumer about MCP.
+        """
+        fn = call.get("function", {}) or {}
+        await self._orch.event_bus.publish(
+            EventFactory.action_planned(
+                state.current_step,
+                fn.get("name"),
+                _call_arguments(fn.get("arguments")),
+                tool_call_id=call_id,
+                executor="native_mcp",
+                server_name=call.get("server_name"),
+            )
+        )
+
+    async def record_provider_call_observation(
+        self,
+        context: RunContext,
+        state: "ExecutionState",
+        *,
+        call: Dict[str, Any],
+        call_id: str,
+        result: Optional[Dict[str, Any]],
+        execution_time_ms: Optional[int] = None,
+    ) -> None:
+        """Close one provider-executed call: store it, then publish OBSERVATION.
+
+        ``result`` is None when the provider never reported one (turn cut
+        short, or a paused turn). Record it as a failure rather than dropping
+        it — a silent gap in the trail is worse than a visible incomplete call.
+        """
+        fn = call.get("function", {}) or {}
+        arguments = _call_arguments(fn.get("arguments"))
+
+        has_result = result is not None
+        is_error = bool((result or {}).get("is_error", False)) or not has_result
+        observation = (result or {}).get("content") or (
+            "" if has_result else "No result returned by the provider for this call."
+        )
+
+        recorded = await self._orch._record_tool_observation(
+            context,
+            state,
+            tool_name=fn.get("name"),
+            inputs=arguments,
+            observation=observation,
+            success=not is_error,
+            tool_call_id=call_id,
+            error=observation if is_error else None,
+            execution_time_ms=execution_time_ms,
+        )
+        observation = recorded.observation
+        # These results are replayed to the provider verbatim by
+        # `_convert_message` (as mcp_tool_result blocks), so the bound has
+        # to land on the payload itself — not just on the event.
+        #
+        # The citation key is stripped back off for the replay copy.
+        # Labels are numbered per RUN, so a stale one riding into a later
+        # turn would collide with that turn's freshly minted key of the
+        # same name — two different results wearing one tag, in front of
+        # the model and in the resolver. The label's job is done once this
+        # turn's event carries it.
+        if has_result and isinstance(result, dict):
+            result["content"] = self._REF_PREFIX_RE.sub(
+                "", observation, count=1
+            ).lstrip("\n")
+
+        await self._orch.event_bus.publish(
+            EventFactory.observation(
+                state.current_step,
+                observation,
+                fn.get("name"),
+                not is_error,
+                tool_call_id=call_id,
+                observation_ref=recorded.ref,
+                executor="native_mcp",
+                server_name=call.get("server_name"),
+            )
+        )
+
     async def record_provider_executed_calls(
         self,
         context: RunContext,
@@ -295,21 +409,24 @@ class OutcomeRecording:
         *,
         calls: Dict[str, Dict[str, Any]],
         results: List[Dict[str, Any]],
+        already_planned: Optional[Set[str]] = None,
+        already_recorded: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
-        """Write the action+observation pair for tools the provider ran itself.
+        """Sweep whatever the streaming pass did not already record, and return
+        the metadata to attach to the assistant message.
 
-        These never pass through the local dispatcher, so nothing else on the
-        run would record them — without this the timeline shows an answer that
-        cites data no visible tool call produced.
+        The pair for a provider-executed call is normally published DURING the
+        stream, at the block that carries it — see
+        `step_streaming._handle_provider_executed_call`. Anything left here is
+        a call the provider never answered: the turn was cut short mid-block,
+        or paused. Recording it as a visible failure beats a silent gap.
 
-        Each call emits ACTION_PLANNED *before* its OBSERVATION even though the
-        work is already finished. Consumers build their tool row on the action
-        event and only update it on the observation (streaming_service's
-        execution_timeline, both frontend chunk reducers), so an
-        observation-only call is invisible: no reasoning-panel row live, an
-        empty execution_timeline on reload, and `has_tool_events` left False so
-        the turn is mislabeled `single_hop`. The event pair is the contract —
-        keep it whole here rather than teaching every consumer about MCP.
+        This ran as the only recording path until it was found to invert the
+        wire order: a turn whose tools all ran inside the provider streamed its
+        whole answer first and published every tool event afterwards, so the
+        reasoning panel materialized above an already-finished answer and the
+        late ACTION_PLANNED made `streaming_service` discard (then re-emit) the
+        real answer. Kept as the sweep, never as the main path.
 
         The pair carries `executor="native_mcp"` and the `server_name` because a
         consumer that only RENDERS the call can ignore who ran it, but one that
@@ -323,71 +440,23 @@ class OutcomeRecording:
         Returns the metadata to attach to the assistant message so
         `_convert_message` can replay the mcp_tool_use/mcp_tool_result pairs.
         """
+        planned = already_planned if already_planned is not None else frozenset()
+        recorded = already_recorded if already_recorded is not None else frozenset()
         results_by_id = {r.get("tool_use_id"): r for r in results if r.get("tool_use_id")}
 
         for call_id, call in calls.items():
-            fn = call.get("function", {}) or {}
-            arguments = _call_arguments(fn.get("arguments"))
-            result = results_by_id.get(call_id) or {}
-            server_name = call.get("server_name")
-
-            await self._orch.event_bus.publish(
-                EventFactory.action_planned(
-                    state.current_step,
-                    fn.get("name"),
-                    arguments,
-                    tool_call_id=call_id,
-                    executor="native_mcp",
-                    server_name=server_name,
+            if call_id in recorded:
+                continue
+            if call_id not in planned:
+                await self.publish_provider_call_planned(
+                    state, call=call, call_id=call_id
                 )
-            )
-            # A call with no matching result means the provider never reported
-            # one (turn cut short, or a paused turn). Record it as a failure
-            # rather than dropping it — a silent gap in the trail is worse than
-            # a visible incomplete call.
-            has_result = call_id in results_by_id
-            is_error = bool(result.get("is_error", False)) or not has_result
-            observation = result.get("content") or (
-                "" if has_result else "No result returned by the provider for this call."
-            )
-
-            recorded = await self._orch._record_tool_observation(
+            await self.record_provider_call_observation(
                 context,
                 state,
-                tool_name=fn.get("name"),
-                inputs=arguments,
-                observation=observation,
-                success=not is_error,
-                tool_call_id=call_id,
-                error=observation if is_error else None,
-            )
-            observation = recorded.observation
-            # These results are replayed to the provider verbatim by
-            # `_convert_message` (as mcp_tool_result blocks), so the bound has
-            # to land on the payload itself — not just on the event.
-            #
-            # The citation key is stripped back off for the replay copy.
-            # Labels are numbered per RUN, so a stale one riding into a later
-            # turn would collide with that turn's freshly minted key of the
-            # same name — two different results wearing one tag, in front of
-            # the model and in the resolver. The label's job is done once this
-            # turn's event carries it.
-            if has_result and isinstance(result, dict):
-                result["content"] = self._REF_PREFIX_RE.sub(
-                    "", observation, count=1
-                ).lstrip("\n")
-
-            await self._orch.event_bus.publish(
-                EventFactory.observation(
-                    state.current_step,
-                    observation,
-                    fn.get("name"),
-                    not is_error,
-                    tool_call_id=call_id,
-                    observation_ref=recorded.ref,
-                    executor="native_mcp",
-                    server_name=server_name,
-                )
+                call=call,
+                call_id=call_id,
+                result=results_by_id.get(call_id),
             )
 
         return {"mcp_tool_results": results} if results else {}

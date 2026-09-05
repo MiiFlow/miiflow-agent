@@ -896,3 +896,196 @@ class TestOpenAIRequestMapping:
             {"type": "input_text", "text": "tool text"},
             {"type": "input_file", "file_url": "https://example.com/tool.pdf"},
         ]
+
+
+class TestNativeMCPServerIdentity:
+    """The shared `mcp_function` shape carries `server_name`, not OpenAI's label.
+
+    Every consumer reads `server_name`: `recording` stamps the event and the
+    persisted timeline item from it, and `enhanced_response_generator` DROPS a
+    native-MCP timeline item that lacks one rather than replay it as a local
+    `tool_use`. Emitting `server_label` here meant every OpenAI-originated
+    connector call was recorded with `server_name=None` and then silently
+    dropped from turn-boundary replay.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stream_maps_label_back_to_the_configured_server_name(
+        self, sample_messages
+    ):
+        from miiflow_agent.core.tools.mcp.mcp_connection import NativeMCPServerConfig
+
+        # A display name OpenAI cannot accept verbatim — the sanitizer rewrites
+        # the space, which is exactly why the label cannot be reversed by
+        # string surgery.
+        server = NativeMCPServerConfig(name="Kopperfield Admin", url="https://x/mcp")
+        assert server.to_openai_format()["server_label"] == "Kopperfield_Admin"
+
+        client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
+        item = SimpleNamespace(
+            type="mcp_call",
+            id="mcp_1",
+            name="get_load_calc",
+            arguments='{"id":"1"}',
+            server_label="Kopperfield_Admin",
+            output="{}",
+            error=None,
+        )
+
+        with patch.object(
+            client.client.responses,
+            "create",
+            new_callable=AsyncMock,
+            return_value=_responses_stream(
+                [SimpleNamespace(type="response.output_item.done", output_index=0, item=item)]
+            ),
+        ):
+            chunks = [
+                chunk
+                async for chunk in client.astream_chat(
+                    sample_messages, use_responses_api=True, mcp_servers=[server]
+                )
+            ]
+
+        call = next(c for c in chunks if c.tool_calls).tool_calls[0]
+        assert call["server_name"] == "Kopperfield Admin"
+        assert "server_label" not in call
+
+    @pytest.mark.asyncio
+    async def test_unknown_label_falls_back_to_the_label_itself(self, sample_messages):
+        """A name is still better than None: None is what gets the call dropped."""
+        client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
+        item = SimpleNamespace(
+            type="mcp_call",
+            id="mcp_1",
+            name="list_prs",
+            arguments="{}",
+            server_label="github",
+            output="ok",
+            error=None,
+        )
+
+        with patch.object(
+            client.client.responses,
+            "create",
+            new_callable=AsyncMock,
+            return_value=_responses_stream(
+                [SimpleNamespace(type="response.output_item.done", output_index=0, item=item)]
+            ),
+        ):
+            chunks = [
+                chunk
+                async for chunk in client.astream_chat(sample_messages, use_responses_api=True)
+            ]
+
+        assert next(c for c in chunks if c.tool_calls).tool_calls[0]["server_name"] == "github"
+
+
+class TestNonStreamingNativeMCP:
+    """`_parse_responses_api_response` must handle BOTH halves of an mcp_call.
+
+    Verified live against the Responses API (gpt-5.6-terra + the public
+    DeepWiki connector) while checking the `server_name` change: the parser
+    took no `mcp_servers` argument at all, so reading one raised
+    `NameError: name 'mcp_servers' is not defined` and the whole non-streaming
+    request failed. It also kept only the call half, so every provider-executed
+    call on this path was recorded as "No result returned by the provider" and
+    nothing could replay the pair on the next turn.
+    """
+
+    def _response(self):
+        return SimpleNamespace(
+            id="resp_1",
+            status="completed",
+            usage=None,
+            output=[
+                SimpleNamespace(
+                    type="mcp_call",
+                    id="mcp_1",
+                    name="read_wiki_structure",
+                    arguments='{"repoName":"x/y"}',
+                    server_label="Deep_Wiki",
+                    output="# Pages",
+                    error=None,
+                ),
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="It covers x.")],
+                ),
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_mcp_call_keeps_its_result_and_server_name(
+        self, sample_messages
+    ):
+        from miiflow_agent.core.tools.mcp.mcp_connection import NativeMCPServerConfig
+
+        server = NativeMCPServerConfig(name="Deep Wiki", url="https://x/mcp")
+        client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
+
+        with patch.object(
+            client.client.responses,
+            "create",
+            new_callable=AsyncMock,
+            return_value=self._response(),
+        ):
+            response = await client.achat(sample_messages, mcp_servers=[server])
+
+        call = response.message.tool_calls[0]
+        assert call["type"] == "mcp_function"
+        assert call["server_name"] == "Deep Wiki"
+        assert response.metadata["native_mcp"] is True
+        assert response.metadata["mcp_tool_results"] == [
+            {"tool_use_id": "mcp_1", "is_error": False, "content": "# Pages"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_non_streaming_mcp_call_carries_its_error(
+        self, sample_messages
+    ):
+        client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
+        response_obj = self._response()
+        response_obj.output[0].error = "upstream 502"
+        response_obj.output[0].output = None
+
+        with patch.object(
+            client.client.responses,
+            "create",
+            new_callable=AsyncMock,
+            return_value=response_obj,
+        ):
+            response = await client.achat(sample_messages, use_responses_api=True)
+
+        assert response.metadata["mcp_tool_results"] == [
+            {"tool_use_id": "mcp_1", "is_error": True, "content": "upstream 502"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_no_mcp_call_carries_no_mcp_metadata(
+        self, sample_messages
+    ):
+        """Guard against stamping `native_mcp` on every Responses turn."""
+        client = OpenAIClient(model="gpt-5.6-terra", api_key="test-key")
+        plain = SimpleNamespace(
+            id="resp_2",
+            status="completed",
+            usage=None,
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="hi")],
+                )
+            ],
+        )
+
+        with patch.object(
+            client.client.responses,
+            "create",
+            new_callable=AsyncMock,
+            return_value=plain,
+        ):
+            response = await client.achat(sample_messages, use_responses_api=True)
+
+        assert "mcp_tool_results" not in response.metadata
+        assert "native_mcp" not in response.metadata

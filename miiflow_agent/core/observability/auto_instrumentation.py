@@ -95,6 +95,46 @@ def _install_standard_processors(tracer_provider: Any) -> None:
     logger.info("Installed span processors: %s", ", ".join(installed) or "none")
 
 
+def describe_spans_for_log(spans, limit: int = 5) -> list:
+    """Per-span digest for a refused batch: what it was, how big, what got cut.
+
+    Enough to tell an oversized span from a truncated one from an outage
+    without dumping payload: name/kind, attribute count and how many the
+    SDK's count cap dropped, total chars, the three largest keys, and which
+    of the keys a collector needs for an LLM span are missing. Never raises.
+    """
+    out = []
+    for span in list(spans)[:limit]:
+        try:
+            attrs = dict(getattr(span, "attributes", None) or {})
+            sizes = sorted(
+                ((len(str(v)), k) for k, v in attrs.items()), reverse=True
+            )
+            core = (
+                "openinference.span.kind",
+                "llm.token_count.prompt",
+                "output.value",
+                "llm.output_messages.0.message.role",
+            )
+            out.append(
+                {
+                    "name": getattr(span, "name", "?"),
+                    "kind": attrs.get("openinference.span.kind"),
+                    "n_attrs": len(attrs),
+                    "dropped_attrs": getattr(
+                        getattr(span, "attributes", None), "dropped", None
+                    ),
+                    "total_chars": sum(n for n, _ in sizes),
+                    "largest": [(k, n) for n, k in sizes[:3]],
+                    "missing": [k for k in core if k not in attrs],
+                    "events": len(getattr(span, "events", None) or ()),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            out.append({"name": getattr(span, "name", "?"), "error": repr(exc)})
+    return out
+
+
 def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) -> bool:
     """Setup OpenTelemetry tracing to send traces to Phoenix endpoint.
 
@@ -132,6 +172,26 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
 
             _last_warn_monotonic = 0.0
 
+            def _export(self, serialized_data, timeout_sec=None):
+                # Keep the collector's LAST answer. The base class discards
+                # the response after deciding to retry, and its own final
+                # error line never reached production logs (Sept 2026: 46
+                # refused batches in four days, three "Transient error"
+                # warnings each, and not one status/body) — so a refused
+                # span was undiagnosable from our side.
+                if timeout_sec is None:
+                    resp = super()._export(serialized_data)
+                else:
+                    resp = super()._export(serialized_data, timeout_sec)
+                try:
+                    self._last_response = (
+                        getattr(resp, "status_code", None),
+                        (getattr(resp, "text", "") or "")[:1000],
+                    )
+                except Exception:  # noqa: BLE001
+                    self._last_response = None
+                return resp
+
             def export(self, spans):
                 result = super().export(spans)
                 if result is not SpanExportResult.SUCCESS:
@@ -141,18 +201,14 @@ def setup_opentelemetry_tracing(config: Optional["ObservabilityConfig"] = None) 
                     cls = _LoggingOTLPSpanExporter
                     if now - cls._last_warn_monotonic > 60:
                         cls._last_warn_monotonic = now
-                        try:
-                            max_attrs = max(
-                                (len(getattr(s, "attributes", None) or {}) for s in spans),
-                                default=0,
-                            )
-                        except Exception:  # noqa: BLE001
-                            max_attrs = -1
+                        status, body = getattr(self, "_last_response", None) or (None, "")
                         logger.warning(
-                            "[TRACE] OTLP span export FAILED — %d span(s) dropped "
-                            "(max_attrs_per_span=%d)",
+                            "[TRACE] OTLP span export FAILED — %d span(s) dropped; "
+                            "collector answered %s %r; spans=%s",
                             len(spans),
-                            max_attrs,
+                            status,
+                            body,
+                            describe_spans_for_log(spans),
                         )
                 return result
 

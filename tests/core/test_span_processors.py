@@ -34,6 +34,7 @@ def pipeline():
         "ContextStampingProcessor",
         "SecretRedactingProcessor",
         "SpanSizeBoundingProcessor",
+        "JsonAttributeRepairProcessor",
     ]
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     tracer = provider.get_tracer("test")

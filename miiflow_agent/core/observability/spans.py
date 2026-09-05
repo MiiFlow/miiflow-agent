@@ -90,6 +90,38 @@ _TRUNCATION_MARKER = "…[truncated {dropped} chars]"
 # silently wins. If a setting needs different meaning, it needs a different name.
 ATTRIBUTE_LIMIT_ENV = "MIIFLOW_SPAN_ATTRIBUTE_LIMIT"
 
+# ── How many attributes one span may carry ───────────────────────────────────
+# The SDK's default is 128, applied at `set_attribute` time in insertion order:
+# once a span is full every later attribute is silently dropped. An LLM span
+# is ~4 attributes per input message plus one per tool plus the output block,
+# so a system-agent turn (60 tools, 20+ messages of history) hits 128 while
+# the instrumentor is still writing the request, and what falls off the end
+# is the OUTPUT — `llm.output_messages.*`, `output.value`, the token counts.
+# Sept 2026: every root Adlyse AI LLM span that failed to export was exactly
+# at the cap. Bytes are bounded separately (`SpanSizeBoundingProcessor` for
+# messages, `attribute_value_limit()` per value), so the count cap only needs
+# to be high enough never to be the thing that truncates.
+DEFAULT_ATTRIBUTE_COUNT_LIMIT = 1024
+ATTRIBUTE_COUNT_LIMIT_ENV = "MIIFLOW_SPAN_ATTRIBUTE_COUNT_LIMIT"
+
+
+def attribute_count_limit() -> int:
+    """Attributes allowed on one span. Override with MIIFLOW_SPAN_ATTRIBUTE_COUNT_LIMIT."""
+    raw = os.getenv(ATTRIBUTE_COUNT_LIMIT_ENV)
+    if raw is None:
+        return DEFAULT_ATTRIBUTE_COUNT_LIMIT
+    try:
+        parsed = int(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not an integer; using %d",
+            ATTRIBUTE_COUNT_LIMIT_ENV,
+            raw,
+            DEFAULT_ATTRIBUTE_COUNT_LIMIT,
+        )
+        return DEFAULT_ATTRIBUTE_COUNT_LIMIT
+    return parsed if parsed > 0 else DEFAULT_ATTRIBUTE_COUNT_LIMIT
+
 
 def attribute_value_limit() -> Optional[int]:
     """Chars allowed in one span attribute; None means no limit.
@@ -116,14 +148,19 @@ def attribute_value_limit() -> Optional[int]:
 
 
 def span_limits():
-    """SpanLimits carrying `attribute_value_limit()`, or None when unavailable."""
+    """SpanLimits carrying `attribute_value_limit()` + `attribute_count_limit()`.
+
+    None only when the SDK has no SpanLimits. A disabled value limit still
+    returns limits: the count cap must be lifted regardless, or the SDK's
+    128 default truncates every large LLM span (see above).
+    """
     limit = attribute_value_limit()
-    if limit is None:
-        return None
     try:
         from opentelemetry.sdk.trace import SpanLimits
 
-        return SpanLimits(max_attribute_length=limit)
+        if limit is None:
+            return SpanLimits(max_attributes=attribute_count_limit())
+        return SpanLimits(max_attribute_length=limit, max_attributes=attribute_count_limit())
     except Exception as exc:  # noqa: BLE001 — older SDK without SpanLimits
         logger.debug("SpanLimits unavailable (%s); attributes stay unbounded", exc)
         return None

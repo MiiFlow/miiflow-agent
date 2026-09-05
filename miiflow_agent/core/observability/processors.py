@@ -437,6 +437,110 @@ class SpanSizeBoundingProcessor(_SpanProcessor):
         return True
 
 
+# ── JSON-typed attribute repair ──────────────────────────────────────────
+# Arize AX validates the OpenInference attributes it parses structurally:
+# a span whose ``…tool_call.function.arguments`` is not valid JSON is refused
+# with ``InvalidArgument: llm tool function arguments must be valid json`` —
+# and the WHOLE batch it travelled in is dropped with it. The SDK's per-value
+# cap (``attribute_value_limit()``, 32K) truncates strings by hard cut, so any
+# tool call whose serialized input exceeds it — a ``dispatch_assistant`` brief,
+# an artifact body, a ``write_file`` — becomes ``{"task": "…`` with no closing
+# quote. History replays that call on every later request in the thread, so
+# one big tool call cost the root agent every LLM span for the rest of the
+# conversation (Sept 2026: 46 refused batches in four days, all root Adlyse
+# AI turns). Repair = replace an unparseable JSON-typed value with a VALID
+# envelope that keeps the readable head and says it was cut.
+JSON_TYPED_ATTRIBUTE_SUFFIXES = (
+    ".tool_call.function.arguments",
+    ".tool.json_schema",
+)
+JSON_TYPED_ATTRIBUTE_KEYS = frozenset({"llm.invocation_parameters"})
+JSON_REPAIRED_ATTR = "miiflow.span.json_attributes_repaired"
+# Room for the envelope's own keys + JSON escaping of the head, so the
+# repaired value stays inside the same per-value cap the original blew.
+_JSON_ENVELOPE_OVERHEAD = 512
+
+
+def is_json_typed_attribute(key: str) -> bool:
+    return key in JSON_TYPED_ATTRIBUTE_KEYS or key.endswith(JSON_TYPED_ATTRIBUTE_SUFFIXES)
+
+
+def repair_json_attribute_value(value: str, value_limit: Optional[int]) -> str:
+    """A valid-JSON stand-in for a JSON string the value cap cut mid-way."""
+    budget = (value_limit or 32_000) - _JSON_ENVELOPE_OVERHEAD
+    head = value[: max(budget, 0)]
+    # JSON escaping can grow the head (quotes, newlines); shrink until the
+    # envelope fits, so a repaired value can never be re-truncated.
+    while True:
+        envelope = json.dumps({"__truncated__": True, "head": head})
+        if value_limit is None or len(envelope) <= value_limit or not head:
+            return envelope
+        head = head[: len(head) - max(len(envelope) - value_limit, 64)]
+
+
+def repair_json_attributes(attributes: Any, value_limit: Optional[int]) -> int:
+    """Replace every unparseable JSON-typed attribute in place. Returns the count."""
+    repaired = 0
+    for key in list(attributes.keys()):
+        if not is_json_typed_attribute(key):
+            continue
+        value = attributes.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        try:
+            json.loads(value)
+            continue
+        except ValueError:
+            pass
+        _write_attribute(attributes, key, repair_json_attribute_value(value, value_limit))
+        repaired += 1
+    if repaired:
+        _write_attribute(attributes, JSON_REPAIRED_ATTR, repaired)
+    return repaired
+
+
+class JsonAttributeRepairProcessor(_SpanProcessor):
+    """Keep JSON-typed OpenInference attributes parseable after value truncation.
+
+    Runs LAST, after redaction (which may rewrite JSON) and size bounding
+    (which deletes whole messages): whatever survives to the exporter must
+    be something the collector will accept. LLM spans only — they are the
+    only kind carrying tool-call arguments, tool schemas and invocation
+    parameters.
+    """
+
+    def on_start(self, span: Any, parent_context: Any = None) -> None:
+        return None
+
+    def on_end(self, span: Any) -> None:
+        try:
+            attributes = getattr(span, "_attributes", None)
+            if attributes is None:
+                attributes = getattr(span, "attributes", None)
+            if not attributes:
+                return
+            if attributes.get("openinference.span.kind") != "LLM":
+                return
+            from .spans import attribute_value_limit
+
+            n = repair_json_attributes(attributes, attribute_value_limit())
+            if n:
+                logger.warning(
+                    "[TRACE] repaired %d truncated JSON attribute(s) on LLM span %s "
+                    "so the collector accepts it",
+                    n,
+                    getattr(span, "name", "?"),
+                )
+        except Exception:  # noqa: BLE001 — never fail export over repair
+            return
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
+
+
 def install_processors(tracer_provider: Any) -> Iterable[str]:
     """Attach the standard processors to ``tracer_provider``.
 
@@ -450,6 +554,7 @@ def install_processors(tracer_provider: Any) -> Iterable[str]:
         ContextStampingProcessor(),
         SecretRedactingProcessor(),
         SpanSizeBoundingProcessor(),
+        JsonAttributeRepairProcessor(),
     ):
         try:
             tracer_provider.add_span_processor(proc)

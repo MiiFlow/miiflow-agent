@@ -28,6 +28,8 @@ import asyncio
 import logging
 import weakref
 from collections import OrderedDict
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Any, Callable, Tuple
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,31 @@ _EVICTED_CLOSE_DELAY_SECONDS = 15 * 60
 _cache: "weakref.WeakKeyDictionary[Any, OrderedDict[Tuple[str, str], Any]]" = (
     weakref.WeakKeyDictionary()
 )
+_scoped_clients: ContextVar = ContextVar("scoped_sdk_clients", default=None)
+
+
+@asynccontextmanager
+async def sdk_client_scope():
+    """Own SDK clients for a one-shot call and close them on the same loop.
+
+    Task-local ownership keeps cleanup from closing a cached client used by
+    another request. Nested scopes own distinct clients as well.
+    """
+    clients = {}
+    token = _scoped_clients.set(clients)
+    try:
+        yield
+    finally:
+        _scoped_clients.reset(token)
+        for client in clients.values():
+            close = getattr(client, "aclose", None) or getattr(client, "close", None)
+            if close is not None:
+                try:
+                    result = close()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:  # noqa: BLE001 — cleanup must not mask the call failure
+                    logger.warning("scoped SDK client close failed", exc_info=True)
 
 
 def _schedule_delayed_close(loop, client: Any) -> None:
@@ -70,6 +97,13 @@ def get_or_create_sdk_client(
 ) -> Any:
     """Return the cached SDK client for (provider, api_key) on the running
     loop, creating it via ``factory`` on first use."""
+    scoped = _scoped_clients.get()
+    if scoped is not None:
+        key = (provider, api_key or "")
+        if key not in scoped:
+            scoped[key] = factory()
+        return scoped[key]
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

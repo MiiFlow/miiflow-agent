@@ -90,3 +90,36 @@ def test_corrupt_bytes_raises_processing_error():
 def test_empty_bytes_raises():
     with pytest.raises(ImageResizeError):
         resize_image_for_api(b"", "image/jpeg")
+
+
+def test_small_compressed_image_still_obeys_dimension_limits():
+    from PIL import Image
+
+    raw = _make_png(100, 9001)
+    assert len(raw) < IMAGE_TARGET_RAW_SIZE
+    out, _ = resize_image_for_api(raw, "image/png")
+    with Image.open(BytesIO(out)) as decoded:
+        assert decoded.width <= IMAGE_MAX_WIDTH
+        assert decoded.height <= IMAGE_MAX_HEIGHT
+
+
+def test_small_corrupt_image_is_rejected():
+    with pytest.raises(ImageResizeError, match="decode"):
+        resize_image_for_api(b"not actually an image", "image/png")
+
+
+def test_mime_type_matches_decoded_bytes():
+    raw = _make_png(64, 64)
+    out, mime = resize_image_for_api(raw, "image/jpeg")
+    assert out == raw
+    assert mime == "image/png"
+
+
+def test_small_bmp_is_converted_to_supported_format():
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (16, 16)).save(buf, format="BMP")
+    out, mime = resize_image_for_api(buf.getvalue(), "image/bmp")
+    assert mime == "image/jpeg"
+    assert Image.open(BytesIO(out)).format == "JPEG"

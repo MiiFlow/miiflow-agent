@@ -35,8 +35,8 @@ except ImportError:  # pragma: no cover - exercised in environments without Pill
 # Borrowed conceptually from Claude Code's `src/utils/imageResizer.ts`. Goal:
 # bound the size of any image we send to an LLM provider so we don't get
 # rejected (Anthropic for example caps base64 image source size). When Pillow
-# is not installed, the resizer is a no-op pass-through and just enforces the
-# raw cap (raising ImageResizeError if the bytes are still too big).
+# is not installed, validation fails explicitly instead of forwarding pixels
+# whose format or dimensions we cannot verify.
 
 #: Approximate Anthropic / OpenAI per-image base64 cap. Stay safely under 5MB.
 API_IMAGE_MAX_BASE64_SIZE = 5 * 1024 * 1024
@@ -95,9 +95,8 @@ def resize_image_for_api(
     """Resize and/or recompress an image so it fits provider limits.
 
     Returns ``(possibly_new_bytes, possibly_new_mimetype)``. If the input is
-    already small enough, the original bytes are returned unchanged. If Pillow
-    is not installed, no resizing is attempted; if the raw bytes still exceed
-    the cap, an ``ImageResizeError`` is raised.
+    already small enough and decodes as a supported image, the original bytes
+    are returned unchanged. Pillow is required to validate dimensions/format.
 
     Parameters mirror the Claude Code constants but are overridable per-call
     so providers with tighter caps can opt in.
@@ -105,22 +104,15 @@ def resize_image_for_api(
     if not image_bytes:
         raise ImageResizeError("empty image bytes", error_type="processing")
 
-    # Fast path: already small enough.
-    if (
-        len(image_bytes) <= target_raw_size
-        and _encoded_size(len(image_bytes)) <= max_base64_size
-    ):
-        return image_bytes, mimetype
-
     if mimetype not in _RESIZABLE_MIMETYPES:
         raise ImageResizeError(
-            f"image of type {mimetype!r} exceeds limits and is not resizable",
+            f"image of type {mimetype!r} is not supported",
             error_type="unsupported",
         )
 
     if not PIL_AVAILABLE:
         raise ImageResizeError(
-            "image exceeds size limits and Pillow is not installed; "
+            "image validation requires Pillow, which is not installed; "
             "install with `pip install miiflow-agent[images]` to enable resizing",
             error_type="module_load",
         )
@@ -130,6 +122,23 @@ def resize_image_for_api(
         img.load()
     except Exception as e:
         raise ImageResizeError(f"failed to decode image: {e}", error_type="processing") from e
+
+    # Trust the decoded format, not the URL suffix or a claimed MIME type.
+    decoded_mime = _PILImage.MIME.get(img.format)
+    if decoded_mime not in _RESIZABLE_MIMETYPES:
+        raise ImageResizeError("unsupported decoded image format", error_type="unsupported")
+    mimetype = decoded_mime
+
+    # Compressed size says nothing about dimensions: a 9,001px screenshot can
+    # be only a few KB. Decode and inspect before taking the unchanged path.
+    if (
+        mimetype in {"image/jpeg", "image/png", "image/webp", "image/gif"}
+        and img.width <= max_width
+        and img.height <= max_height
+        and len(image_bytes) <= target_raw_size
+        and _encoded_size(len(image_bytes)) <= max_base64_size
+    ):
+        return image_bytes, mimetype
 
     # Convert palette / alpha modes to something JPEG-friendly if we plan to
     # re-encode as JPEG. PNG/WebP can keep alpha.
@@ -440,17 +449,23 @@ def url_to_base64_and_mimetype(
 
         image_bytes = response.content
         if resize:
-            try:
-                image_bytes, content_type = resize_image_for_api(image_bytes, content_type)
-            except ImageResizeError:
-                raise
-            except Exception as e:
-                logger.warning(
-                    "image resize unexpectedly failed (%s); using original bytes", e
-                )
+            image_bytes, content_type = resize_image_for_api(image_bytes, content_type)
 
         base64_str = base64.b64encode(image_bytes).decode("utf-8")
         return base64_str, content_type
+
+
+def image_to_base64_and_mimetype(url: str) -> Tuple[str, str]:
+    """Normalize URL and data-URI images through the same validation path."""
+    if not is_data_uri(url):
+        return url_to_base64_and_mimetype(url, resize=True)
+    encoded, mimetype = data_uri_to_base64_and_mimetype(url)
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        raise ImageResizeError("invalid base64 image", error_type="processing") from exc
+    raw, mimetype = resize_image_for_api(raw, mimetype)
+    return base64.b64encode(raw).decode("ascii"), mimetype
 
 
 def detect_mimetype_from_bytes(file_bytes: bytes) -> str:
@@ -513,17 +528,11 @@ async def image_url_to_bytes(
         raise ValueError(f"Unsupported image URL format: {image_url}")
 
     if resize:
-        try:
-            # Pillow is synchronous and CPU-bound; offload to a worker thread
-            # so we don't block the asyncio event loop under ASGI servers.
-            import asyncio
+        # Pillow is synchronous and CPU-bound; offload it from the event loop.
+        import asyncio
 
-            image_bytes, mimetype = await asyncio.to_thread(
-                resize_image_for_api, image_bytes, mimetype
-            )
-        except ImageResizeError:
-            raise
-        except Exception as e:  # defensive: never crash callers on resize bugs
-            logger.warning("image resize unexpectedly failed (%s); using original bytes", e)
+        image_bytes, mimetype = await asyncio.to_thread(
+            resize_image_for_api, image_bytes, mimetype
+        )
 
     return image_bytes, mimetype

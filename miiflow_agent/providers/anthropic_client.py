@@ -26,7 +26,7 @@ from ..models.anthropic import (
     thinking_disable_param,
     thinks_by_default,
 )
-from ..utils.image import data_uri_to_base64_and_mimetype
+from ..utils.image import data_uri_to_base64_and_mimetype, image_to_base64_and_mimetype
 
 if TYPE_CHECKING:
     from ..core.tools.mcp import NativeMCPServerConfig
@@ -162,6 +162,29 @@ class AnthropicClient(ModelClient):
 
         return tool_definition
 
+    def _convert_image(self, image_url: str) -> Dict[str, Any]:
+        """Validate tool and user images before either can poison the request."""
+        try:
+            data, media_type = image_to_base64_and_mimetype(image_url)
+        except Exception as exc:
+            # Preserve the remaining message/tool result when a remote file
+            # is unavailable or isn't a decodable image. Never fall back to
+            # forwarding the same unvalidated URL to the provider.
+            reason = getattr(exc, "error_type", "unavailable")
+            logger.warning("Image omitted from Anthropic request (%s)", reason)
+            return {
+                "type": "text",
+                "text": (
+                    "[Image could not be loaded or validated. Its contents are "
+                    "unavailable; ask for a supported image or read the original "
+                    "document as text.]"
+                ),
+            }
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        }
+
     def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
         """Convert Message to Anthropic format."""
         from ..core.message import DocumentBlock, ImageBlock, TextBlock, VideoBlock
@@ -183,27 +206,7 @@ class AnthropicClient(ModelClient):
                         if block.text and block.text.strip():
                             sub_content.append({"type": "text", "text": block.text})
                     elif isinstance(block, ImageBlock):
-                        if block.image_url.startswith("data:"):
-                            base64_content, media_type = data_uri_to_base64_and_mimetype(
-                                block.image_url
-                            )
-                            sub_content.append(
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": base64_content,
-                                    },
-                                }
-                            )
-                        else:
-                            sub_content.append(
-                                {
-                                    "type": "image",
-                                    "source": {"type": "url", "url": block.image_url},
-                                }
-                            )
+                        sub_content.append(self._convert_image(block.image_url))
                     elif isinstance(block, VideoBlock):
                         # Claude cannot view videos — degrade to a text reference
                         # so the rest of the tool_result still delivers.
@@ -408,46 +411,7 @@ class AnthropicClient(ModelClient):
                     if block.text and block.text.strip():
                         content_list.append({"type": "text", "text": block.text})
                 elif isinstance(block, ImageBlock):
-                    if block.image_url.startswith("data:"):
-                        base64_content, media_type = data_uri_to_base64_and_mimetype(
-                            block.image_url
-                        )
-                        content_list.append(
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": base64_content,
-                                },
-                            }
-                        )
-                    else:
-                        # Anthropic API doesn't support URL image sources for most models.
-                        # Download the image and convert to base64.
-                        try:
-                            from ..utils.image import url_to_base64_and_mimetype
-
-                            base64_content, media_type = url_to_base64_and_mimetype(
-                                block.image_url, resize=True
-                            )
-                            content_list.append(
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": base64_content,
-                                    },
-                                }
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to download image from URL, falling back to URL source: {e}"
-                            )
-                            content_list.append(
-                                {"type": "image", "source": {"type": "url", "url": block.image_url}}
-                            )
+                    content_list.append(self._convert_image(block.image_url))
                 elif isinstance(block, VideoBlock):
                     # Claude cannot view videos; emit a text reference so the model
                     # stays coherent instead of erroring on an unsupported block type.

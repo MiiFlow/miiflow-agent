@@ -212,10 +212,17 @@ class TestAnthropicClient:
     async def test_multimodal_message_conversion(self, client):
         """Test multimodal message conversion."""
         from miiflow_agent.core.message import TextBlock, ImageBlock
+        import base64
+        from io import BytesIO
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (8, 8)).save(buf, format="JPEG")
+        image_url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
         
         multimodal_message = Message.user([
             TextBlock(text="What's in this image?"),
-            ImageBlock(image_url="data:image/jpeg;base64,/9j/4AAQSkZJRg...", detail="high")
+            ImageBlock(image_url=image_url, detail="high")
         ])
         
         system, converted = client._prepare_messages([multimodal_message])

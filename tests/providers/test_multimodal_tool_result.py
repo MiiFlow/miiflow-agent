@@ -5,8 +5,12 @@ builds a TOOL-role Message with list content → provider converts it into the
 right tool-result shape for each backend.
 """
 
-import pytest
+import base64
+from io import BytesIO
 from unittest.mock import patch
+
+import pytest
+from PIL import Image
 
 from miiflow_agent.core.message import (
     ImageBlock,
@@ -20,12 +24,24 @@ from miiflow_agent.providers.openai_client import OpenAIClient
 
 
 @pytest.fixture
-def anthropic_client():
-    return AnthropicClient(model="claude-opus-4-7", api_key="test-key", timeout=30.0)
+def image_bytes():
+    buf = BytesIO()
+    Image.new("RGB", (8, 8)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.fixture
+def anthropic_client(image_bytes):
+    client = AnthropicClient(model="claude-opus-4-7", api_key="test-key", timeout=30.0)
+    with patch("miiflow_agent.utils.image.httpx.Client") as http:
+        response = http.return_value.__enter__.return_value.get.return_value
+        response.content = image_bytes
+        response.headers = {"content-type": "image/png"}
+        yield client
 
 
 class TestAnthropicToolResultMultimodal:
-    def test_list_content_becomes_nested_tool_result(self, anthropic_client):
+    def test_list_content_becomes_nested_tool_result(self, anthropic_client, image_bytes):
         msg = Message(
             role=MessageRole.TOOL,
             content=[
@@ -44,12 +60,12 @@ class TestAnthropicToolResultMultimodal:
         # Summary text + two image blocks
         sub = tool_result["content"]
         assert [b["type"] for b in sub] == ["text", "image", "image"]
-        # URL source form (not base64) for external URLs
-        assert sub[1]["source"]["type"] == "url"
-        assert sub[1]["source"]["url"] == "https://cdn.example.com/foo.jpg"
+        # External images are fetched and validated before sending to Claude.
+        assert sub[1]["source"]["type"] == "base64"
+        assert base64.b64decode(sub[1]["source"]["data"]) == image_bytes
 
-    def test_data_uri_image_uses_base64_source(self, anthropic_client):
-        data_uri = "data:image/png;base64,iVBORw0KGgo="
+    def test_data_uri_image_uses_base64_source(self, anthropic_client, image_bytes):
+        data_uri = "data:image/png;base64," + base64.b64encode(image_bytes).decode()
         msg = Message(
             role=MessageRole.TOOL,
             content=[

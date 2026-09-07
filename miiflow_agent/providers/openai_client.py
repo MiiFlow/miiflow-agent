@@ -33,6 +33,7 @@ from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import OpenAIStreamNormalizer
 from ..core.streaming import StreamChunk
+from ..utils.document_text import document_to_text
 from ..models.openai import (
     get_token_param_name,
     normalize_model_name,
@@ -534,25 +535,14 @@ class OpenAIClient(ModelClient):
                         }
                     )
                 elif isinstance(block, DocumentBlock):
-                    try:
-                        filename_info = f" [{block.filename}]" if block.filename else ""
-                        if block.document_type == "pdf":
-                            from ..utils.pdf_extractor import extract_pdf_text_simple
-
-                            text = extract_pdf_text_simple(block.document_url)
-                            doc_content = f"[PDF Document{filename_info}]\n\n{text}"
-                        else:
-                            import httpx
-
-                            resp = httpx.get(block.document_url, timeout=30, follow_redirects=True)
-                            resp.raise_for_status()
-                            text = resp.content.decode("utf-8", errors="replace")
-                            doc_content = f"[Document{filename_info}]\n\n{text}"
-                        content_list.append({"type": "text", "text": doc_content})
-                    except Exception as e:
-                        filename_info = f" {block.filename}" if block.filename else ""
-                        error_content = f"[Error processing document{filename_info}: {str(e)}]"
-                        content_list.append({"type": "text", "text": error_content})
+                    content_list.append(
+                        {
+                            "type": "text",
+                            "text": document_to_text(
+                                block.document_url, block.document_type, block.filename
+                            ),
+                        }
+                    )
 
             openai_message["content"] = content_list
 
@@ -807,6 +797,22 @@ class OpenAIClient(ModelClient):
                 # `attachment.original_filename` precisely because the two
                 # differ), and the Anthropic and Gemini paths already label
                 # documents this way.
+                #
+                # `file_url` is also PDF-only: the Responses API fetches a PDF
+                # and ignores anything else, which dropped every hosted text
+                # attachment in silence (BUG-062). Only a PDF earns the
+                # input_file treatment; other hosted types are inlined as text,
+                # matching the Chat Completions path in this same client.
+                if not block.document_url.startswith("data:") and block.document_type != "pdf":
+                    content_parts.append(
+                        {
+                            "type": "input_text",
+                            "text": document_to_text(
+                                block.document_url, block.document_type, block.filename
+                            ),
+                        }
+                    )
+                    continue
                 file_part: Dict[str, Any] = {"type": "input_file"}
                 if block.document_url.startswith("data:"):
                     file_part["file_data"] = block.document_url

@@ -27,6 +27,7 @@ from ..core.metrics import TokenCount
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.streaming import StreamChunk
 from ..models.openrouter import is_openrouter_model_allowed
+from ..utils.document_text import document_to_text, is_inline_data
 
 
 
@@ -101,16 +102,31 @@ class OpenRouterClient(ModelClient):
                         }
                     )
                 elif isinstance(part, DocumentBlock):
-                    filename = part.filename or f"document.{part.document_type}"
-                    content_parts.append(
-                        {
-                            "type": "file",
-                            "file": {
-                                "filename": filename,
-                                "file_data": part.document_url,
-                            },
-                        }
-                    )
+                    # `file_data` carries the bytes as a base64 data URI. A
+                    # storage URL put in that field is not a location OpenRouter
+                    # goes and fetches, it is a malformed payload, so every
+                    # hosted attachment was reaching the model as nothing at
+                    # all (BUG-062). Only inline bytes belong in the file part.
+                    if is_inline_data(part.document_url):
+                        filename = part.filename or f"document.{part.document_type}"
+                        content_parts.append(
+                            {
+                                "type": "file",
+                                "file": {
+                                    "filename": filename,
+                                    "file_data": part.document_url,
+                                },
+                            }
+                        )
+                    else:
+                        content_parts.append(
+                            {
+                                "type": "text",
+                                "text": document_to_text(
+                                    part.document_url, part.document_type, part.filename
+                                ),
+                            }
+                        )
                 elif isinstance(part, VideoBlock):
                     content_parts.append(
                         {

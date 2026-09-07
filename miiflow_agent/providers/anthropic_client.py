@@ -26,6 +26,7 @@ from ..models.anthropic import (
     thinking_disable_param,
     thinks_by_default,
 )
+from ..utils.document_text import document_to_text
 from ..utils.image import data_uri_to_base64_and_mimetype, image_to_base64_and_mimetype
 
 if TYPE_CHECKING:
@@ -425,8 +426,20 @@ class AnthropicClient(ModelClient):
                         }
                     )
                 elif isinstance(block, DocumentBlock):
-                    # Claude document blocks only support PDF and plain text
-                    if block.document_type in ("pdf", "txt"):
+                    # Claude document blocks only support PDF and plain text.
+                    #
+                    # The `url` source below is PDF-ONLY on Anthropic's side. A
+                    # txt document reaching it is silently dropped, which is how
+                    # an attached .txt/.md/.json arrived unread (BUG-062): the
+                    # server maps all four of those to document_type "txt"
+                    # (assistant/services/enhanced_response_generator.py). So a
+                    # txt document is only a document block when it is inline
+                    # base64; a hosted one falls through to the download-as-text
+                    # path below, the same one csv and xlsx already take.
+                    is_hosted_text = block.document_type == "txt" and not (
+                        block.document_url.startswith("data:")
+                    )
+                    if block.document_type in ("pdf", "txt") and not is_hosted_text:
                         if block.document_url.startswith("data:"):
                             base64_content, media_type = data_uri_to_base64_and_mimetype(
                                 block.document_url
@@ -452,26 +465,17 @@ class AnthropicClient(ModelClient):
                                 }
                             )
                     else:
-                        # For non-PDF/txt documents (csv, xlsx, xls, etc.),
-                        # download and send as text content
-                        try:
-                            import httpx
-
-                            resp = httpx.get(block.document_url, timeout=30, follow_redirects=True)
-                            resp.raise_for_status()
-                            text = resp.content.decode("utf-8", errors="replace")
-                            filename_info = f" [{block.filename}]" if block.filename else ""
-                            content_list.append(
-                                {"type": "text", "text": f"[Document{filename_info}]\n\n{text}"}
-                            )
-                        except Exception as e:
-                            filename_info = f" {block.filename}" if block.filename else ""
-                            content_list.append(
-                                {
-                                    "type": "text",
-                                    "text": f"[Error processing document{filename_info}: {str(e)}]",
-                                }
-                            )
+                        # Everything Claude will not take as a document block:
+                        # csv, xlsx, xls, and hosted txt. Download and inline as
+                        # text content.
+                        content_list.append(
+                            {
+                                "type": "text",
+                                "text": document_to_text(
+                                    block.document_url, block.document_type, block.filename
+                                ),
+                            }
+                        )
 
             # A multi-modal assistant turn that also searched: append the pair
             # after the real blocks rather than replacing them.

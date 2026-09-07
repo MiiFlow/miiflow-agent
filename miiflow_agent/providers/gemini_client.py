@@ -45,6 +45,7 @@ from ..core.exceptions import AuthenticationError, ProviderError
 from ..core.message import DocumentBlock, ImageBlock, Message, MessageRole, TextBlock, VideoBlock
 from ..core.metrics import TokenCount
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
+from ..utils.document_text import document_to_text
 from ..core.stream_normalizer import GeminiStreamNormalizer
 from ..core.streaming import StreamChunk
 from ..utils.image import image_url_to_bytes
@@ -412,26 +413,13 @@ class GeminiClient(ModelClient):
                                     }
                                 )
                         elif isinstance(block, DocumentBlock):
-                            try:
-                                filename_info = f" [{block.filename}]" if block.filename else ""
-                                if block.document_type == "pdf":
-                                    from ..utils.pdf_extractor import extract_pdf_text_simple
-
-                                    text = extract_pdf_text_simple(block.document_url)
-                                    doc_content = f"[PDF Document{filename_info}]\n\n{text}"
-                                else:
-                                    resp = httpx.get(
-                                        block.document_url, timeout=30, follow_redirects=True
+                            parts.append(
+                                {
+                                    "text": document_to_text(
+                                        block.document_url, block.document_type, block.filename
                                     )
-                                    resp.raise_for_status()
-                                    text = resp.content.decode("utf-8", errors="replace")
-                                    doc_content = f"[Document{filename_info}]\n\n{text}"
-                                parts.append({"text": doc_content})
-                            except Exception as e:
-                                filename_info = f" {block.filename}" if block.filename else ""
-                                parts.append(
-                                    {"text": f"[Error processing document{filename_info}: {str(e)}]"}
-                                )
+                                }
+                            )
 
                 # Consolidate consecutive USER messages
                 if gemini_messages and gemini_messages[-1]["role"] == "user":

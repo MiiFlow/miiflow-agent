@@ -205,6 +205,10 @@ class MediaResult:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     metadata: dict = field(default_factory=dict)
 
+    # External previews retain their provider's lifecycle. Generated images
+    # default to owned storage at the application's media-persistence hook.
+    persistence: str = "persist"
+
     def to_dict(self) -> dict:
         return {
             "__media__": True,
@@ -212,6 +216,8 @@ class MediaResult:
             "url": self.url,
             "media_type": self.media_type,
             "alt_text": self.alt_text,
+            "persistence": self.persistence,
+            **({"file_asset_id": self.metadata["file_asset_id"]} if self.metadata.get("file_asset_id") else {}),
             **({"metadata": self.metadata} if self.metadata else {}),
         }
 

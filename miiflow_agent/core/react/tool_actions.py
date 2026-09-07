@@ -47,7 +47,7 @@ class ToolActionHandler:
     def __init__(self, orch: "ReActOrchestrator"):
         self._orch = orch
 
-    async def process_result(self, output, state, tool_name):
+    async def process_result(self, output, state, tool_name, context=None):
         """Register rich outputs before stringification, on every execution path.
 
         Blocks belong to one tool call, not shared batch state. Returning them
@@ -88,9 +88,12 @@ class ToolActionHandler:
             metadata = (extract_collection_metadata(output) or []) if collection else []
             lines = []
             for index, item in enumerate(items or []):
+                prepare = (getattr(context, "deps", None) or {}).get("prepare_media")
+                if prepare:
+                    item = await prepare(item)
                 media_id, url = item["id"], item.get("url", "")
                 # Register before emission so callbacks and subsequent calls see it.
-                if url and not url.startswith("data:"):
+                if url and not url.startswith("data:") and item.get("status") != "failed":
                     state.media_store[media_id] = url
                 await self._orch.event_bus.publish(
                     EventFactory.media(state.current_step, item, tool_name)
@@ -101,7 +104,9 @@ class ToolActionHandler:
                 line = f"[MEDIA:{media_id}] Use media_ref:{media_id} to view, edit or save this {item.get('media_type', 'image')}."
                 if details:
                     line += " " + json.dumps(details, default=str)
-                if url and not url.startswith("data:"):
+                if item.get("status") == "failed":
+                    line += " Image persistence failed; the image is not saved."
+                elif url and not url.startswith("data:"):
                     line += f" Image URL: {url}"
                 lines.append(line)
             return "\n".join(lines), []
@@ -180,6 +185,9 @@ class ToolActionHandler:
         # resolve them against media_store themselves, for example to recover
         # the backing FileAsset before saving into a workspace.
         if isinstance(step.action_input, dict) and state:
+            refresh = (getattr(context, "deps", None) or {}).get("refresh_media_inputs")
+            if refresh:
+                step.action_input = await refresh(state.media_store, step.action_input)
             step.action_input = self._orch._resolve_media_refs(
                 step.action_input,
                 state,
@@ -280,7 +288,7 @@ class ToolActionHandler:
 
             if result.success:
                 step.observation, state.pending_llm_blocks = await self.process_result(
-                    result.output, state, step.action
+                    result.output, state, step.action, context
                 )
 
                 if await self._orch._handle_tool_approval_marker_result(
@@ -769,6 +777,9 @@ class ToolActionHandler:
             if inv.tool_call_id in pre_exec_errors or not inv.name:
                 continue
             if isinstance(inv.inputs, dict):
+                refresh = (getattr(context, "deps", None) or {}).get("refresh_media_inputs")
+                if refresh:
+                    inv.inputs = await refresh(state.media_store, inv.inputs)
                 inv.inputs = self._orch._resolve_media_refs(
                     inv.inputs,
                     state,
@@ -951,7 +962,7 @@ class ToolActionHandler:
                 (
                     inv.observation,
                     blocks_by_call[inv.tool_call_id],
-                ) = await self.process_result(result.output, state, inv.name)
+                ) = await self.process_result(result.output, state, inv.name, context)
 
             if await self._orch._handle_tool_approval_marker_result(
                 context,

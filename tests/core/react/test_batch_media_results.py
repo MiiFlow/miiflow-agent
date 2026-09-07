@@ -124,3 +124,54 @@ async def test_single_and_batch_media_observations_match():
     assert "needs_review" in step.observation
     assert "successfully" not in step.observation
     assert state.media_store == multi_state.media_store
+
+
+@pytest.mark.asyncio
+async def test_media_persistence_hook_runs_before_registration_in_single_and_batch():
+    for is_batch in (False, True):
+        orch, ctx, state, events = setup_run([MediaResult(id="one", url="data:image/png;base64,YQ==")])
+        ctx.deps["prepare_media"] = AsyncMock(return_value={
+            "id": "one", "url": "https://stored.test/image.png", "file_asset_id": "asset_one", "status": "ready",
+        })
+        if is_batch:
+            await batch(orch, ctx, state, 1)
+        else:
+            step = ReActStep(step_number=1, thought="", action="image_tool", action_input={})
+            await orch._handle_tool_action(step, ctx, state, tool_call_id="single")
+        ctx.deps["prepare_media"].assert_awaited_once()
+        assert state.media_store == {"one": "https://stored.test/image.png"}
+        emitted = [e for e in events if e.event_type == ReActEventType.MEDIA]
+        assert emitted[0].data["media"]["file_asset_id"] == "asset_one"
+
+
+@pytest.mark.asyncio
+async def test_failed_persistence_does_not_register_a_temporary_url():
+    orch, ctx, state, events = setup_run([MediaResult(id="one", url="https://temporary.test/image.png")])
+    ctx.deps["prepare_media"] = AsyncMock(return_value={
+        "id": "one", "url": "https://temporary.test/image.png", "status": "failed",
+    })
+    step = await batch(orch, ctx, state, 1)
+    assert not state.media_store
+    assert "not saved" in step.tool_invocations[0].observation
+
+
+@pytest.mark.asyncio
+async def test_refresh_hook_updates_media_before_single_and_batch_tools():
+    for is_batch in (False, True):
+        orch, ctx, state, _ = setup_run(["analyzed"])
+        state.media_store["old"] = "https://stored.test/expired.png"
+
+        async def refresh(store, inputs):
+            store["old"] = "https://stored.test/fresh.png"
+            return {"image": "media_ref:old"}
+
+        ctx.deps["refresh_media_inputs"] = AsyncMock(side_effect=refresh)
+        if is_batch:
+            await batch(orch, ctx, state, 1)
+            call = orch.tool_executor.execute_many.call_args.args[0][0]
+            assert call.inputs["image"] == "https://stored.test/fresh.png"
+        else:
+            step = ReActStep(step_number=1, thought="", action="image_tool", action_input={})
+            await orch._handle_tool_action(step, ctx, state, tool_call_id="single")
+            assert step.action_input["image"] == "https://stored.test/fresh.png"
+        ctx.deps["refresh_media_inputs"].assert_awaited_once()

@@ -5,10 +5,37 @@ from typing import Dict, Optional
 from .base import ModelConfig, ParameterConfig, ParameterType
 
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
+    # Ordered newest-first on purpose: `_resolve_model_name`'s third tier is a
+    # SUBSTRING match, and "claude-fable-5" is a substring of every Fable 5.1
+    # identifier. Fable 5.1 must be reached first or a Bedrock/Vertex spelling
+    # of it (`anthropic.claude-fable-5-1`) resolves to Fable 5 and gets Fable
+    # 5's capabilities and prices.
+    "claude-fable-5.1": ModelConfig(
+        model_identifier="claude-fable-5-1",
+        name="claude-fable-5.1",
+        description="Anthropic's most capable widely released model (released September 1, 2026), for demanding reasoning, long-horizon agentic coding, multistep research, and document/spreadsheet/slide work. Same input and output prices as Fable 5, with cache reads at a quarter of the rate ($0.25 vs $1.00 per 1M) — 2.5% of input, where every other Claude model charges 10% — which Anthropic estimates at ~25% lower cost on typical token-billed workloads and up to ~45% on highly agentic ones. Always-on adaptive thinking (default effort high), structured outputs, 1M context window. Forced tool use is NOT supported: it returns an error, so structured output must go through the native path, never the forced-`json_tool` fallback. Claude Mythos 5.1 shares its specifications and pricing but is invitation-only (Project Glasswing), so Fable 5.1 is the top tier reachable with a standard API key.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        # Must stay True: the tool-based JSON fallback in AnthropicClient forces
+        # `tool_choice`, which this model rejects outright.
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=1000000,
+        maximum_output_tokens=128000,
+        token_param_name="max_tokens",
+        supports_temperature=False,
+        input_cost_hint=10.0,
+        output_cost_hint=50.0,
+        cache_read_cost_hint=0.25,  # 0.025x input — the Fable 5.1 / Mythos 5.1 rate
+        cache_write_cost_hint=12.5,  # 1.25x input (5-min TTL); $20 at 1h
+    ),
     "claude-fable-5": ModelConfig(
         model_identifier="claude-fable-5",
         name="claude-fable-5",
-        description="Anthropic's most capable widely released model (generally available since June 9, 2026; API access was briefly suspended June 12–July 1, 2026 under a US export-control directive and has since been restored). Built for demanding reasoning and long-horizon agentic work, with always-on adaptive thinking, structured outputs, and a 1M context window. Claude Mythos 5 shares its $10/$50 pricing but is limited-availability (Project Glasswing partners only), so Fable 5 is the top tier reachable with a standard API key.",
+        description="Legacy — succeeded by Claude Fable 5.1 (September 1, 2026), which carries the same specifications and per-token price but bills cache reads at a quarter of the rate, so this is kept for pinned workloads only. Generally available since June 9, 2026 (API access was briefly suspended June 12–July 1, 2026 under a US export-control directive and has since been restored). Always-on adaptive thinking, structured outputs, 1M context window. Retirement not sooner than June 9, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -228,6 +255,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
         default_value=4096,
         min_value=1,
         max_value={
+            "claude-fable-5.1": 128000,
             "claude-fable-5": 128000,
             "claude-opus-5": 128000,
             "claude-opus-4.8": 128000,
@@ -249,6 +277,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
 # there, and Haiku 4.5 is extended-thinking ONLY (it 400s on adaptive), so both
 # stay out of this set and keep the parameter.
 _NO_EXTENDED_THINKING = {
+    "claude-fable-5.1",
     "claude-fable-5",
     "claude-opus-5",
     "claude-opus-4.8",
@@ -258,18 +287,29 @@ _NO_EXTENDED_THINKING = {
 
 # Models that THINK BY DEFAULT when the request omits `thinking` (adaptive is
 # the default, not off) and that accept `thinking: {"type": "disabled"}` at
-# effort <= high. Fable 5 also thinks by default but rejects "disabled" with a
-# 400, so it is deliberately absent; Opus 4.8/4.7/4.6 and Sonnet 4.6 default to
-# no thinking, so there is nothing to disable.
+# effort <= high. The Fable line also thinks by default but rejects "disabled"
+# with a 400, so it lives in `_THINKING_ON_BY_DEFAULT_LOCKED` below instead;
+# Opus 4.8/4.7/4.6 and Sonnet 4.6 default to no thinking, so there is nothing
+# to disable.
 _THINKING_ON_BY_DEFAULT_DISABLEABLE = {
     "claude-opus-5",
     "claude-sonnet-5",
 }
 
+# Thinks by default AND refuses to be turned off. Spelled as a set rather than
+# a name compared inline in `thinks_by_default`, because that comparison was
+# `name == "claude-fable-5"` and silently answered False for Fable 5.1 — a
+# model with exactly the same behaviour. A caller told thinking is off budgets
+# `max_tokens` for text alone and gets `stop_reason=max_tokens` with no text.
+_THINKING_ON_BY_DEFAULT_LOCKED = {
+    "claude-fable-5.1",
+    "claude-fable-5",
+}
+
 
 # `output_config.effort` — the GA knob that scales adaptive thinking (and overall
 # token spend) on the models that think by default. `budget_tokens` is rejected
-# on Sonnet 5 / Opus 5 / 4.7 / 4.8 / Fable 5, so this is the ONLY way to bound
+# on Sonnet 5 / Opus 5 / 4.7 / 4.8 / Fable 5 / Fable 5.1, so this is the ONLY way to bound
 # their deliberation short of disabling thinking (which is discouraged: with
 # thinking off these models sometimes write a tool call into visible text).
 # Haiku 4.5 and older models 400 on the parameter.
@@ -282,6 +322,7 @@ EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 # caller may configure, so one config survives a model swap and the per-model
 # projection happens at request time (see `effort_levels`).
 _EFFORT_LEVELS_BY_MODEL: Dict[str, tuple] = {
+    "claude-fable-5.1": EFFORT_LEVELS,
     "claude-fable-5": EFFORT_LEVELS,
     "claude-opus-5": EFFORT_LEVELS,
     "claude-opus-4.8": EFFORT_LEVELS,
@@ -312,13 +353,16 @@ def supports_effort(model: str) -> bool:
 def thinks_by_default(model: str) -> bool:
     """True when `model` runs adaptive thinking unless the request disables it.
 
-    A superset of `_THINKING_ON_BY_DEFAULT_DISABLEABLE`: Fable 5 thinks by
-    default but rejects `thinking: {"type": "disabled"}`, so there are models
+    A superset of `_THINKING_ON_BY_DEFAULT_DISABLEABLE`: the Fable models think
+    by default but reject `thinking: {"type": "disabled"}`, so there are models
     where thinking is on and cannot be turned off. Callers that budget
     `max_tokens` for text alone need this to know when the budget is shared.
     """
     name = _resolve_model_name(model) or ""
-    return name in _THINKING_ON_BY_DEFAULT_DISABLEABLE or name == "claude-fable-5"
+    return (
+        name in _THINKING_ON_BY_DEFAULT_DISABLEABLE
+        or name in _THINKING_ON_BY_DEFAULT_LOCKED
+    )
 
 
 def thinking_disable_param(
@@ -332,7 +376,7 @@ def thinking_disable_param(
     `max_tokens` — a hard cap on thinking PLUS text — can be consumed entirely
     by the thinking block, returning `stop_reason=max_tokens` with no text at
     all. Returns None where nothing needs sending (defaults to off), where the
-    API would reject "disabled" outright (Fable 5), or where the model rejects
+    API would reject "disabled" outright (the Fable models), or where the model rejects
     it at the effort level this request carries (Opus 5 at `xhigh` / `max`) —
     hence `effort`: the answer depends on the whole request, not the model
     alone, and returning the parameter without it is a guaranteed 400.

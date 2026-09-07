@@ -1089,3 +1089,56 @@ class TestNonStreamingNativeMCP:
 
         assert "mcp_tool_results" not in response.metadata
         assert "native_mcp" not in response.metadata
+
+
+class TestUnsupportedParamsAreDroppedPerModel:
+    """The passthrough sets say what the ENDPOINT takes, not what the MODEL takes.
+
+    GPT-6 Astra removed `top_p`, `top_logprobs`, `logprobs` and
+    `prompt_cache_retention`. They are all passthrough kwargs, so a caller
+    supplying one would put it on the wire and get a 400 the caller cannot see.
+    """
+
+    @staticmethod
+    def _build(model: str) -> dict:
+        client = OpenAIClient(model=model, api_key="sk-test")
+        return client._build_responses_request(
+            messages=[Message(role=MessageRole.USER, content="hi")],
+            tools=None,
+            mcp_servers=None,
+            json_schema=None,
+            max_tokens=100,
+            temperature=0.7,
+            stream=False,
+            kwargs={
+                "top_p": 0.9,
+                "top_logprobs": 3,
+                "prompt_cache_retention": "24h",
+                "prompt_cache_key": "k",
+                "verbosity": "low",
+                "reasoning_effort": "high",
+            },
+        )
+
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-astra-fast"])
+    def test_astra_drops_the_parameters_it_removed(self, model):
+        params = self._build(model)
+        for removed in ("top_p", "top_logprobs", "prompt_cache_retention", "temperature"):
+            assert removed not in params
+
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-astra-fast"])
+    def test_astra_keeps_everything_it_still_accepts(self, model):
+        # A drop list that over-reaches is its own defect: these are the
+        # controls the model does take, and losing them is a silent downgrade.
+        params = self._build(model)
+        assert params["prompt_cache_key"] == "k"
+        assert params["reasoning"] == {"effort": "high"}
+        assert params["text"] == {"verbosity": "low"}
+
+    def test_other_models_are_untouched(self):
+        # Without this the test above passes on a client that drops the
+        # parameters for every model, which would break GPT-5.6.
+        params = self._build("gpt-5.6-sol")
+        assert params["top_p"] == 0.9
+        assert params["top_logprobs"] == 3
+        assert params["prompt_cache_retention"] == "24h"

@@ -29,6 +29,27 @@ _GPT5_MODELS = {
     "gpt-5.4-nano",
 }
 
+# GPT-6 (Astra), generally available September 3, 2026. Kept as its own set
+# because its parameter contract is NOT the GPT-5.6 one: it drops `temperature`,
+# `top_p`, `top_logprobs`, `logprobs` and `prompt_cache_retention` outright, and
+# its effort scale loses `none`/`minimal`. `-fast` is a latency variant of the
+# same id (2x speed, 2x price), not a separate model; pro is `reasoning.mode`,
+# the same shape GPT-5.6 uses, so neither gets its own catalog entry.
+_GPT6_MODELS = {
+    "gpt-6-astra",
+}
+# The family alias. Kept beside the catalog entry rather than only inside
+# `is_gpt6_model`, because every per-model answer (the surcharge, the rejected
+# parameters) has to agree about it: a spelling one helper calls GPT-6 and
+# another does not is how a request goes out carrying a parameter the model
+# rejects.
+_GPT6_ALIASES = {"gpt-6"}
+_GPT6_ALL = _GPT6_MODELS | _GPT6_ALIASES
+
+# Models whose reasoning-tier contract applies: max_completion_tokens, no
+# temperature, a reasoning_effort scale, verbosity.
+_REASONING_TIER_MODELS = _GPT5_MODELS | _GPT6_MODELS
+
 _GPT56_MODELS = {
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -52,19 +73,64 @@ _LONG_CONTEXT_SURCHARGE_MODELS = {
     *_GPT55_STANDARD_MODELS,
     *_GPT_PRO_MODELS,
     "gpt-5.4",
+    # Astra: past 272K input the whole request bills at $20 / $2 / $75, i.e. the
+    # same 2x input / 1.5x output multipliers the GPT-5 models carry.
+    *_GPT6_ALL,
 }
 
 # Models that don't support temperature parameter
-_NO_TEMPERATURE_MODELS = _REASONING_MODELS | _GPT5_MODELS
+_NO_TEMPERATURE_MODELS = _REASONING_MODELS | _REASONING_TIER_MODELS
+
+# Prefixes that identify a reasoning model this catalog has not seen yet — a
+# dated snapshot (`gpt-6-astra-2026-09-03`) or a family member released after
+# this file was written. The capability helpers below fall back to these so an
+# unknown reasoning model gets `max_completion_tokens` and no `temperature`
+# rather than the standard-chat-model defaults, which would 400. One tuple,
+# because it was spelled out at four call sites and the "gpt-6" entry would
+# otherwise have had to be added to each of them.
+_REASONING_MODEL_PREFIXES = ("o1", "o3", "o4", "gpt-5", "gpt-6")
+
+# Request parameters a model rejects outright, beyond the temperature gate
+# above. These are PASSTHROUGH kwargs — the client copies them onto the request
+# whenever a caller supplies one — so a model that 400s on them needs the drop
+# to happen here rather than at each call site. GPT-6 Astra removed the
+# sampling/logprob controls and replaced `prompt_cache_retention` with
+# `prompt_cache_options.ttl`.
+_UNSUPPORTED_REQUEST_PARAMS: Dict[str, frozenset[str]] = {
+    model: frozenset(
+        {"logprobs", "prompt_cache_retention", "temperature", "top_logprobs", "top_p"}
+    )
+    for model in _GPT6_ALL
+}
 
 
 OPENAI_MODELS: Dict[str, ModelConfig] = {
+    # GPT-6 (Astra) — generally available September 3, 2026. Current flagship.
+    "gpt-6-astra": ModelConfig(
+        model_identifier="gpt-6-astra",
+        name="gpt-6-astra",
+        description="GPT-6 Astra is OpenAI's flagship model (generally available September 3, 2026), a single dense reasoning model for complex coding, reasoning, and long-horizon agentic work. 1.05M context window, 128K max output. $10/$50 per 1M input/output tokens, with cached input at $1 and cache writes at $12.50; past 272K input tokens the whole request bills at $20/$2/$75. Effort is the biggest cost dial — Artificial Analysis measures a 3.6x swing from low to max. Its parameter contract differs from GPT-5.6: temperature, top_p, top_logprobs (and logprobs on Chat Completions) are removed, prompt_cache_retention is replaced by prompt_cache_options.ttl, and the effort scale drops none/minimal. Tool calling requires the Responses API; `max` effort is Responses-only. Appending -fast to the model id runs it at up to 2x speed for 2x the price.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        reasoning=True,
+        maximum_context_tokens=1050000,
+        maximum_output_tokens=128000,
+        token_param_name="max_completion_tokens",
+        supports_temperature=False,
+        input_cost_hint=10.0,
+        output_cost_hint=50.0,
+        cache_read_cost_hint=1.0,  # OpenAI cached input: 10% of input rate
+        cache_write_cost_hint=12.5,  # Cache writes: 1.25x input
+    ),
     # GPT-5.6 series (Sol / Terra / Luna) — generally available July 9, 2026.
-    # Sol is the current flagship; gpt-5.6 is an API alias for gpt-5.6-sol.
+    # gpt-5.6 is an API alias for gpt-5.6-sol.
     "gpt-5.6-sol": ModelConfig(
         model_identifier="gpt-5.6-sol",
         name="gpt-5.6-sol",
-        description="GPT-5.6 Sol is OpenAI's flagship model (generally available July 9, 2026) and the highest-intelligence tier of the GPT-5.6 family, built for complex coding, reasoning, and long-horizon agentic work. 1M context window. Available in the API as gpt-5.6-sol (alias: gpt-5.6). An August 21, 2026 price cut lowered it to $4/$20 per 1M input/output tokens (from $5/$30) — a promotional rate running through at least November 21, 2026 — undercutting Claude Opus 5 on both input and output.",
+        description="Legacy — succeeded by GPT-6 Astra (September 3, 2026) as OpenAI's flagship. The highest-intelligence tier of the GPT-5.6 family, built for complex coding, reasoning, and long-horizon agentic work, and still much cheaper than Astra ($4/$20 vs $10/$50). 1M context window. Available in the API as gpt-5.6-sol (alias: gpt-5.6). An August 21, 2026 price cut lowered it to $4/$20 per 1M input/output tokens (from $5/$30) — a promotional rate running through at least November 21, 2026 — undercutting Claude Opus 5 on both input and output.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -322,6 +388,7 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         parameter_type=ParameterType.NUMBER,
         min_value=1,
         max_value={
+            "gpt-6-astra": 128000,
             "gpt-5.6-sol": 128000,
             "gpt-5.6-terra": 128000,
             "gpt-5.6-luna": 128000,
@@ -364,7 +431,7 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         parameter_type=ParameterType.SELECT,
         default_value="medium",
         options=["none", "low", "medium", "high", "xhigh", "max"],
-        supported_models=list(_REASONING_MODELS | _GPT5_MODELS),
+        supported_models=list(_REASONING_MODELS | _REASONING_TIER_MODELS),
     ),
     ParameterConfig(
         field_name="reasoning_mode",
@@ -373,7 +440,7 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         parameter_type=ParameterType.SELECT,
         default_value="standard",
         options=["standard", "pro"],
-        supported_models=list(_GPT56_MODELS),
+        supported_models=list(_GPT56_MODELS | _GPT6_MODELS),
     ),
     ParameterConfig(
         field_name="verbosity",
@@ -382,12 +449,14 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         parameter_type=ParameterType.SELECT,
         default_value="medium",
         options=["low", "medium", "high"],
-        supported_models=list(_GPT5_MODELS),
+        supported_models=list(_REASONING_TIER_MODELS),
     ),
 ]
 
 
 _REASONING_EFFORT_OPTIONS = {
+    # Astra dropped `none` (and `minimal`); `max` is Responses-only.
+    **{model: ["low", "medium", "high", "xhigh", "max"] for model in _GPT6_MODELS},
     **{
         model: ["none", "low", "medium", "high", "xhigh", "max"]
         for model in _GPT56_MODELS
@@ -434,8 +503,22 @@ def normalize_model_name(model: str) -> str:
     return model
 
 
+def _base_model_name(model: str) -> str:
+    """The catalog identity behind a request-time model spelling.
+
+    Strips OpenAI's `-fast` latency suffix, which selects a service tier rather
+    than a different model: `gpt-6-astra-fast` has the same context window,
+    parameter contract and long-context surcharge as `gpt-6-astra`, only at 2x
+    speed and 2x price. Stripping it in the ONE family matcher every capability
+    predicate goes through is what keeps them from disagreeing — answering the
+    suffix separately in each is how `-fast` came to be billed without the
+    long-context surcharge while still being recognised as a GPT-6 model.
+    """
+    return normalize_model_name(model).lower().removesuffix("-fast")
+
+
 def _matches_model_family(model: str, families: set[str]) -> bool:
-    model_lower = normalize_model_name(model).lower()
+    model_lower = _base_model_name(model)
     return any(
         model_lower == family or model_lower.startswith(f"{family}-20")
         for family in families
@@ -446,6 +529,34 @@ def is_gpt56_model(model: str) -> bool:
     """Return whether ``model`` is a GPT-5.6 standard model or alias."""
     normalized = normalize_model_name(model).lower()
     return normalized == "gpt-5.6" or _matches_model_family(normalized, _GPT56_MODELS)
+
+
+def is_gpt6_model(model: str) -> bool:
+    """Return whether ``model`` is a GPT-6 model, alias, or latency variant."""
+    return _matches_model_family(model, _GPT6_ALL)
+
+
+def tools_require_responses_api(model: str) -> bool:
+    """Return whether tool calling on ``model`` must go through /v1/responses.
+
+    True for GPT-5.6 (Chat Completions cannot combine tools with the reasoning
+    controls) and for GPT-6 Astra, which OpenAI documents as supporting Chat
+    Completions for plain turns but requiring Responses for tool calling.
+    """
+    return is_gpt56_model(model) or is_gpt6_model(model)
+
+
+def unsupported_request_params(model: str) -> frozenset[str]:
+    """Request parameters ``model`` rejects, so the client can drop them.
+
+    Empty for a model with no removals. Keyed off the catalog rather than a
+    literal at the call site: these are passthrough kwargs, and a caller that
+    sets one on a model that removed it gets a 400 rather than a warning.
+    """
+    for family, params in _UNSUPPORTED_REQUEST_PARAMS.items():
+        if _matches_model_family(model, {family}):
+            return params
+    return frozenset()
 
 
 def requires_responses_api(model: str) -> bool:
@@ -461,8 +572,13 @@ def supports_sampling_penalties(model: str) -> bool:
 
 
 def supports_verbosity(model: str) -> bool:
-    """Return whether the model accepts OpenAI's verbosity control."""
-    return _matches_model_family(model, _GPT5_MODELS)
+    """Return whether the model accepts OpenAI's verbosity control.
+
+    Astra keeps it: its published removals are the sampling/logprob controls
+    and `prompt_cache_retention`, and it otherwise carries GPT-5.6's API
+    surface.
+    """
+    return _matches_model_family(model, _GPT5_MODELS) or is_gpt6_model(model)
 
 
 def supports_streaming(model: str) -> bool:
@@ -520,7 +636,7 @@ def get_token_param_name(model: str) -> str:
         return OPENAI_MODELS[model_lower].token_param_name
 
     # Check prefix for versioned models (e.g., "o1-2024-12-17", "gpt-5.2-turbo")
-    for prefix in ("o1", "o3", "o4", "gpt-5"):
+    for prefix in _REASONING_MODEL_PREFIXES:
         if model_lower.startswith(prefix):
             return "max_completion_tokens"
 
@@ -545,7 +661,7 @@ def supports_temperature(model: str) -> bool:
         return OPENAI_MODELS[model_lower].supports_temperature
 
     # Check prefix for versioned/unknown models
-    for prefix in ("o1", "o3", "o4", "gpt-5"):
+    for prefix in _REASONING_MODEL_PREFIXES:
         if model_lower.startswith(prefix):
             return False
 
@@ -577,7 +693,7 @@ def supports_reasoning_effort(model: str) -> bool:
         return True
 
     # Prefix match for versioned/unknown reasoning models.
-    for prefix in ("o1", "o3", "o4", "gpt-5"):
+    for prefix in _REASONING_MODEL_PREFIXES:
         if model_lower.startswith(prefix):
             return True
 
@@ -607,7 +723,7 @@ def supports_native_mcp(model: str) -> bool:
         return True
 
     # Check common OpenAI model prefixes
-    openai_prefixes = ("gpt-4", "gpt-5", "o1", "o3", "o4")
+    openai_prefixes = ("gpt-4", *_REASONING_MODEL_PREFIXES)
     for prefix in openai_prefixes:
         if model_lower.startswith(prefix):
             return True

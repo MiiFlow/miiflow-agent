@@ -10,19 +10,44 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # 3.6 Flash and Gemini 3.5 Flash-Lite onward: the API accepts them and silently
 # IGNORES them — no error, no warning — so a value set here would look applied
 # while changing nothing. The older models (3.5 Flash, 3.1 Pro, 3.1 Flash-Lite)
-# still honour them. Google's replacement knob is `thinking_level`
-# (minimal/low/medium/high), which GeminiClient does not send yet.
+# still honour them. Google's replacement knob is `thinking_level`, which
+# GeminiClient does not send yet. Note the scale itself changed: 3.8 Flash
+# documents LOW/MEDIUM/HIGH with MEDIUM as the default, dropping the `minimal`
+# level the earlier generations offered.
 _NO_SAMPLING_PARAMS = {
+    "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
 }
 
+# Deliberately absent: gemini-3.8-flash-cyber. It is the same core model behind
+# a restricted access envelope — trusted defenders admitted to Google's Fairwind
+# programme, with no self-serve route — so it would fail for every key this
+# catalog serves. Same reasoning as gpt-5.6-cyber in the OpenAI catalog.
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
+    "gemini-3.8-flash": ModelConfig(
+        model_identifier="models/gemini-3.8-flash",
+        name="gemini-3.8-flash",
+        description="Google's newest and most capable Gemini model (released September 2, 2026). Google's top tier is a Flash model because Gemini 3.5 Pro was never released — Gemini 3.1 Pro remains the Pro flagship. Improves on Gemini 3.7 Flash for reasoning, coding, and agentic workflows, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window, 64K max output. Thinking depth is controlled with thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); temperature, top_p, top_k, candidate_count and the frequency/presence penalties are accepted and silently ignored. Introductory pricing of $0.75/$3.75 per 1M input/output tokens (output includes thinking tokens) applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        supports_structured_outputs=False,
+        reasoning=True,
+        maximum_context_tokens=1048576,
+        maximum_output_tokens=65536,
+        token_param_name="max_output_tokens",
+        supports_temperature=False,
+        input_cost_hint=0.75,
+        output_cost_hint=3.75,
+    ),
     "gemini-3.7-flash": ModelConfig(
         model_identifier="models/gemini-3.7-flash",
         name="gemini-3.7-flash",
-        description="Google's newest and most capable Gemini model (released August 13, 2026). Google's top tier is a Flash model because Gemini 3.5 Pro was never released — Gemini 3.1 Pro remains the Pro flagship. Improves on prior Flash generations for coding and reasoning, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window; thinking depth is controlled with thinking_level rather than sampling parameters. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        description="Legacy — succeeded by Gemini 3.8 Flash (September 2, 2026), which is stronger at identical pricing, so this is kept for pinned workloads only. Released August 13, 2026. Strong coding and reasoning with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window; thinking depth is controlled with thinking_level rather than sampling parameters. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -172,6 +197,7 @@ GOOGLE_PARAMETERS: list[ParameterConfig] = [
         default_value=4096,
         min_value=1,
         max_value={
+            "gemini-3.8-flash": 65536,
             "gemini-3.7-flash": 65536,
             "gemini-3.6-flash": 65536,
             "gemini-3.5-flash-lite": 65536,

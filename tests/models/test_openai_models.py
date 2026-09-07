@@ -6,7 +6,12 @@ from miiflow_agent.models.openai import (
     OPENAI_MODELS,
     get_long_context_pricing_multipliers,
     get_parameters_for_model,
+    get_token_param_name,
+    is_gpt6_model,
     supports_json_mode,
+    supports_temperature,
+    tools_require_responses_api,
+    unsupported_request_params,
 )
 
 
@@ -101,3 +106,57 @@ def test_gpt41_context_window_uses_exact_documented_limit():
 )
 def test_long_context_pricing_multipliers(model, input_tokens, expected):
     assert get_long_context_pricing_multipliers(model, input_tokens) == expected
+
+
+class TestGpt6Astra:
+    """GPT-6 Astra's contract differs from GPT-5.6's in ways that fail as 400s."""
+
+    @pytest.mark.parametrize(
+        "spelling",
+        ["gpt-6-astra", "gpt-6", "gpt-6-astra-fast", "gpt-6-fast", "gpt-6-astra-2026-09-03"],
+    )
+    def test_every_spelling_answers_the_same(self, spelling):
+        # A latency suffix, the family alias and a dated snapshot are all the
+        # same model. Answering them per-helper is how `-fast` came to be
+        # recognised as GPT-6 while escaping the long-context surcharge.
+        assert is_gpt6_model(spelling)
+        assert not supports_temperature(spelling)
+        assert get_token_param_name(spelling) == "max_completion_tokens"
+        assert tools_require_responses_api(spelling)
+        assert get_long_context_pricing_multipliers(spelling, 300_000) == (2.0, 1.5)
+        assert unsupported_request_params(spelling) == {
+            "logprobs",
+            "prompt_cache_retention",
+            "temperature",
+            "top_logprobs",
+            "top_p",
+        }
+
+    def test_effort_scale_drops_none(self):
+        # Astra rejects `none`/`minimal`; GPT-5.6 still takes `none`. Offering a
+        # level the model refuses puts a 400 behind a UI dropdown.
+        assert _parameter("gpt-6-astra", "reasoning_effort").options == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        assert "none" in _parameter("gpt-5.6-sol", "reasoning_effort").options
+
+    def test_temperature_is_not_offered(self):
+        assert "temperature" not in _parameter_names("gpt-6-astra")
+        assert "max_tokens" not in _parameter_names("gpt-6-astra")
+
+    def test_models_with_no_removals_report_none(self):
+        # The drop list must not leak onto models that still accept these.
+        for model in ("gpt-5.6-sol", "gpt-5.4", "gpt-4.1"):
+            assert unsupported_request_params(model) == frozenset()
+
+    def test_pricing_matches_published_rates(self):
+        config = OPENAI_MODELS["gpt-6-astra"]
+        assert (config.input_cost_hint, config.output_cost_hint) == (10.0, 50.0)
+        assert config.cache_read_cost_hint == 1.0
+        assert config.cache_write_cost_hint == 12.5
+        assert config.maximum_context_tokens == 1_050_000
+        assert config.maximum_output_tokens == 128_000

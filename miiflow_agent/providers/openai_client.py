@@ -35,7 +35,6 @@ from ..core.stream_normalizer import OpenAIStreamNormalizer
 from ..core.streaming import StreamChunk
 from ..models.openai import (
     get_token_param_name,
-    is_gpt56_model,
     normalize_model_name,
     requires_responses_api,
     supports_native_mcp,
@@ -45,6 +44,8 @@ from ..models.openai import (
     supports_streaming,
     supports_temperature,
     supports_verbosity,
+    tools_require_responses_api,
+    unsupported_request_params,
 )
 
 if TYPE_CHECKING:
@@ -181,9 +182,10 @@ class OpenAIClient(ModelClient):
             return True
         if mcp_servers and self._supports_native_mcp():
             return True
-        # GPT-5.6 tool calling belongs on Responses. It preserves reasoning
-        # controls and avoids Chat Completions' tools+reasoning incompatibility.
-        if tools and is_gpt56_model(self.model):
+        # GPT-5.6 and GPT-6 tool calling belongs on Responses. It preserves
+        # reasoning controls and avoids Chat Completions' tools+reasoning
+        # incompatibility; on GPT-6 Astra, Responses is documented as required.
+        if tools and tools_require_responses_api(self.model):
             return True
         if (
             tools
@@ -193,12 +195,28 @@ class OpenAIClient(ModelClient):
             return True
         return False
 
-    @staticmethod
     def _copy_allowed_kwargs(
-        request_params: Dict[str, Any], kwargs: Dict[str, Any], allowed: frozenset[str]
+        self,
+        request_params: Dict[str, Any],
+        kwargs: Dict[str, Any],
+        allowed: frozenset[str],
     ) -> None:
+        # The passthrough sets say what the ENDPOINT accepts; the catalog says
+        # what this MODEL accepts, and the two diverge (GPT-6 Astra removed
+        # top_p, top_logprobs, logprobs and prompt_cache_retention while the
+        # Responses API still takes them for other models). Dropping here — the
+        # one funnel every request shape passes through — is what keeps a
+        # caller's kwarg from becoming a 400 the caller cannot see.
+        rejected = unsupported_request_params(self.model)
         for key in allowed:
             if key in kwargs and kwargs[key] is not None:
+                if key in rejected:
+                    logger.warning(
+                        "Dropping %s for %s because the model does not accept it",
+                        key,
+                        self.model,
+                    )
+                    continue
                 request_params[key] = kwargs[key]
 
     @staticmethod

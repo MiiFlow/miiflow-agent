@@ -11,8 +11,7 @@ Handled reference shapes, in order:
   1. ``media_ref:<id>`` — the explicit, documented form.
   2. Hallucinated sandbox paths (``/mnt/data/<uuid>.png`` — common with
      GPT-family models) whose embedded UUID matches a stored media id.
-  3. A lone stored media + a file-path-looking value → assume it means that
-     media.
+  Workspace paths are never guessed from the contents of the media store.
 
 Extracted from the orchestrator: this is pure input rewriting with no loop
 state beyond the media store, and the passthrough declaration belongs on the
@@ -82,7 +81,7 @@ def resolve_media_refs(
 
             # 2. Non-URL string (hallucinated path like /mnt/data/..., or bare
             #    filename): try to find a UUID matching a stored media ID.
-            if not stripped.startswith(("http://", "https://", "data:")):
+            if not stripped.startswith(("http://", "https://", "data:", "/org/", "/mine/", "/shared/")):
                 uuid_matches = _UUID_PATTERN.findall(stripped)
                 resolved_from_uuid = False
                 for uuid_str in uuid_matches:
@@ -96,18 +95,6 @@ def resolve_media_refs(
                         resolved_from_uuid = True
                         break
                 if resolved_from_uuid:
-                    continue
-
-                # 3. If only one media exists and the value looks like a file
-                #    path, assume it refers to the most recent generated image.
-                if len(media_store) == 1 and (
-                    stripped.startswith("/") or stripped.startswith("file://")
-                ):
-                    only_url = next(iter(media_store.values()))
-                    resolved[key] = only_url
-                    logger.info(
-                        f"Resolved file path '{stripped}' to only available media URL"
-                    )
                     continue
 
             resolved[key] = value

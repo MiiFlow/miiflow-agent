@@ -203,6 +203,7 @@ class MediaResult:
     media_type: str = "image"  # "image", "video", "audio"
     alt_text: str = ""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    metadata: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -211,6 +212,7 @@ class MediaResult:
             "url": self.url,
             "media_type": self.media_type,
             "alt_text": self.alt_text,
+            **({"metadata": self.metadata} if self.metadata else {}),
         }
 
     def __str__(self) -> str:

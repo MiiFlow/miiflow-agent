@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..message import Message, MessageRole
@@ -29,7 +28,6 @@ from .orchestrator import (
     _format_missing_params_error,
     _observation_with_citation_ref,
     _preparse_tool_args_string,
-    _preview,
     _sanitize_error_message,
     visualization_observation,
 )
@@ -48,6 +46,107 @@ class ToolActionHandler:
 
     def __init__(self, orch: "ReActOrchestrator"):
         self._orch = orch
+
+    async def process_result(self, output, state, tool_name):
+        """Register rich outputs before stringification, on every execution path.
+
+        Blocks belong to one tool call, not shared batch state. Returning them
+        lets callers pair each injection with its own TOOL message.
+        """
+        from miiflow_agent.visualization import (
+            extract_visualization_data,
+            is_visualization_result,
+        )
+        from miiflow_agent.visualization.types import (
+            extract_collection_metadata,
+            extract_llm_blocks,
+            extract_media_collection,
+            extract_media_data,
+            is_llm_block_injection,
+            is_media_collection,
+            is_media_result,
+        )
+        from miiflow_agent.artifacts import (
+            extract_artifact_data,
+            format_artifact_observation,
+            is_artifact_result,
+        )
+
+        if is_llm_block_injection(output):
+            injection = extract_llm_blocks(output) or {}
+            blocks = list(injection.get("blocks") or [])
+            summary = injection.get("summary") or f"Injected {len(blocks)} content block(s) for visual analysis."
+            return summary, blocks
+
+        collection = is_media_collection(output)
+        if collection or is_media_result(output):
+            items = (
+                extract_media_collection(output)
+                if collection
+                else [extract_media_data(output)]
+            )
+            metadata = (extract_collection_metadata(output) or []) if collection else []
+            lines = []
+            for index, item in enumerate(items or []):
+                media_id, url = item["id"], item.get("url", "")
+                # Register before emission so callbacks and subsequent calls see it.
+                if url and not url.startswith("data:"):
+                    state.media_store[media_id] = url
+                await self._orch.event_bus.publish(
+                    EventFactory.media(state.current_step, item, tool_name)
+                )
+                details = (
+                    metadata[index] if index < len(metadata) else item.get("metadata")
+                )
+                line = f"[MEDIA:{media_id}] Use media_ref:{media_id} to view, edit or save this {item.get('media_type', 'image')}."
+                if details:
+                    line += " " + json.dumps(details, default=str)
+                if url and not url.startswith("data:"):
+                    line += f" Image URL: {url}"
+                lines.append(line)
+            return "\n".join(lines), []
+
+        if is_visualization_result(output):
+            data = extract_visualization_data(output)
+            if data:
+                await self._orch.event_bus.publish(
+                    EventFactory.visualization(state.current_step, data, tool_name)
+                )
+                return visualization_observation(data), []
+        if is_artifact_result(output):
+            data = extract_artifact_data(output)
+            if data:
+                await self._orch.event_bus.publish(
+                    EventFactory.artifact(state.current_step, data, tool_name)
+                )
+                return format_artifact_observation(data), []
+        return _observation_with_citation_ref(output), []
+
+    @staticmethod
+    def observation_content(observation, blocks):
+        from ..message import ImageBlock, TextBlock, VideoBlock
+
+        if not blocks:
+            return observation or ""
+        content = [TextBlock(text=observation or "")]
+        for block in blocks:
+            if block.get("type") == "text":
+                content.append(TextBlock(text=block.get("text", "")))
+            elif block.get("type") == "image_url":
+                content.append(
+                    ImageBlock(
+                        image_url=block.get("image_url", ""),
+                        detail=block.get("detail", "auto"),
+                    )
+                )
+            elif block.get("type") == "video_url":
+                content.append(
+                    VideoBlock(
+                        video_url=block.get("video_url", ""),
+                        mime_type=block.get("mime_type"),
+                    )
+                )
+        return content
 
     async def execute_tool(
         self, step: ReActStep, context: RunContext, state: "ExecutionState" = None
@@ -180,149 +279,9 @@ class ToolActionHandler:
             result = await self._orch._execute_tool(step, context, state)
 
             if result.success:
-                # Check if this is a visualization result BEFORE stringification
-                # This is critical because str(VisualizationResult) returns [VIZ:uuid]
-                # which loses the actual chart data
-                from miiflow_agent.visualization import (
-                    is_visualization_result,
-                    extract_visualization_data,
+                step.observation, state.pending_llm_blocks = await self.process_result(
+                    result.output, state, step.action
                 )
-                from miiflow_agent.visualization.types import (
-                    is_media_result,
-                    extract_media_data,
-                    is_media_collection,
-                    extract_media_collection,
-                    extract_collection_metadata,
-                    is_llm_block_injection,
-                    extract_llm_blocks,
-                )
-                from miiflow_agent.artifacts import (
-                    extract_artifact_data,
-                    format_artifact_observation,
-                    is_artifact_result,
-                )
-
-                if is_llm_block_injection(result.output):
-                    # Tool wants the LLM to actually see pixels on the next turn.
-                    # Queue the raw block dicts; the TOOL-message construction below
-                    # will materialize them as multimodal content.
-                    inj = extract_llm_blocks(result.output) or {}
-                    blocks = inj.get("blocks") or []
-                    summary = inj.get("summary") or (
-                        f"Injected {len(blocks)} content block(s) for visual analysis."
-                    )
-                    step.observation = summary
-                    state.pending_llm_blocks = list(blocks)
-                    logger.info(
-                        f"Step {state.current_step} - Queued {len(blocks)} LLM blocks for next turn"
-                    )
-                elif is_media_collection(result.output):
-                    media_items = extract_media_collection(result.output) or []
-                    metadata_items = extract_collection_metadata(result.output) or []
-                    observation_lines = []
-                    for idx, media_data in enumerate(media_items):
-                        await self._orch.event_bus.publish(
-                            EventFactory.media(
-                                state.current_step, media_data, step.action
-                            )
-                        )
-                        media_id = media_data["id"]
-                        media_url = media_data.get("url", "")
-                        if media_url and not media_url.startswith("data:"):
-                            state.media_store[media_id] = media_url
-                        # Correlate metadata entries by index (tools return parallel lists)
-                        meta = (
-                            metadata_items[idx] if idx < len(metadata_items) else None
-                        )
-                        if meta is not None:
-                            try:
-                                meta_json = json.dumps(meta, default=str)
-                            except Exception:
-                                meta_json = str(meta)
-                            observation_lines.append(f"[MEDIA:{media_id}] {meta_json}")
-                        else:
-                            observation_lines.append(
-                                f"[MEDIA:{media_id}] media_type={media_data.get('media_type')} "
-                                f"url={media_url}"
-                            )
-                    step.observation = (
-                        f"Returned {len(media_items)} media item(s). "
-                        "Reference any of them with media_ref:<id>.\n"
-                        + "\n".join(observation_lines)
-                    )
-                    logger.info(
-                        f"Step {state.current_step} - Emitted {len(media_items)} media events (collection)"
-                    )
-                elif is_media_result(result.output):
-                    media_data = extract_media_data(result.output)
-                    await self._orch.event_bus.publish(
-                        EventFactory.media(state.current_step, media_data, step.action)
-                    )
-                    media_id = media_data["id"]
-                    media_url = media_data.get("url", "")
-
-                    # Store media URL in execution state so subsequent tool calls
-                    # (e.g. image editing) can resolve media_ref:<id> to actual URL.
-                    # Only store actual URLs, not data URIs (which can be MBs of base64).
-                    # System tools already persist to S3 before reaching here, so
-                    # media_url should be an S3 URL for normal image gen flows.
-                    if media_url and not media_url.startswith("data:"):
-                        state.media_store[media_id] = media_url
-
-                    # Always include media_ref so LLM can reference this image
-                    # in subsequent tool calls (e.g. edit_gpt_image_1)
-                    if media_url and not media_url.startswith("data:"):
-                        step.observation = (
-                            f"[MEDIA:{media_id}] Image generated successfully. "
-                            f"To edit this image, use media_ref:{media_id} as the image parameter. "
-                            f"Image URL: {media_url}"
-                        )
-                    else:
-                        step.observation = (
-                            f"[MEDIA:{media_id}] Image generated successfully. "
-                            f"To edit this image, use media_ref:{media_id} as the image parameter."
-                        )
-                    logger.info(
-                        f"Step {state.current_step} - Emitted media event: "
-                        f"id={media_id}, type={media_data.get('media_type')}"
-                    )
-                elif is_visualization_result(result.output):
-                    viz_data = extract_visualization_data(result.output)
-                    if viz_data:
-                        # Emit visualization event with full data BEFORE stringification
-                        await self._orch.event_bus.publish(
-                            EventFactory.visualization(
-                                state.current_step, viz_data, step.action
-                            )
-                        )
-                        # Store marker for observation (what gets sent to LLM
-                        # context). auth_prompt spells out that nothing ran —
-                        # see visualization_observation.
-                        step.observation = visualization_observation(viz_data)
-                        logger.info(
-                            f"Step {state.current_step} - Emitted visualization event: "
-                            f"type={viz_data.get('type')}, id={viz_data.get('id')}"
-                        )
-                    else:
-                        # Extraction failed, fall back to string
-                        step.observation = _observation_with_citation_ref(result.output)
-                elif is_artifact_result(result.output):
-                    artifact_data = extract_artifact_data(result.output)
-                    if artifact_data:
-                        await self._orch.event_bus.publish(
-                            EventFactory.artifact(
-                                state.current_step, artifact_data, step.action
-                            )
-                        )
-                        step.observation = format_artifact_observation(artifact_data)
-                        logger.info(
-                            f"Step {state.current_step} - Emitted artifact event: "
-                            f"kind={artifact_data.get('kind')}, id={artifact_data.get('id')}"
-                        )
-                    else:
-                        step.observation = _observation_with_citation_ref(result.output)
-                else:
-                    step.observation = _observation_with_citation_ref(result.output)
 
                 if await self._orch._handle_tool_approval_marker_result(
                     context,
@@ -518,40 +477,14 @@ class ToolActionHandler:
             # multimodal TOOL-message content so the next LLM turn sees the
             # actual pixels rather than a URL string.
             if tool_call_id:
-                if state.pending_llm_blocks:
-                    from ..message import ImageBlock, TextBlock, VideoBlock
-
-                    content_blocks: List[Any] = [TextBlock(text=step.observation or "")]
-                    for b in state.pending_llm_blocks:
-                        btype = b.get("type")
-                        if btype == "text":
-                            content_blocks.append(TextBlock(text=b.get("text", "")))
-                        elif btype == "image_url":
-                            content_blocks.append(
-                                ImageBlock(
-                                    image_url=b.get("image_url", ""),
-                                    detail=b.get("detail", "auto"),
-                                )
-                            )
-                        elif btype == "video_url":
-                            content_blocks.append(
-                                VideoBlock(
-                                    video_url=b.get("video_url", ""),
-                                    mime_type=b.get("mime_type"),
-                                )
-                            )
-                    observation_message = Message(
-                        role=MessageRole.TOOL,
-                        content=content_blocks,
-                        tool_call_id=tool_call_id,
-                    )
-                    state.pending_llm_blocks = []
-                else:
-                    observation_message = Message(
-                        role=MessageRole.TOOL,
-                        content=step.observation,
-                        tool_call_id=tool_call_id,
-                    )
+                observation_message = Message(
+                    role=MessageRole.TOOL,
+                    content=self.observation_content(
+                        step.observation, state.pending_llm_blocks
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+                state.pending_llm_blocks = []
                 context.messages.append(observation_message)
                 logger.debug(
                     f"Step {state.current_step} - Added tool result to context with ID: {tool_call_id}"
@@ -579,7 +512,9 @@ class ToolActionHandler:
                     "tool_name": e.tool_name,
                     "tool_inputs": e.tool_inputs or {},
                     "tool_description": tool_description or "",
-                    "tool_schema": self._orch.tool_executor.get_tool_schema(e.tool_name),
+                    "tool_schema": self._orch.tool_executor.get_tool_schema(
+                        e.tool_name
+                    ),
                     "reason": e.reason,
                 },
                 tool_call_id=tool_call_id,
@@ -713,18 +648,9 @@ class ToolActionHandler:
         individual tool failures (those still surface as observations
         the LLM can react to).
 
-        Rich result types (visualizations, artifacts, media collections,
-        LLM block injections) get FULL observation processing when the
-        executor's serial fallback fires (mixed-parallelizability or
-        approval-required batches). When the batch runs in true parallel
-        mode (every tool is ``parallelizable=True``), only visualization
-        markers + simple stringification are handled — by construction
-        parallelizable tools shouldn't return media/artifact/llm-block
-        results, so this is a documented v1 trade-off rather than a
-        correctness gap.
+        Rich outputs share the single-call processing path: media are
+        registered and emitted, and visual blocks stay paired with their call.
         """
-        from ..tools import ToolResult
-
         # ── Phase 1: parse, validate, and build invocations ─────────────
         ordered_keys = sorted(accumulated_tool_calls.keys())
         invocations: List[ToolInvocation] = []
@@ -923,14 +849,7 @@ class ToolActionHandler:
                 )
 
         # ── Phase 4: process results into observations ─────────────────
-        # Per-invocation observation handling: basic stringification +
-        # visualization marker detection. More exotic result types
-        # (media/artifact/llm_block_injection) fall through to str() in
-        # batch mode — see method docstring for the v1 trade-off.
-        from miiflow_agent.visualization import (
-            extract_visualization_data,
-            is_visualization_result,
-        )
+        blocks_by_call: Dict[str, list] = {}
 
         if approval_pause is not None:
             # An approval-required tool tripped the gate. Pause the run (mirrors
@@ -1029,25 +948,10 @@ class ToolActionHandler:
                     (result.metadata or {}).get("is_validation_error")
                 )
             else:
-                # Visualization → emit event + use [VIZ:id] marker
-                if is_visualization_result(result.output):
-                    viz_data = extract_visualization_data(result.output)
-                    if viz_data:
-                        try:
-                            await self._orch.event_bus.publish(
-                                EventFactory.visualization(
-                                    state.current_step, viz_data, inv.name
-                                )
-                            )
-                        except Exception as evt_err:
-                            logger.debug(
-                                "Failed to publish visualization event: %s", evt_err
-                            )
-                        inv.observation = visualization_observation(viz_data)
-                    else:
-                        inv.observation = _observation_with_citation_ref(result.output)
-                else:
-                    inv.observation = _observation_with_citation_ref(result.output)
+                (
+                    inv.observation,
+                    blocks_by_call[inv.tool_call_id],
+                ) = await self.process_result(result.output, state, inv.name)
 
             if await self._orch._handle_tool_approval_marker_result(
                 context,
@@ -1074,7 +978,9 @@ class ToolActionHandler:
                     tool_call_id=inv.tool_call_id,
                     raw_output=getattr(result, "output", None),
                     error=str(inv.error) if inv.error else None,
-                    execution_time_ms=int((getattr(result, "execution_time", 0) or 0) * 1000),
+                    execution_time_ms=int(
+                        (getattr(result, "execution_time", 0) or 0) * 1000
+                    ),
                 )
                 observation_ref = recorded.ref
                 # Phase 5 appends `inv.observation` as this call's TOOL
@@ -1105,7 +1011,9 @@ class ToolActionHandler:
             context.messages.append(
                 Message(
                     role=MessageRole.TOOL,
-                    content=inv.observation or "",
+                    content=self.observation_content(
+                        inv.observation, blocks_by_call.get(inv.tool_call_id)
+                    ),
                     tool_call_id=inv.tool_call_id,
                 )
             )

@@ -57,9 +57,13 @@ class TestResolveMediaRefs:
         out = resolve_media_refs({"image": f"/mnt/data/{MEDIA_ID}.png"}, STORE)
         assert out["image"] == STORE[MEDIA_ID]
 
-    def test_lone_media_file_path_fallback(self):
-        out = resolve_media_refs({"image": "/tmp/whatever.png"}, STORE)
-        assert out["image"] == STORE[MEDIA_ID]
+    def test_lone_media_does_not_replace_unrelated_paths(self):
+        for path in ("/tmp/whatever.png", "/org/logo/Adlyse Logo.png", "/org/"):
+            assert resolve_media_refs({"path": path}, STORE)["path"] == path
+
+    def test_workspace_path_containing_known_uuid_is_preserved(self):
+        path = f"/org/creative_studio/{MEDIA_ID}.png"
+        assert resolve_media_refs({"path": path}, STORE)["path"] == path
 
     def test_urls_and_non_strings_pass_through(self):
         inputs = {"image": "https://other.example/x.png", "count": 3}

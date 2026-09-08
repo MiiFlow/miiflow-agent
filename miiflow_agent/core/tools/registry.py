@@ -93,6 +93,15 @@ class ToolRegistry:
             if tool_search_threshold is not None
             else _tool_search_mod.DEFAULT_TOOL_SEARCH_THRESHOLD
         )
+        # Tools this registry keeps RESIDENT (never deferred / never hidden
+        # behind tool search) on top of those whose schema declares
+        # ``always_load``. Per-registry, not per-schema, on purpose: tool
+        # objects are typically process-wide singletons shared by every run,
+        # so flipping ``schema.metadata["always_load"]`` for one run would
+        # leak into all of them. The host marks names here when it knows the
+        # model is about to use them — e.g. the tools a skill activation just
+        # surfaced — so they are not re-discovered through a (billed) search.
+        self._always_load_overrides: set = set()
         # Cached lowercase searchable text per tool name (built lazily).
         self._search_index: Dict[str, str] = {}
         # The built-in tool_search FunctionTool, lazily built on first need.
@@ -519,11 +528,30 @@ class ToolRegistry:
         limit = threshold if threshold is not None else self.tool_search_threshold
         return self.total_tool_count() + self.native_mcp_tool_count() > limit
 
+    def mark_always_load(self, names: Iterable[str]) -> None:
+        """Keep ``names`` resident for the life of this registry.
+
+        A resident tool is sent without ``defer_loading`` on the native
+        Anthropic path and stays in the always-visible core under the bridge
+        and the in-process meta-tool, exactly like a tool whose schema
+        declares ``always_load`` — but decided per registry (per run) rather
+        than at tool definition. Names that are not (or not yet) registered
+        are remembered and take effect once the tool is registered; nothing
+        is ever emitted for a name with no tool behind it.
+
+        Marking a tool that is already in the array flips it from deferred to
+        loaded, which changes the tools prefix for the provider's cache — so
+        mark at the same point the tool enters the registry (construction, or
+        the mid-run registration it arrives in), never on a later iteration.
+        """
+        self._always_load_overrides.update(str(n) for n in names if n)
+
     def get_always_load_names(self) -> List[str]:
-        """Names of tools flagged ``always_load`` in their schema metadata."""
+        """Names of tools flagged ``always_load`` in their schema metadata,
+        plus those marked resident on this registry via ``mark_always_load``."""
         names: List[str] = []
         for name, _desc, md in self._iter_all_tool_entries():
-            if md.get("always_load"):
+            if md.get("always_load") or name in self._always_load_overrides:
                 names.append(name)
         return names
 

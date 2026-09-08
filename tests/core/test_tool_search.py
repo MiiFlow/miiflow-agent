@@ -476,6 +476,37 @@ def test_native_tool_search_off_below_threshold():
     assert not any(isinstance(s, dict) and s.get("type", "").startswith("tool_search_tool") for s in schemas)
 
 
+def test_mark_always_load_keeps_a_tool_resident_without_touching_its_schema():
+    """`mark_always_load` is the per-run seam a host uses for tools it knows the
+    model is about to call (e.g. the ones a skill activation just surfaced):
+    they go out without `defer_loading`, the shared schema object is untouched
+    (tool objects are process-wide singletons), and a name with no tool behind
+    it emits nothing."""
+    ex = _executor("anthropic", n_tools=5, threshold=2, always_load_idx={0})
+    registry = ex._tool_registry
+    registry.mark_always_load(["nt_3", "not_a_tool"])
+    assert set(registry.get_always_load_names()) == {"nt_0", "nt_3"}
+
+    by_name = {s["name"]: s for s in ex._build_native_tool_schemas() if "name" in s}
+    assert "defer_loading" not in by_name["nt_3"]
+    assert "defer_loading" not in by_name["nt_0"]
+    assert by_name["nt_1"].get("defer_loading") is True
+    assert "not_a_tool" not in by_name
+    # Per registry, not per schema.
+    assert not (registry.tools["nt_3"].schema.metadata or {}).get("always_load")
+
+
+def test_mark_always_load_is_honoured_by_the_bridge_core_too():
+    # Under the bridge only the always-load core is resident; a marked tool
+    # joins it, so the model reaches it directly rather than via tool_call.
+    ex = _executor("openai", n_tools=5, threshold=2, always_load_idx={0})
+    ex._tool_registry.tool_bridge_enabled = True
+    ex._tool_registry.mark_always_load(["nt_4"])
+    names = _native_names(ex._build_native_tool_schemas())
+    assert "nt_0" in names and "nt_4" in names
+    assert "nt_1" not in names
+
+
 def _executor_with_keywords(provider="anthropic", threshold=2):
     """Corpus where the user's wording appears ONLY in search_keywords —
     the case the native path could not find at all."""

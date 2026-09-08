@@ -70,6 +70,7 @@ class ToolActionHandler:
             extract_artifact_data,
             format_artifact_observation,
             is_artifact_result,
+            pop_attached_artifacts,
         )
 
         if is_llm_block_injection(output):
@@ -125,6 +126,18 @@ class ToolActionHandler:
                     EventFactory.artifact(state.current_step, data, tool_name)
                 )
                 return format_artifact_observation(data), []
+        # An ordinary result that ALSO delivers files: publish each artifact,
+        # keep the result as the observation, and append the markers so the
+        # model knows the person already has the files.
+        output, attached = pop_attached_artifacts(output)
+        if attached:
+            lines = []
+            for data in attached:
+                await self._orch.event_bus.publish(
+                    EventFactory.artifact(state.current_step, data, tool_name)
+                )
+                lines.append(format_artifact_observation(data))
+            return _observation_with_citation_ref(output) + "\n" + "\n".join(lines), []
         return _observation_with_citation_ref(output), []
 
     @staticmethod

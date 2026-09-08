@@ -61,6 +61,42 @@ class ArtifactResult:
         return f"ArtifactResult(kind={self.kind!r}, id={self.id!r}, title={self.title!r})"
 
 
+#: A dict tool result may carry a list of artifact dicts under this key. The
+#: orchestrator pops it, publishes one artifact event per entry, and appends
+#: one `[ARTIFACT:...]` line per entry to the ordinary observation — so a
+#: tool can hand the person a file AND keep telling the model what it did
+#: (a report tool's `document_id`, `builder_path`, ...).
+ATTACHED_ARTIFACTS_KEY = "__artifacts__"
+
+
+def pop_attached_artifacts(output: Any) -> "tuple[Any, list[Dict[str, Any]]]":
+    """``(output_without_the_key, [artifact dicts])`` for a dict result that
+    carries :data:`ATTACHED_ARTIFACTS_KEY`; ``(output, [])`` for anything else.
+
+    Never mutates ``output``: the same dict may already be recorded elsewhere.
+    Entries that are not artifact results are dropped, not raised on — a
+    malformed side-channel must not turn a working tool call into a failure.
+    """
+    if not isinstance(output, dict) or not isinstance(output.get(ATTACHED_ARTIFACTS_KEY), list):
+        return output, []
+    attached = [
+        extract_artifact_data(entry)
+        for entry in output[ATTACHED_ARTIFACTS_KEY]
+        if is_artifact_result(entry)
+    ]
+    rest = {key: value for key, value in output.items() if key != ATTACHED_ARTIFACTS_KEY}
+    return rest, [entry for entry in attached if entry]
+
+
+def is_file_backed_artifact(artifact_data: Dict[str, Any]) -> bool:
+    """An artifact whose bytes already exist (``metadata.file_asset_id``),
+    as opposed to one the server renders from ``source_html``. That one fact
+    decides everything downstream: no render, no revision via edit_artifact,
+    and a different observation."""
+    metadata = artifact_data.get("metadata") if isinstance(artifact_data, dict) else None
+    return bool(isinstance(metadata, dict) and metadata.get("file_asset_id"))
+
+
 def format_artifact_observation(artifact_data: Dict[str, Any]) -> str:
     """Build the tool_result observation string for a produced artifact.
 
@@ -82,6 +118,19 @@ def format_artifact_observation(artifact_data: Dict[str, Any]) -> str:
     kind = (artifact_data.get("kind") or "file").upper()
     title = artifact_data.get("title") or ""
     title_suffix = f" titled {title!r}" if title else ""
+    if is_file_backed_artifact(artifact_data):
+        # A rendered file, delivered as a card. The model must not paste,
+        # quote or invent a link for it (the one it would reach for is a
+        # presigned bucket URL), and cannot revise it through edit_artifact:
+        # the source is whatever produced the file.
+        return (
+            f"[ARTIFACT:{art_id}] {kind} file{title_suffix} is attached to your "
+            "reply as a downloadable file card; the person already has it. Refer "
+            "to it by name (\"the PDF above\"). Do NOT paste, quote, or invent a "
+            "link for it. It is a rendered file, not an editable document: "
+            "get_artifact and edit_artifact do not apply — to change it, change "
+            "its source and produce it again."
+        )
     return (
         f"[ARTIFACT:{art_id}] {kind} artifact created{title_suffix}. "
         f'To revise it, first call get_artifact("{art_id}") to read its current '

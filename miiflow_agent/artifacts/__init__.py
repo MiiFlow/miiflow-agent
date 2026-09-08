@@ -9,15 +9,21 @@ pattern.
 """
 
 from .types import (
+    ATTACHED_ARTIFACTS_KEY,
     ArtifactResult,
     extract_artifact_data,
     format_artifact_observation,
     is_artifact_result,
+    is_file_backed_artifact,
+    pop_attached_artifacts,
 )
 
 __all__ = [
+    "ATTACHED_ARTIFACTS_KEY",
     "ArtifactResult",
     "extract_artifact_data",
     "format_artifact_observation",
     "is_artifact_result",
+    "is_file_backed_artifact",
+    "pop_attached_artifacts",
 ]

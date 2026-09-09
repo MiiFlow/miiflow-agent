@@ -92,6 +92,33 @@ class TestAnthropicClient:
             assert call_args.kwargs['stream'] is True
     
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("streaming", [False, True])
+    async def test_long_history_cache_reaches_provider_request(
+        self, sample_messages, mock_anthropic_response,
+        mock_anthropic_stream_chunks, streaming,
+    ):
+        client = AnthropicClient(
+            model="claude-sonnet-5", api_key="test-key", cache_ttl="1h",
+            conversation_cache_ttl="1h",
+        )
+
+        async def chunks():
+            for chunk in mock_anthropic_stream_chunks:
+                yield chunk
+
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as create:
+            create.return_value = chunks() if streaming else mock_anthropic_response
+            if streaming:
+                async for _ in client.astream_chat(sample_messages):
+                    pass
+            else:
+                await client.achat(sample_messages)
+            request = create.call_args.kwargs
+            assert request["messages"][-1]["content"][-1]["cache_control"]["ttl"] == "1h"
+            assert request["system"][-1]["cache_control"]["ttl"] == "1h"
+            assert "conversation_cache_ttl" not in request
+
+    @pytest.mark.asyncio
     async def test_cancelled_stream_drains_and_logs_witness(
         self, client, sample_messages, mock_anthropic_stream_chunks, caplog
     ):
@@ -509,6 +536,33 @@ class TestApplyPromptCaching:
             AnthropicClient._apply_prompt_caching(params, ttl=ttl)
             assert params["tools"][-1]["cache_control"] == {"type": "ephemeral"}
             assert params["system"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_conversation_ttl_extends_history_without_mutating_it(self):
+        for content in ("returning user", [{"type": "text", "text": "returning user"}]):
+            params = self._params()
+            params["messages"][-1]["content"] = content
+            original_message = params["messages"][-1]
+            AnthropicClient._apply_prompt_caching(params, ttl="1h", conversation_ttl="1h")
+            assert params["messages"][-1]["content"][-1]["cache_control"] == {
+                "type": "ephemeral", "ttl": "1h"
+            }
+            assert original_message["content"] == content
+            if isinstance(content, list):
+                assert "cache_control" not in content[-1]
+            assert self._count_breakpoints(params) == 3
+
+    def test_conversation_ttl_rejects_invalid_or_misordered_durations(self):
+        for kwargs in (
+            {"conversation_cache_ttl": "2h"},
+            {"conversation_cache_ttl": "1h"},
+            {"cache_ttl": "5m", "conversation_cache_ttl": "1h"},
+        ):
+            with pytest.raises(ValueError):
+                AnthropicClient(model="claude-sonnet-5", api_key="k", **kwargs)
+        client = AnthropicClient(
+            model="claude-sonnet-5", api_key="k", cache_ttl="1h", conversation_cache_ttl="1h"
+        )
+        assert client.conversation_cache_ttl == "1h"
 
     def test_cache_ttl_constructor_validation(self):
         assert AnthropicClient(model="claude-sonnet-5", api_key="k").cache_ttl is None

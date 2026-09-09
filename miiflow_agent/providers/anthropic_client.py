@@ -56,8 +56,8 @@ class AnthropicClient(ModelClient):
         self.effort: Optional[str] = effort
         # `cache_ttl` extends the prompt-cache TTL of the tools + system
         # breakpoints (the org-stable prefix) beyond the 5-minute default;
-        # the message breakpoint always stays default (agent rounds are
-        # seconds apart, and the transcript prefix changes every turn anyway).
+        # history stays at five minutes unless conversation_cache_ttl opts a
+        # long, likely-to-resume session into the one-hour experiment.
         # Same delivery path as `effort`: a model_config key spread into the
         # constructor. Motivation: 63% of system-agent turns arriving >5 min
         # after the previous one re-billed a ~40K-token prompt at the full
@@ -68,6 +68,12 @@ class AnthropicClient(ModelClient):
         if cache_ttl is not None and cache_ttl not in ("5m", "1h"):
             raise ValueError(f"cache_ttl must be '5m' or '1h', got {cache_ttl!r}")
         self.cache_ttl: Optional[str] = cache_ttl
+        conversation_cache_ttl = kwargs.pop("conversation_cache_ttl", None)
+        if conversation_cache_ttl not in (None, "5m", "1h"):
+            raise ValueError("conversation_cache_ttl must be '5m' or '1h'")
+        if conversation_cache_ttl == "1h" and cache_ttl != "1h":
+            raise ValueError("conversation_cache_ttl='1h' requires cache_ttl='1h'")
+        self.conversation_cache_ttl: Optional[str] = conversation_cache_ttl
         super().__init__(model=model, api_key=api_key, **kwargs)
         from .sdk_client_cache import get_or_create_sdk_client
 
@@ -1098,7 +1104,11 @@ class AnthropicClient(ModelClient):
 
     @classmethod
     def _apply_prompt_caching(
-        cls, request_params: Dict[str, Any], *, ttl: Optional[str] = None
+        cls,
+        request_params: Dict[str, Any],
+        *,
+        ttl: Optional[str] = None,
+        conversation_ttl: Optional[str] = None,
     ) -> None:
         """Add Anthropic prompt-cache breakpoints to `request_params` in place.
 
@@ -1120,7 +1130,8 @@ class AnthropicClient(ModelClient):
 
         Anthropic allows 4 breakpoints per request; we place at most 3.
         TTL: within-turn agent rounds are seconds apart, so the message
-        breakpoint always stays at the 5-minute default. The tools/system
+        breakpoint defaults to 5 minutes. ``conversation_ttl`` opts long
+        sessions into longer history reuse. The tools/system
         tiers honour ``ttl`` (call sites pass ``self.cache_ttl``) — prod
         data showed the dominant cache misses were BETWEEN user turns (63%
         of system-agent turns >5 min idle re-billed the whole ~40K-token
@@ -1168,10 +1179,12 @@ class AnthropicClient(ModelClient):
                 new_system[-1] = last_copy
                 request_params["system"] = new_system
 
-        cls._mark_final_message_block(request_params)
+        cls._mark_final_message_block(request_params, ttl=conversation_ttl)
 
     @classmethod
-    def _mark_final_message_block(cls, request_params: Dict[str, Any]) -> None:
+    def _mark_final_message_block(
+        cls, request_params: Dict[str, Any], *, ttl: Optional[str] = None
+    ) -> None:
         """Mark the last cacheable content block of the final message."""
         messages = request_params.get("messages")
         if not messages:
@@ -1179,6 +1192,9 @@ class AnthropicClient(ModelClient):
         last_msg = messages[-1]
         if not isinstance(last_msg, dict):
             return
+        cache_control = {"type": "ephemeral"}
+        if ttl == "1h":
+            cache_control["ttl"] = ttl
 
         content = last_msg.get("content")
         if isinstance(content, str):
@@ -1188,7 +1204,7 @@ class AnthropicClient(ModelClient):
                 {
                     "type": "text",
                     "text": content,
-                    "cache_control": {"type": "ephemeral"},
+                    "cache_control": dict(cache_control),
                 }
             ]
         elif isinstance(content, list) and content:
@@ -1205,7 +1221,7 @@ class AnthropicClient(ModelClient):
                 return
             new_content = list(content)
             block_copy = dict(new_content[idx])
-            block_copy["cache_control"] = {"type": "ephemeral"}
+            block_copy["cache_control"] = dict(cache_control)
             new_content[idx] = block_copy
         else:
             return
@@ -1384,7 +1400,11 @@ class AnthropicClient(ModelClient):
             self._prune_stale_tool_references(
                 request_params, mcp_servers if use_native_mcp else None
             )
-            self._apply_prompt_caching(request_params, ttl=self.cache_ttl)
+            self._apply_prompt_caching(
+                request_params,
+                ttl=self.cache_ttl,
+                conversation_ttl=self.conversation_cache_ttl,
+            )
 
             # Use beta client for structured outputs or native MCP
             use_beta_client = use_native_structured_output or use_native_mcp
@@ -1757,7 +1777,11 @@ class AnthropicClient(ModelClient):
             self._prune_stale_tool_references(
                 request_params, mcp_servers if use_native_mcp else None
             )
-            self._apply_prompt_caching(request_params, ttl=self.cache_ttl)
+            self._apply_prompt_caching(
+                request_params,
+                ttl=self.cache_ttl,
+                conversation_ttl=self.conversation_cache_ttl,
+            )
 
             # Determine which client to use
             # Use beta client for structured outputs or native MCP

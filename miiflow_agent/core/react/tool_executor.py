@@ -80,12 +80,16 @@ class AgentToolExecutor:
     _readonly_parallel = False
     _emit_post_tool_use = False
     _max_parallel_tools = DEFAULT_MAX_PARALLEL_TOOLS
+    _schema_memo = None
 
     def __init__(self, agent, tool_filter=None):
         self.agent = agent
         self._tool_registry = agent.tool_registry
         self._client = agent.client
         self.tool_filter = tool_filter  # Optional ToolFilter for narrowing available tools
+        # (surface key, provider-format schemas) of the last build — see
+        # _build_native_tool_schemas. Per executor, i.e. per run.
+        self._schema_memo = None
         # Max tools run concurrently in one parallel batch (see
         # DEFAULT_MAX_PARALLEL_TOOLS). Instance attribute so tests / callers can
         # override without touching the module constant.
@@ -801,7 +805,63 @@ class AgentToolExecutor:
             model=getattr(provider_client, "model", None),
         )
 
+    def _schema_surface_key(self) -> tuple:
+        """Everything `_build_native_tool_schemas_uncached` reads that can
+        change between two calls in one run.
+
+        Registry membership (by name and order), the always-load core, the
+        ToolSearch session's pinned/enabled sets, the provider, the search /
+        bridge decision and the filter. Tool schemas themselves are treated as
+        immutable for the life of a registry — nothing in this package
+        rewrites a registered tool's definition in place.
+        """
+        from ..tools.tool_search import (
+            get_enabled_tool_names,
+            get_pinned_tool_names,
+            is_session_active,
+        )
+
+        registry = self._tool_registry
+        provider_client = getattr(self._client, "client", None)
+        return (
+            id(registry),
+            tuple(self.list_tools()),
+            tuple(registry.get_always_load_names()),
+            tuple(sorted(get_pinned_tool_names())),
+            tuple(sorted(get_enabled_tool_names() or ())),
+            is_session_active(),
+            getattr(provider_client, "provider_name", None),
+            registry.should_use_tool_search(),
+            getattr(registry, "tool_bridge_enabled", None),
+            id(self.tool_filter),
+        )
+
     def _build_native_tool_schemas(self) -> List:
+        """Provider-format tool schemas for the next request, memoized per surface.
+
+        The build converts every registered tool (universal schema → provider
+        format, each through a deep-copying normalizer) and ran at least twice
+        per step — once to size the request for the context engine, once for
+        the call itself — and again on every step of the loop although the
+        surface almost never changes within a run. The memo keys on
+        `_schema_surface_key`, so a discovery, a pin or a registration still
+        rebuilds. Callers get shallow copies: the provider client adds
+        `cache_control` / `defer_loading` to the dicts it sends, and those
+        must not leak into the next build.
+        """
+        try:
+            key = self._schema_surface_key()
+        except Exception:  # noqa: BLE001 — a keying failure must not skip the build
+            key = None
+        memo = self._schema_memo
+        if key is not None and memo is not None and memo[0] == key:
+            return [dict(s) if isinstance(s, dict) else s for s in memo[1]]
+        schemas = self._build_native_tool_schemas_uncached()
+        if key is not None:
+            self._schema_memo = (key, schemas)
+        return [dict(s) if isinstance(s, dict) else s for s in schemas]
+
+    def _build_native_tool_schemas_uncached(self) -> List:
         """Build tool schemas in native provider format.
 
         Converts universal schemas to provider-specific format

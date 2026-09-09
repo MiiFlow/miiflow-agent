@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
@@ -90,6 +91,59 @@ def _recent_tool_call_names(messages: Any, max_assistant_turns: int = 1) -> set:
         if seen >= max_assistant_turns:
             break
     return names
+
+
+#: ``MIIFLOW_PIN_RECENT_TOOLS``: when the previous turn's tool calls are pinned
+#: into the fresh ToolSearch session. ``resume`` (default) pins only on a
+#: resumed turn — the post-approval / post-clarification case the seeding was
+#: written for. ``always`` restores the pre-Sept-2026 behaviour; ``never``
+#: disables pinning outright.
+#:
+#: Why the default is NOT ``always``: pinning changes which tools carry
+#: ``defer_loading`` (a pinned tool is sent resident), so the tools array bytes
+#: differ between turns whenever the model's last tool set differs. Tools are
+#: the FIRST prompt-cache tier and the tiers nest (tools → system →
+#: messages), so that one flag flip re-billed the entire ~30-40K-token prefix
+#: uncached on every ordinary turn — 35% of Adlyse web turns opened with zero
+#: cache reads and a 12s provider TTFT (Datadog, Sept 2026). An ordinary turn
+#: reaches its previous tools through tool_search like any other; only a
+#: resumed turn is told to "call X again" without a discovery step.
+_PIN_RECENT_TOOLS_ENV = "MIIFLOW_PIN_RECENT_TOOLS"
+_PIN_POLICIES = ("resume", "always", "never")
+
+
+def _pin_recent_tools_policy() -> str:
+    raw = os.environ.get(_PIN_RECENT_TOOLS_ENV, "resume").strip().lower()
+    return raw if raw in _PIN_POLICIES else "resume"
+
+
+def _recent_tools_to_pin(messages: Any, *, is_resume: Optional[bool]) -> set:
+    """The ToolSearch session's ``initial`` seed for this run.
+
+    ``is_resume`` is the host's verdict on whether this turn continues a paused
+    one; ``None`` means the caller cannot tell (``Agent.run``), which under the
+    default policy reads as "not a resume".
+    """
+    policy = _pin_recent_tools_policy()
+    if policy == "never":
+        return set()
+    if policy == "always" or is_resume:
+        return _recent_tool_call_names(messages)
+    return set()
+
+
+def _context_is_resume(context: "RunContext") -> bool:
+    """Whether ``context`` describes a resumed turn.
+
+    The host's explicit ``pin_recent_tools`` wins; otherwise a deterministic
+    resume command on the context is the signal (a legacy model-driven resume
+    carries none, so hosts on that path must set the flag themselves).
+    """
+    explicit = getattr(context, "pin_recent_tools", None)
+    if explicit is not None:
+        return bool(explicit)
+    return getattr(context, "resume", None) is not None
+
 
 Deps = TypeVar("Deps")
 Result = TypeVar("Result")
@@ -205,6 +259,10 @@ class RunContext(Generic[Deps]):
     run_state: RunState = field(default_factory=RunState)
     checkpoint: Checkpoint = field(default_factory=Checkpoint)
     resume: Optional[ResumeCommand] = None
+    #: Host override for pinning the previous turn's tools into this run's
+    #: ToolSearch session (see ``_recent_tools_to_pin``). ``None`` = derive
+    #: from ``resume``; ``True`` on a resumed turn the host detected itself.
+    pin_recent_tools: Optional[bool] = None
 
     @property
     def is_cancelled(self) -> bool:
@@ -514,9 +572,11 @@ class Agent(Generic[Deps, Result]):
         # Open a per-run ToolSearch session so the registry can hide most tool
         # schemas behind the tool_search meta-tool when the catalog is large.
         # This is a no-op for small registries (see should_use_tool_search()).
-        # Seed with the tools the model used in its last turn so a resumed run
-        # (e.g. post-approval "call X again") can still see X.
-        with tool_search_session(initial=_recent_tool_call_names(message_history)):
+        # `run()` has no RunContext to read a resume signal from, so the
+        # previous turn's tools are pinned only under MIIFLOW_PIN_RECENT_TOOLS=always.
+        with tool_search_session(
+            initial=_recent_tools_to_pin(message_history, is_resume=None)
+        ):
             return await self._run_inner(user_prompt, deps=deps, message_history=message_history)
 
     async def _run_inner(
@@ -851,11 +911,17 @@ class Agent(Generic[Deps, Result]):
         # same task frame that drives the generator, which keeps it safe under
         # ASGI middlewares that may rebind generator iteration to a child task.
         # Seed the discovery session with the tools used in the last assistant
-        # turn so a resumed run (post-approval "call X again", or any continued
-        # turn) keeps those tools visible instead of hiding them behind
-        # tool_search. The schema cap still bounds the total.
+        # turn ONLY on a resumed run (post-approval "call X again"), so those
+        # tools stay visible instead of hiding behind tool_search. Ordinary
+        # turns get an empty seed: the seed changes which tools are sent
+        # resident, and a tools array that differs from the previous turn's
+        # busts every prompt-cache tier (see _recent_tools_to_pin).
         _session_cm = (
-            tool_search_session(initial=_recent_tool_call_names(context.messages))
+            tool_search_session(
+                initial=_recent_tools_to_pin(
+                    context.messages, is_resume=_context_is_resume(context)
+                )
+            )
             if _own_session
             else _NullCM()
         )

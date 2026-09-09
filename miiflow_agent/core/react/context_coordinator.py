@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from ..context import CompressionVerdict
 from .events import EventFactory
@@ -163,18 +163,28 @@ class ContextCoordinator:
             EventFactory.context_breakdown(decision.to_dict(), step_number)
         )
 
-        def record_estimate(sized_shape) -> None:
+        def record_estimate(sized_shape, raw_total: Optional[int] = None) -> None:
             """Stash the uncorrected estimate for the request we're about to
-            send, so the next response's usage can calibrate against it."""
+            send, so the next response's usage can calibrate against it.
+
+            ``raw_total`` is the number ``should_compress`` already derived
+            for the same shape; passing it skips a second full walk over the
+            history and every tool schema."""
             if state is None:
                 return
             try:
-                from ..context import get_counter
+                if raw_total is None:
+                    from ..context import get_counter
 
-                counter = get_counter(sized_shape.provider, sized_shape.model)
-                state.last_estimated_prompt_tokens = counter.raw_total(sized_shape)
+                    counter = get_counter(sized_shape.provider, sized_shape.model)
+                    raw_total = counter.raw_total(sized_shape)
+                state.last_estimated_prompt_tokens = raw_total
             except Exception:  # noqa: BLE001 — calibration is best-effort
                 state.last_estimated_prompt_tokens = None
+
+        # `0` is the breakdown's "not recorded" sentinel, so fall back to a
+        # fresh count rather than teaching the calibrator the request is empty.
+        _decided_raw_total = getattr(decision.breakdown, "raw_total", 0) or None
 
         if decision.verdict is CompressionVerdict.FLOOR_EXCEEDED:
             # Surfaced rather than swallowed: the actionable fix is upstream
@@ -182,11 +192,11 @@ class ContextCoordinator:
             # is about to fail or degrade in a way that looks like a model
             # problem unless we say otherwise.
             logger.error("[ORCH] %s %s", phase, decision.reason)
-            record_estimate(shape)
+            record_estimate(shape, raw_total=_decided_raw_total)
             return
 
         if not decision.should_compress:
-            record_estimate(shape)
+            record_estimate(shape, raw_total=_decided_raw_total)
             return
 
         outcome = await engine.compress(shape)

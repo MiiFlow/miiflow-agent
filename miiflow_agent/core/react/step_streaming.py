@@ -76,6 +76,9 @@ class StepStreamer:
         # appended. Search blocks may only attach within that window — see
         # _attach_search_blocks.
         messages_before_step = len(context.messages)
+        # Read the kill switch once per step: it used to be consulted (an
+        # os.environ lookup) on every streamed delta.
+        _optimistic_streaming = _optimistic_answer_streaming_enabled()
 
         try:
             # Publish step start event
@@ -185,7 +188,7 @@ class StepStreamer:
                         )
                     else:
                         pending_answer_deltas.append(chunk.delta)
-                        if _optimistic_answer_streaming_enabled():
+                        if _optimistic_streaming:
                             await self._orch.event_bus.publish(
                                 EventFactory.final_answer_chunk(
                                     state.current_step,
@@ -236,7 +239,7 @@ class StepStreamer:
                             preamble = "".join(pending_answer_deltas)
                             pending_answer_deltas = []
                             native_mcp_retracted = True
-                            if _optimistic_answer_streaming_enabled():
+                            if _optimistic_streaming:
                                 await self._orch.event_bus.publish(
                                     EventFactory.answer_retracted(
                                         state.current_step,
@@ -325,7 +328,7 @@ class StepStreamer:
                         if pending_answer_deltas:
                             preamble = "".join(pending_answer_deltas)
                             pending_answer_deltas = []
-                            if _optimistic_answer_streaming_enabled():
+                            if _optimistic_streaming:
                                 # The preamble already went out live as
                                 # FINAL_ANSWER_CHUNKs — tell consumers to clear
                                 # their answer buffer before re-emitting it on
@@ -522,7 +525,7 @@ class StepStreamer:
                 # Stream closed with no tool calls: the buffered deltas ARE the
                 # final answer. With optimistic streaming they already went out
                 # live; otherwise replay them now (legacy behavior).
-                if not _optimistic_answer_streaming_enabled():
+                if not _optimistic_streaming:
                     replayed = ""
                     for delta in pending_answer_deltas:
                         replayed += delta
@@ -534,7 +537,7 @@ class StepStreamer:
             elif not accumulated_tool_calls and pending_answer_deltas:
                 # max_tokens truncation: the text is not a final answer. Retract
                 # what was optimistically streamed, then demote it to thinking.
-                if _optimistic_answer_streaming_enabled():
+                if _optimistic_streaming:
                     await self._orch.event_bus.publish(
                         EventFactory.answer_retracted(
                             state.current_step,
@@ -1086,7 +1089,7 @@ class StepStreamer:
             # (the tool-call retraction already cleared the list) and on
             # approval/plan interrupts (raised during tool execution, after
             # the clear).
-            if pending_answer_deltas and _optimistic_answer_streaming_enabled():
+            if pending_answer_deltas and _optimistic_streaming:
                 try:
                     await self._orch.event_bus.publish(
                         EventFactory.answer_retracted(

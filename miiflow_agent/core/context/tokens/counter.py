@@ -285,6 +285,7 @@ class LocalTokenCounter(TokenCounter):
             messages=int(raw_messages * factor),
             calibration_factor=factor,
             calibrated=state.is_grounded,
+            raw_total=raw_system + raw_tools + raw_messages,
         )
 
     def _raw_tiers(self, shape: RequestShape):

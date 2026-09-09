@@ -489,6 +489,23 @@ class AnthropicClient(ModelClient):
 
         return anthropic_message
 
+    @staticmethod
+    def _prepare_needs_thread(messages: List[Message]) -> bool:
+        """Whether `_prepare_messages` may block (image/document/video I/O).
+
+        Only multimodal blocks download or resize anything; a history made of
+        strings and text blocks is pure dict building and belongs on the loop.
+        """
+        from ..core.message import TextBlock
+
+        for msg in messages:
+            content = getattr(msg, "content", None)
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, TextBlock):
+                        return True
+        return False
+
     def _prepare_messages(
         self, messages: List[Message]
     ) -> tuple[Optional[str], List[Dict[str, Any]]]:
@@ -1578,10 +1595,16 @@ class AnthropicClient(ModelClient):
         _astream_started_at = time.monotonic()
 
         try:
-            # Offload sync image-download + Pillow resize work off the event loop.
-            system_content, anthropic_messages = await asyncio.to_thread(
-                self._prepare_messages, messages
-            )
+            # Offload sync image-download + Pillow resize work off the event
+            # loop — but only when there is any: a text-only history (the
+            # common case on every agent step) converts in microseconds, and
+            # the thread-pool round trip is pure pre-request latency.
+            if self._prepare_needs_thread(messages):
+                system_content, anthropic_messages = await asyncio.to_thread(
+                    self._prepare_messages, messages
+                )
+            else:
+                system_content, anthropic_messages = self._prepare_messages(messages)
 
             # Extract thinking parameters from kwargs (won't be passed to API directly)
             thinking_enabled = kwargs.pop("thinking_enabled", False)
@@ -1591,14 +1614,20 @@ class AnthropicClient(ModelClient):
             # think by default — see `thinking_disable_param`.
             thinking_disabled = kwargs.pop("thinking_disabled", False)
 
-            logger.debug(f"Streaming request to Anthropic with {len(anthropic_messages)} messages:")
-            for idx, msg in enumerate(anthropic_messages):
-                logger.debug(
-                    f"  Message {idx}: role={msg.get('role')}, content_type={type(msg.get('content'))}, content_length={len(str(msg.get('content')))}"
-                )
-                logger.debug(
-                    f"    Content preview: {json.dumps(msg.get('content'), default=str)[:200]}"
-                )
+            # Guarded: the f-strings below `str()` and `json.dumps()` every
+            # message's content BEFORE logging decides to drop the record, so
+            # unguarded they serialized the whole history twice per LLM call
+            # at any log level — measurable pre-request CPU on a 40K-token
+            # transcript.
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Streaming request to Anthropic with {len(anthropic_messages)} messages:")
+                for idx, msg in enumerate(anthropic_messages):
+                    logger.debug(
+                        f"  Message {idx}: role={msg.get('role')}, content_type={type(msg.get('content'))}, content_length={len(str(msg.get('content')))}"
+                    )
+                    logger.debug(
+                        f"    Content preview: {json.dumps(msg.get('content'), default=str)[:200]}"
+                    )
 
             # Check for native MCP
             use_native_mcp = mcp_servers and len(mcp_servers) > 0 and self._supports_native_mcp()

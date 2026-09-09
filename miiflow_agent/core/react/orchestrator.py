@@ -38,7 +38,11 @@ logger = logging.getLogger(__name__)
 
 def _optimistic_answer_streaming_enabled() -> bool:
     """Kill switch: MIIFLOW_OPTIMISTIC_ANSWER_STREAMING=0 reverts to
-    buffer-and-replay of answer deltas (no live streaming, no retractions)."""
+    buffer-and-replay of answer deltas (no live streaming, no retractions).
+
+    Read ONCE per step by the step streamer (not per streamed delta — an
+    ``os.environ`` lookup per token is hot-path overhead for a flag that
+    cannot meaningfully change mid-step)."""
     return os.environ.get("MIIFLOW_OPTIMISTIC_ANSWER_STREAMING", "1").lower() not in (
         "0",
         "false",

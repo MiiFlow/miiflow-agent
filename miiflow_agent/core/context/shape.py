@@ -80,6 +80,13 @@ class TokenBreakdown:
     #: learned from a real provider count or is still the 1.0 default.
     calibration_factor: float = 1.0
     calibrated: bool = False
+    #: Uncorrected total the tiers were derived from, before the factor was
+    #: applied. The calibrator needs THIS number (see
+    #: ``LocalTokenCounter.raw_total``); carrying it here lets the policy
+    #: decision and the calibration estimate share one walk over the request
+    #: instead of counting every message and schema twice per step. ``0``
+    #: means "not recorded" (a hand-built breakdown).
+    raw_total: int = 0
 
     @property
     def floor(self) -> int:

@@ -126,17 +126,29 @@ class ToolActionHandler:
                     EventFactory.artifact(state.current_step, data, tool_name)
                 )
                 return format_artifact_observation(data), []
-        # An ordinary result that ALSO delivers files: publish each artifact,
-        # keep the result as the observation, and append the markers so the
-        # model knows the person already has the files.
+        # Ordinary domain results may ALSO deliver cards or files. Keep their
+        # IDs and versions in the observation; replacing it with a bare VIZ
+        # marker would erase the state needed by the next authoring tool.
+        lines = []
+        if isinstance(output, dict) and isinstance(output.get("__visualizations__"), list):
+            output = dict(output)
+            attached_visualizations = output.pop("__visualizations__")
+            for item in attached_visualizations:
+                data = extract_visualization_data(item) if is_visualization_result(item) else None
+                if not data:
+                    continue
+                await self._orch.event_bus.publish(
+                    EventFactory.visualization(state.current_step, data, tool_name)
+                )
+                lines.append(visualization_observation(data))
         output, attached = pop_attached_artifacts(output)
         if attached:
-            lines = []
             for data in attached:
                 await self._orch.event_bus.publish(
                     EventFactory.artifact(state.current_step, data, tool_name)
                 )
                 lines.append(format_artifact_observation(data))
+        if lines:
             return _observation_with_citation_ref(output) + "\n" + "\n".join(lines), []
         return _observation_with_citation_ref(output), []
 

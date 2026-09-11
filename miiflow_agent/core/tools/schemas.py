@@ -5,6 +5,81 @@ from dataclasses import dataclass, field
 
 from .types import ResultType, ToolType, ParameterType
 
+# Internal variable types that are NOT JSON Schema types, mapped to the
+# JSON Schema type (and format) that carries them on the wire. `VariableType`
+# on the server side is wider than `ParameterType` here — a tool parameter
+# declared `file`, `video`, `timestamp` or `enum` only ever reaches us nested
+# inside `items` / `properties`, as a raw dict, because the top-level coercion
+# in `tool_config_converter` falls back to STRING for names this enum lacks.
+_CUSTOM_TYPE_TO_JSON_SCHEMA: Dict[str, Dict[str, str]] = {
+    "media": {"type": "string", "format": "uri"},
+    "file": {"type": "string", "format": "uri"},
+    "video": {"type": "string", "format": "uri"},
+    "text": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "enum": {"type": "string"},
+}
+
+# Keywords whose values are themselves schemas (or maps/lists of schemas), so
+# the custom-type mapping has to recurse through them.
+_SCHEMA_VALUED_KEYWORDS = ("items", "additionalProperties", "not", "if", "then", "else")
+_SCHEMA_MAP_KEYWORDS = ("properties", "patternProperties", "$defs", "definitions")
+_SCHEMA_LIST_KEYWORDS = ("anyOf", "allOf", "oneOf", "prefixItems")
+
+
+def map_custom_types_to_json_schema(node: Any) -> Any:
+    """Rewrite internal variable types into valid JSON Schema, at any depth.
+
+    This is the "handled upstream" half of the contract that
+    `miiflow_agent/core/schema_normalizer.py` documents: that module owns
+    provider-specific shaping and explicitly does NOT map custom types, so the
+    mapping has to be complete by the time a schema leaves here.
+
+    `to_json_schema_property` has always mapped `media` / `text` for the
+    parameter's OWN type, but copied `items` and `properties` through verbatim.
+    A nested `{"type": "file"}` therefore reached the model provider unchanged,
+    and the Anthropic API rejects the whole request with
+    `tools.<n>.custom.input_schema: JSON schema is invalid. It must match JSON
+    Schema draft 2020-12` — which takes out EVERY tool call the agent makes,
+    not just the offending one. The in-house Slack, Gmail, Outlook and Adlyse
+    email tools all declare `files: {type: array, items: {type: file}}`, so any
+    agent granted one of them could not call a single tool.
+    """
+    if isinstance(node, list):
+        return [map_custom_types_to_json_schema(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    out: Dict[str, Any] = dict(node)
+
+    declared = out.get("type")
+    if isinstance(declared, str) and declared in _CUSTOM_TYPE_TO_JSON_SCHEMA:
+        mapped = _CUSTOM_TYPE_TO_JSON_SCHEMA[declared]
+        out["type"] = mapped["type"]
+        # Never overwrite a format the tool author set deliberately.
+        if "format" in mapped and "format" not in out:
+            out["format"] = mapped["format"]
+    elif isinstance(declared, list):
+        out["type"] = [
+            _CUSTOM_TYPE_TO_JSON_SCHEMA[t]["type"]
+            if isinstance(t, str) and t in _CUSTOM_TYPE_TO_JSON_SCHEMA
+            else t
+            for t in declared
+        ]
+
+    for keyword in _SCHEMA_VALUED_KEYWORDS:
+        if isinstance(out.get(keyword), (dict, list)):
+            out[keyword] = map_custom_types_to_json_schema(out[keyword])
+    for keyword in _SCHEMA_MAP_KEYWORDS:
+        nested = out.get(keyword)
+        if isinstance(nested, dict):
+            out[keyword] = {k: map_custom_types_to_json_schema(v) for k, v in nested.items()}
+    for keyword in _SCHEMA_LIST_KEYWORDS:
+        if isinstance(out.get(keyword), list):
+            out[keyword] = [map_custom_types_to_json_schema(s) for s in out[keyword]]
+
+    return out
+
 
 @dataclass
 class ParameterSchema:
@@ -60,11 +135,18 @@ class ParameterSchema:
         if self.pattern is not None:
             prop["pattern"] = self.pattern
 
-        # Add nested schema support for arrays and objects
+        # Add nested schema support for arrays and objects. These come straight
+        # from a tool's declared parameters (and, for MCP-delivered tools, from
+        # the cached remote schema), so they carry internal variable types that
+        # are not JSON Schema types — normalize before handing them to a model
+        # provider.
         if self.items is not None:
-            prop["items"] = self.items
+            prop["items"] = map_custom_types_to_json_schema(self.items)
         if self.properties is not None:
-            prop["properties"] = self.properties
+            prop["properties"] = {
+                name: map_custom_types_to_json_schema(schema)
+                for name, schema in self.properties.items()
+            }
         if self.additionalProperties is not None:
             prop["additionalProperties"] = self.additionalProperties
 

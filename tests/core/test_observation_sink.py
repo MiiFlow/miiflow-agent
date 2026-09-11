@@ -128,6 +128,39 @@ class TestRecordToolObservationSeam:
         assert len(cp.dispatch_ledger) == 1
         assert cp.dispatch_ledger[0].tool_name == "list_all_ad_accounts"
 
+    def test_validation_flag_reaches_the_record(self):
+        # The registry stamps `is_validation_error` on a rejected call's
+        # ToolResult; the react loop copies it onto the invocation; this seam
+        # is where it must land on the record, or the store cannot tell a
+        # fixable parameter mistake from an environment failure.
+        sink = _RecordingSink()
+        ctx = _context(sink, checkpoint=Checkpoint(thread_id="thread_x"))
+        self._run(
+            _record(
+                SimpleNamespace(),
+                ctx,
+                _state(),
+                tool_name="list_jobs",
+                inputs={"__description": "List jobs"},
+                observation="Tool execution failed: unexpected keyword argument",
+                success=False,
+                error="1 validation error for call[list_jobs]",
+                is_validation_error=True,
+            )
+        )
+        self._run(
+            _record(
+                SimpleNamespace(),
+                ctx,
+                _state(),
+                tool_name="list_jobs",
+                inputs={},
+                observation="3 jobs",
+                success=True,
+            )
+        )
+        assert [r.is_validation_error for r in sink.records] == [True, False]
+
     def test_absent_sink_returns_none_but_still_merges_ledger(self):
         cp = Checkpoint(thread_id="thread_x")
         ctx = _context(sink=None, checkpoint=cp)

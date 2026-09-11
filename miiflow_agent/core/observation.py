@@ -86,6 +86,11 @@ class ObservationRecord:
     # cites it back; storing it on the row is what lets a persisted answer's
     # markers be resolved to the call that produced them.
     reference_label: Optional[str] = None
+    # The tool's own argument validation rejected the call (a parameter-shape
+    # mistake the model can fix), as opposed to a runtime failure. Mirrors
+    # `ToolResult.metadata["is_validation_error"]`; persisted so retry-pair
+    # mining can separate fixable calls from environment errors.
+    is_validation_error: bool = False
 
 
 @dataclass

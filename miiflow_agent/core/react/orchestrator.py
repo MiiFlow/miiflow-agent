@@ -1319,12 +1319,12 @@ class ReActOrchestrator:
         collab = getattr(self, "_approval_flow", None) or ApprovalResumeFlow(self)
         return await collab.handle_tool_approval_marker_result(context, state, result, parent_tool_call_id=parent_tool_call_id)
 
-    async def _record_tool_observation(self, context: RunContext, state: "ExecutionState", *, tool_name: Optional[str], inputs: Optional[Dict[str, Any]], observation: Optional[str], success: bool, tool_call_id: Optional[str] = None, raw_output: Any = None, error: Optional[str] = None, execution_time_ms: Optional[int] = None, produced_by_path: Optional[List[str]] = None, source: str = "react") -> RecordedObservation:
+    async def _record_tool_observation(self, context: RunContext, state: "ExecutionState", *, tool_name: Optional[str], inputs: Optional[Dict[str, Any]], observation: Optional[str], success: bool, tool_call_id: Optional[str] = None, raw_output: Any = None, error: Optional[str] = None, execution_time_ms: Optional[int] = None, produced_by_path: Optional[List[str]] = None, source: str = "react", is_validation_error: bool = False) -> RecordedObservation:
         """Delegates to _recording.record_tool_observation — see that module."""
         from .recording import OutcomeRecording
 
         collab = getattr(self, "_recording", None) or OutcomeRecording(self)
-        return await collab.record_tool_observation(context, state, tool_name=tool_name, inputs=inputs, observation=observation, success=success, tool_call_id=tool_call_id, raw_output=raw_output, error=error, execution_time_ms=execution_time_ms, produced_by_path=produced_by_path, source=source)
+        return await collab.record_tool_observation(context, state, tool_name=tool_name, inputs=inputs, observation=observation, success=success, tool_call_id=tool_call_id, raw_output=raw_output, error=error, execution_time_ms=execution_time_ms, produced_by_path=produced_by_path, source=source, is_validation_error=is_validation_error)
 
     async def _record_provider_executed_calls(self, context: RunContext, state: "ExecutionState", *, calls: Dict[str, Dict[str, Any]], results: List[Dict[str, Any]], already_planned: Optional[Set[str]] = None, already_recorded: Optional[Set[str]] = None) -> Dict[str, Any]:
         """Delegates to _recording.record_provider_executed_calls — see that module."""

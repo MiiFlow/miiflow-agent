@@ -468,6 +468,7 @@ class ToolActionHandler:
                     execution_time_ms=int(
                         (getattr(result, "execution_time", 0) or 0) * 1000
                     ),
+                    is_validation_error=bool(_result_meta.get("is_validation_error")),
                 )
                 observation_ref = recorded.ref
                 # Everything downstream (the event, the TOOL message appended
@@ -1005,6 +1006,7 @@ class ToolActionHandler:
                     execution_time_ms=int(
                         (getattr(result, "execution_time", 0) or 0) * 1000
                     ),
+                    is_validation_error=bool(getattr(inv, "is_validation_error", False)),
                 )
                 observation_ref = recorded.ref
                 # Phase 5 appends `inv.observation` as this call's TOOL

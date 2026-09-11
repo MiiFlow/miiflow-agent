@@ -159,6 +159,7 @@ class OutcomeRecording:
         execution_time_ms: Optional[int] = None,
         produced_by_path: Optional[List[str]] = None,
         source: str = "react",
+        is_validation_error: bool = False,
     ) -> RecordedObservation:
         """Single seam for a finalized tool call: persist the canonical
         observation via the adapter sink (awaited inline — see
@@ -225,6 +226,7 @@ class OutcomeRecording:
                         produced_by_path=list(produced_by_path or ["root"]),
                         source=source,
                         reference_label=reference_label,
+                        is_validation_error=bool(is_validation_error),
                     )
                 )
             except Exception as sink_err:  # noqa: BLE001 — never fail the run

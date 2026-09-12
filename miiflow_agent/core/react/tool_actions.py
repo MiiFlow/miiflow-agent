@@ -368,13 +368,17 @@ class ToolActionHandler:
                         )
 
                         if not decision.should_pause:
-                            # Everything was already answered — do NOT pause; the model
-                            # proceeds deterministically with the known answers.
+                            # Either everything was already answered, or the round
+                            # held nothing answerable. Do NOT pause; the model gets
+                            # the decision's observation and keeps working.
                             step.observation = (
                                 decision.resolved_observation or step.observation
                             )
                             logger.info(
-                                "Clarification short-circuited: all question(s) already settled"
+                                "Clarification short-circuited (%s)",
+                                "no answerable questions"
+                                if not question_dicts
+                                else "all question(s) already settled",
                             )
                         else:
                             state.needs_clarification = True

@@ -249,3 +249,67 @@ class TestFunctionToolValidation:
         result = await ft.acall(limit="7")
         assert result.success is True
         assert result.output == {"rows": 7}
+
+
+class TestUnusableRequiredStructures:
+    """A required array/object that will not decode is an error in BOTH modes.
+
+    The opt-in gate covers constraints that were declared but never enforced. It
+    does not fit this case: there is no reading of an unparseable string that a
+    body expecting a list can use, so passing it through only moves the failure
+    somewhere that cannot name it. `ask_user_clarification` iterated such a
+    string character by character, normalized to zero questions, and parked a
+    production thread on a clarification the UI could not render.
+    """
+
+    def test_required_array_that_cannot_decode_is_an_error_unenforced(self):
+        params = _params(questions=_p("questions", ParameterType.ARRAY, required=True))
+
+        validated, errors = validate_inputs_against(
+            params, {"questions": '[{"a":1},"stray":false]'}, enforce=False
+        )
+
+        assert errors and "must be array" in errors[0]
+        assert "questions" not in validated
+
+    def test_required_object_that_cannot_decode_is_an_error_unenforced(self):
+        params = _params(config=_p("config", ParameterType.OBJECT, required=True))
+
+        _validated, errors = validate_inputs_against(
+            params, {"config": "{not json"}, enforce=False
+        )
+
+        assert errors
+
+    def test_a_decodable_string_is_still_repaired_not_rejected(self):
+        params = _params(questions=_p("questions", ParameterType.ARRAY, required=True))
+
+        validated, errors = validate_inputs_against(
+            params, {"questions": '[{"a":1}]'}, enforce=False
+        )
+
+        assert errors == []
+        assert validated["questions"] == [{"a": 1}]
+
+    def test_optional_structures_keep_the_tolerant_path(self):
+        # Their bodies already handle absence, and the tool decides what a junk
+        # optional means — widening the hard rule to them would reject calls
+        # that work today.
+        params = _params(extras=_p("extras", ParameterType.ARRAY, required=False))
+
+        validated, errors = validate_inputs_against(
+            params, {"extras": "not json"}, enforce=False
+        )
+
+        assert errors == []
+        assert validated["extras"] == "not json"
+
+    def test_scalars_keep_the_tolerant_path(self):
+        params = _params(limit=_p("limit", ParameterType.INTEGER, required=True))
+
+        validated, errors = validate_inputs_against(
+            params, {"limit": "10,20"}, enforce=False
+        )
+
+        assert errors == []
+        assert validated["limit"] == "10,20"

@@ -13,11 +13,12 @@ Design rule (intentional, see ``ask_user_clarification``):
     this tool.
 """
 
+import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .decorators import tool
-from .schemas import ToolResult
+from .schemas import ToolFailure, ToolResult
 
 
 # Marker constant used to identify clarification requests in tool results
@@ -220,21 +221,73 @@ def extract_clarification_data(result: ToolResult) -> Optional[ClarificationRequ
     return None
 
 
-def _normalize_questions(questions: Any) -> List[ClarificationQuestion]:
+def _as_question_list(questions: Any) -> Tuple[List[Any], Optional[str]]:
+    """Decode the raw ``questions`` argument into a list of candidate items.
+
+    Models routinely hand a structured parameter over as JSON *text*. The shared
+    coercion in ``input_validation`` repairs that when the text parses; it cannot
+    when the text is itself malformed, and the raw string then arrives here.
+    Iterating a string yields its characters, so it must be rejected by name
+    rather than walked — silently walking it is what produced empty, unanswerable
+    clarification rounds in production.
+    """
+    if isinstance(questions, list):
+        return questions, None
+    if questions is None:
+        return [], "`questions` was missing"
+    if isinstance(questions, str):
+        try:
+            decoded = json.loads(questions)
+        except ValueError as exc:
+            return [], (
+                f"`questions` arrived as a string that is not valid JSON ({exc}); "
+                "send a real JSON array, not quoted text"
+            )
+        if isinstance(decoded, list):
+            return decoded, None
+        return [], (
+            "`questions` arrived as a JSON string decoding to "
+            f"{type(decoded).__name__}, not an array"
+        )
+    return [], f"`questions` must be an array, got {type(questions).__name__}"
+
+
+def _normalize_questions(
+    questions: Any,
+) -> Tuple[List[ClarificationQuestion], List[str]]:
     """Coerce the LLM-supplied ``questions`` payload into typed questions.
 
-    Drops questions that have no concrete options — this tool is for
-    multiple-choice only; open-ended questions belong in the agent's reply.
+    Returns ``(questions, problems)``. Questions with no concrete options are
+    dropped — this tool is for multiple-choice only; open-ended questions belong
+    in the agent's reply. Every drop is recorded in ``problems`` so a call that
+    normalizes to nothing can tell the model exactly what to fix instead of
+    presenting an empty question set as a successful request.
     """
+    items, payload_problem = _as_question_list(questions)
+    if payload_problem:
+        return [], [payload_problem]
+
     normalized: List[ClarificationQuestion] = []
-    for item in questions or []:
+    problems: List[str] = []
+    for index, item in enumerate(items):
         if not isinstance(item, dict):
+            problems.append(
+                f"question {index} is {type(item).__name__} {item!r}, not an object "
+                "(keys such as `multi_select` belong INSIDE their question object)"
+            )
             continue
         q = ClarificationQuestion.from_dict(item)
-        if not q.question or len(q.options) < 1:
+        if not q.question:
+            problems.append(f"question {index} has no `question` text")
+            continue
+        if len(q.options) < 1:
+            problems.append(
+                f"question {index} ({q.question!r}) has no `options`; ask an "
+                "open-ended question in your reply instead of via this tool"
+            )
             continue
         normalized.append(q)
-    return normalized
+    return normalized, problems
 
 
 @tool(
@@ -260,7 +313,7 @@ def _normalize_questions(questions: Any) -> List[ClarificationQuestion]:
 def ask_user_clarification(
     questions: List[Dict[str, Any]],
     context: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> Union[Dict[str, Any], ToolFailure]:
     """
     Ask the user one or more multiple-choice questions.
 
@@ -297,10 +350,25 @@ def ask_user_clarification(
         ...     context="This tailors the recommendations to your goals.",
         ... )
     """
-    request = ClarificationRequest(
-        questions=_normalize_questions(questions),
-        context=context,
-    )
+    normalized, problems = _normalize_questions(questions)
+    if not normalized:
+        # Fail the call rather than return a question-less clarification request.
+        # A request with nothing to answer renders as an empty panel and strands
+        # the thread; a failure the model can read gets it retried or rephrased.
+        detail = "; ".join(problems) if problems else "`questions` was empty"
+        return ToolFailure(
+            error=(
+                f"No answerable questions in this call ({detail}), so nothing was "
+                "shown to the user. `questions` must be a JSON array of objects, each "
+                'with non-empty "question" text and a non-empty "options" array of '
+                'strings, and "multi_select" nested inside its own question object. '
+                "If what you need is open-ended, do not use this tool — ask the user "
+                "directly in your reply."
+            ),
+            error_type="invalid_questions",
+        )
+
+    request = ClarificationRequest(questions=normalized, context=context)
     return request.to_dict()
 
 

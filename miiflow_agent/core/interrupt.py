@@ -144,14 +144,38 @@ def decide_clarification(
     """Decide whether a clarification round should pause, and on which questions.
 
     Pure and deterministic — this is the orchestrator's short-circuit logic (R4) lifted
-    out so it can be tested without standing up the whole ReAct loop. Three outcomes:
+    out so it can be tested without standing up the whole ReAct loop. Four outcomes:
 
+      0. There are no questions → no pause. An empty round is unanswerable, so pausing
+         on it strands the thread (see below).
       1. Facts cover *every* question → no pause; hand the model the known answers.
       2. ``interrupt_count`` has hit the hard cap → no pause; force the model to proceed
          with defaults. This is the content-free circuit-breaker that replaces the
          old token-overlap loop detector — a predictable ceiling, not a heuristic.
       3. Otherwise pause on the unresolved subset (or the full set when no facts apply).
     """
+    if not question_dicts:
+        # A pause with nothing to answer is a dead end, not a pause: the panel has no
+        # questions to render, so the user is given no way to resume and the thread
+        # sits parked forever (observed in production — a model sent `questions` as a
+        # malformed JSON string, every element was dropped, and the run paused on the
+        # empty remainder). Emptiness can arrive from any producer — a mangled tool
+        # argument, questions dropped for having no options, a sub-agent clarification
+        # surfaced with an empty list — so the guard belongs here, at the single point
+        # that decides to pause, rather than at each producer.
+        return ClarificationDecision(
+            should_pause=False,
+            resolved_observation=(
+                "That clarification round contained no answerable questions, so it was "
+                "NOT shown to the user. Every question needs non-empty `question` text "
+                "and a non-empty `options` list, and `questions` must be a real JSON "
+                "array rather than a quoted string. Either call the tool again with "
+                "well-formed multiple-choice questions, or — if what you need is "
+                "open-ended — ask the user directly in your reply instead of calling "
+                "the tool. Do not repeat this note to the user."
+            ),
+        )
+
     resolved, unresolved = partition_questions_by_facts(question_dicts, facts_by_key)
 
     if facts_by_key and resolved and not unresolved:

@@ -130,3 +130,41 @@ def test_graph_interrupt_carries_pending_interrupt():
     err = GraphInterrupt(pi)
     assert err.interrupt is pi
     assert "int_1" in str(err)
+
+
+# --- an empty round is a dead end, not a pause -------------------------------------
+#
+# Production thread_0rylPSJaVYR34FAEAXicwSPC: the model sent `questions` as a string of
+# malformed JSON, every element was dropped, and the run paused on the empty remainder.
+# The panel renders nothing for zero questions, so the user was given no way to answer
+# and the thread sat parked. Emptiness can arrive from any producer (a mangled tool
+# argument, questions dropped for having no options, a sub-agent clarification surfaced
+# with an empty list), so the guard lives at the one point that decides to pause.
+
+
+def test_an_empty_question_set_never_pauses():
+    decision = decide_clarification([], {})
+
+    assert decision.should_pause is False
+    assert decision.pause_questions == []
+    # The model is told what to fix, so it can retry or switch to a plain reply.
+    assert "no answerable questions" in (decision.resolved_observation or "").lower()
+
+
+def test_an_empty_question_set_never_pauses_whatever_else_is_true():
+    # Facts present, interrupt budget untouched — no other branch may reach a pause
+    # on an empty set either.
+    facts = {"daily_budget": EstablishedFact(key="daily_budget", answer="$50")}
+    for interrupt_count in (0, 3):
+        decision = decide_clarification([], facts, interrupt_count=interrupt_count)
+        assert decision.should_pause is False
+
+
+def test_a_populated_round_still_pauses():
+    # The guard must not swallow the case it sits in front of.
+    decision = decide_clarification(
+        [{"key": "geo", "question": "Which geo?", "options": ["US", "CA"]}], {}
+    )
+
+    assert decision.should_pause is True
+    assert len(decision.pause_questions) == 1

@@ -20,8 +20,11 @@ providers only check them in strict mode, so turning enforcement on at
 library-upgrade time rejects calls that worked yesterday, with the defect
 in the schema rather than the call (retries cannot self-correct). Until a
 deployment audits its schemas and opts in, violations are logged and the
-value passes through, and only the two base-era rules apply: presence of
-required parameters, and unknown parameters dropped before dispatch.
+value passes through, and only the base-era rules apply: presence of
+required parameters, unknown parameters dropped before dispatch, and one
+addition — a REQUIRED ``array``/``object`` parameter that could not be
+coerced is an error in both modes, because there is no reading of it the
+tool body can use (see ``_is_unusable_structure``).
 
 Coercion is separate from enforcement. A coercion that SUCCEEDS is a
 repair, not a rejection, so it applies in both modes: `limit="10"` reaches
@@ -137,6 +140,28 @@ def _coerce(param_type: ParameterType, value: Any) -> Tuple[Any, bool]:
     return value, True  # unknown label: don't block on what we can't check
 
 
+def _is_unusable_structure(schema, value: Any) -> bool:
+    """Whether a failed coercion leaves a REQUIRED param the body cannot use.
+
+    The opt-in gate above exists for constraints that were declared but never
+    enforced — a stale enum, an ``integer`` param whose body happily takes
+    ``"10,20"``. It does not fit a required ``array``/``object`` that arrived as
+    something else and could not be decoded: iterating a string in place of a
+    list is never what the caller meant, so passing it through cannot be the
+    behaviour anyone relied on yesterday. It only moves the failure somewhere
+    that can't name it — an ``ask_user_clarification`` whose malformed
+    ``questions`` string normalized to zero questions parked a production
+    thread on a clarification the UI could not render.
+
+    Optional params keep the tolerant path: their bodies already handle absence,
+    and the tool decides what a junk optional means.
+    """
+    return bool(schema.required) and schema.type in (
+        ParameterType.ARRAY,
+        ParameterType.OBJECT,
+    )
+
+
 def _check_constraints(schema, value: Any) -> List[str]:
     """Enum / range / pattern / item-type checks for an already-typed value."""
     problems: List[str] = []
@@ -202,11 +227,12 @@ def validate_inputs_against(
     calls that worked before enforcement existed.
 
     ``enforce=None`` reads ``MIIFLOW_STRICT_TOOL_VALIDATION`` (default off).
-    Off: presence of required params is the only hard rule; type/enum/range/
-    pattern violations are logged and the call proceeds. On: violations are
-    collected into errors — all of them, so the model fixes everything in a
-    single retry. Unambiguous coercions apply in both modes; only whether a
-    violation *raises* depends on ``enforce``.
+    Off: presence of required params is the hard rule, plus a required
+    ``array``/``object`` that failed to coerce (``_is_unusable_structure``);
+    other type/enum/range/pattern violations are logged and the call proceeds.
+    On: violations are collected into errors — all of them, so the model fixes
+    everything in a single retry. Unambiguous coercions apply in both modes;
+    only whether a violation *raises* depends on ``enforce``.
     """
     if enforce is None:
         enforce = strict_validation_enabled()
@@ -231,7 +257,7 @@ def validate_inputs_against(
                 f"Parameter '{name}' must be {_type_label(schema.type)}, "
                 f"got {type(value).__name__} {value!r}"
             )
-            if enforce:
+            if enforce or _is_unusable_structure(schema, value):
                 errors.append(message)
             else:
                 logger.warning("tool input violates schema (not enforced): %s", message)

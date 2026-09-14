@@ -29,7 +29,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.8-flash": ModelConfig(
         model_identifier="models/gemini-3.8-flash",
         name="gemini-3.8-flash",
-        description="Google's newest and most capable Gemini model (released September 2, 2026). Google's top tier is a Flash model because Gemini 3.5 Pro was never released — Gemini 3.1 Pro remains the Pro flagship. Improves on Gemini 3.7 Flash for reasoning, coding, and agentic workflows, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window, 64K max output. Thinking depth is controlled with thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); temperature, top_p, top_k, candidate_count and the frequency/presence penalties are accepted and silently ignored. Introductory pricing of $0.75/$3.75 per 1M input/output tokens (output includes thinking tokens) applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        description="Google's newest and most capable Gemini model (released September 2, 2026, and still the newest as of September 14, 2026). Google's top tier is a Flash model because Gemini 3.5 Pro was never released — Gemini 3.1 Pro remains the Pro flagship. Improves on Gemini 3.7 Flash for reasoning, coding, and agentic workflows, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window, 64K max output. Thinking depth is controlled with thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); temperature, top_p, top_k, candidate_count and the frequency/presence penalties are accepted and silently ignored. Introductory pricing of $0.75/$3.75 per 1M input/output tokens (output includes thinking tokens) applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -119,7 +119,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.1-pro": ModelConfig(
         model_identifier="models/gemini-3.1-pro",
         name="gemini-3.1-pro",
-        description="Google's Pro flagship, with strong reasoning and an industry-leading 2M token context window (GA since May 2026). Still the current Pro tier: Gemini 3.5 Pro slipped repeatedly and remains unreleased as of August 2026. Unlike the 3.6/3.7 Flash generation, it still honours temperature/top_p/top_k. Tiered pricing: $2/$12 per 1M input/output tokens for prompts up to 200K tokens, rising to $4/$18 above 200K.",
+        description="Google's Pro flagship, with strong reasoning and an industry-leading 2M token context window (GA since May 2026). Still the current Pro tier as of September 14, 2026: Gemini 3.5 Pro slipped repeatedly and was never released, and Gemini 4 — which Google confirmed was in pre-training on July 21, 2026 — has no announced release date. Unlike the 3.6/3.7 Flash generation, it still honours temperature/top_p/top_k. Tiered pricing: $2/$12 per 1M input/output tokens for prompts up to 200K tokens, rising to $4/$18 above 200K.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -137,7 +137,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.1-flash-lite": ModelConfig(
         model_identifier="models/gemini-3.1-flash-lite",
         name="gemini-3.1-flash-lite",
-        description="Legacy — succeeded by Gemini 3.5 Flash-Lite (July 2026) for current-generation quality, but remains available at the lowest price point ($0.25/$1.50 per 1M tokens). Optimized for high-throughput, low-latency, cost-sensitive applications. GA as of May 2026.",
+        description="Legacy — succeeded by Gemini 3.5 Flash-Lite (July 2026) for current-generation quality, but remains available at the lowest price point ($0.25/$1.50 per 1M tokens). Optimized for high-throughput, low-latency, cost-sensitive applications. GA as of May 2026. The only model here with an announced end date: Google's deprecations page lists a shutdown of May 7, 2027, with gemini-3.5-flash-lite as the recommended replacement. (The separate gemini-3.1-flash-lite-preview endpoint was shut down May 25, 2026 and is not this model.)",
         support_images=True,
         support_files=True,
         support_streaming=True,

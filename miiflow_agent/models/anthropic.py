@@ -13,7 +13,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-fable-5.1": ModelConfig(
         model_identifier="claude-fable-5-1",
         name="claude-fable-5.1",
-        description="Anthropic's most capable widely released model (released September 1, 2026), for demanding reasoning, long-horizon agentic coding, multistep research, and document/spreadsheet/slide work. Same input and output prices as Fable 5, with cache reads at a quarter of the rate ($0.25 vs $1.00 per 1M) — 2.5% of input, where every other Claude model charges 10% — which Anthropic estimates at ~25% lower cost on typical token-billed workloads and up to ~45% on highly agentic ones. Always-on adaptive thinking (default effort high), structured outputs, 1M context window. Forced tool use is NOT supported: it returns an error, so structured output must go through the native path, never the forced-`json_tool` fallback. Claude Mythos 5.1 shares its specifications and pricing but is invitation-only (Project Glasswing), so Fable 5.1 is the top tier reachable with a standard API key.",
+        description="Anthropic's most capable widely released model (released September 1, 2026), for demanding reasoning, long-horizon agentic coding, multistep research, and document/spreadsheet/slide work. Same input and output prices as Fable 5, with cache reads at a quarter of the rate ($0.25 vs $1.00 per 1M) — 2.5% of input, where every other Claude model charges 10% — which Anthropic estimates at ~25% lower cost on typical token-billed workloads and up to ~45% on highly agentic ones. Always-on adaptive thinking (default effort high), structured outputs, 1M context window. Forced tool use is NOT supported: it returns an error, so structured output must go through the native path, never the forced-`json_tool` fallback. Claude Mythos 5.1 shares its specifications and pricing but is invitation-only (Project Glasswing), so Fable 5.1 is the top tier reachable with a standard API key. Still Anthropic's newest model as of September 14, 2026; retirement not sooner than September 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -55,7 +55,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-5": ModelConfig(
         model_identifier="claude-opus-5",
         name="claude-opus-5",
-        description="Anthropic's most capable Opus model (released July 24, 2026), delivering near-Fable 5 performance at half the token price. Features always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (2.5x faster at 2x the price), structured outputs, and a safety fallback that routes to Opus 4.8. 1M context window.",
+        description="Anthropic's most capable Opus model (released July 24, 2026), delivering near-Fable 5 performance at half the token price. Features always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (2.5x faster at 2x the price), structured outputs, and a safety fallback that routes to Opus 4.8. 1M context window. Retirement not sooner than July 24, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -75,7 +75,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.8": ModelConfig(
         model_identifier="claude-opus-4-8",
         name="claude-opus-4.8",
-        description="Legacy — succeeded by Claude Opus 5 (July 24, 2026). Powerful reasoning and coding model with adaptive thinking, structured outputs, and fast mode; remains available and serves as Opus 5's safety fallback. 1M context window.",
+        description="Legacy — succeeded by Claude Opus 5 (July 24, 2026). Powerful reasoning and coding model with adaptive thinking, structured outputs, and fast mode; remains available and serves as Opus 5's safety fallback. 1M context window. Retirement not sooner than May 28, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -95,7 +95,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.7": ModelConfig(
         model_identifier="claude-opus-4-7",
         name="claude-opus-4.7",
-        description="Legacy — succeeded by Claude Opus 4.8 (May 2026). Strong coding, reasoning, and agentic performance with adaptive thinking. 1M context window.",
+        description="Legacy — succeeded by Claude Opus 4.8 (May 2026). Strong coding, reasoning, and agentic performance with adaptive thinking. 1M context window. Retirement not sooner than April 16, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -115,7 +115,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.6": ModelConfig(
         model_identifier="claude-opus-4-6",
         name="claude-opus-4.6",
-        description="Legacy — succeeded by Claude Opus 4.7 (April 2026). The oldest model here that still accepts the sampling parameters, and the last before manual extended thinking was removed (it still works but is deprecated). Effort tops out at max — it predates the xhigh level and rejects it. 128K max output tokens, 1M context window.",
+        description="Legacy — succeeded by Claude Opus 4.7 (April 2026). The oldest model here that still accepts the sampling parameters, and the last before manual extended thinking was removed (it still works but is deprecated). Effort tops out at max — it predates the xhigh level and rejects it. 128K max output tokens, 1M context window. Retirement not sooner than February 5, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -135,7 +135,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-5": ModelConfig(
         model_identifier="claude-sonnet-5",
         name="claude-sonnet-5",
-        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. Supports all five effort levels. 1M context window. $2/$10 per 1M input/output tokens is the standard price — the launch rate was announced as introductory through August 31, 2026, and Anthropic then cancelled the scheduled September 1, 2026 increase to $3/$15.",
+        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. Supports all five effort levels. 1M context window. $2/$10 per 1M input/output tokens is the standard price — the launch rate was announced as introductory through August 31, 2026, and Anthropic then cancelled the scheduled September 1, 2026 increase to $3/$15, which has now passed with the $2/$10 rate standing. Retirement not sooner than June 30, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -155,7 +155,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-4.6": ModelConfig(
         model_identifier="claude-sonnet-4-6",
         name="claude-sonnet-4.6",
-        description="Legacy — succeeded by Claude Sonnet 5 (June 2026), which is both stronger and cheaper ($2/$10 vs $3/$15), so this is kept for pinned workloads only. Supports adaptive thinking, structured outputs and the sampling parameters; manual extended thinking still works but is deprecated. Effort tops out at max — it predates the xhigh level and rejects it. 1M context window.",
+        description="Legacy — succeeded by Claude Sonnet 5 (June 2026), which is both stronger and cheaper ($2/$10 vs $3/$15), so this is kept for pinned workloads only. Supports adaptive thinking, structured outputs and the sampling parameters; manual extended thinking still works but is deprecated. Effort tops out at max — it predates the xhigh level and rejects it. 1M context window. Retirement not sooner than February 17, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -175,7 +175,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-haiku-4.5": ModelConfig(
         model_identifier="claude-haiku-4-5-20251001",
         name="claude-haiku-4.5",
-        description="Anthropic's fastest model with near-frontier intelligence, delivering Sonnet-4-level coding performance at one-third the cost and more than twice the speed. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window; retirement not sooner than October 15, 2026.",
+        description="Anthropic's fastest model with near-frontier intelligence, delivering Sonnet-4-level coding performance at one-third the cost and more than twice the speed. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window. Retirement not sooner than October 15, 2026 — the nearest retirement floor in this catalog, about a month out as of the September 14, 2026 audit. No newer Haiku has been announced, so plan the move to Sonnet 5 at low effort rather than to another Haiku.",
         support_images=True,
         support_files=True,
         support_streaming=True,

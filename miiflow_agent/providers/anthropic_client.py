@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
 
@@ -871,6 +872,29 @@ class AnthropicClient(ModelClient):
             request_params["tools"] = new_tools
         return changed
 
+    _TOOL_INDEX_RE = re.compile(r"\btools\.(\d+)\.")
+
+    @classmethod
+    def _bad_request_detail(cls, error: Exception, request_params: Dict[str, Any]) -> str:
+        """The 400's message, with the tool NAMED when Anthropic cites an index.
+
+        Anthropic reports a rejected tool schema as ``tools.17.custom.input_schema:
+        JSON schema is invalid``; the index is meaningless once the request is
+        gone (six such 400s in one production hour, 2026-09-11, and nothing
+        recorded which tool was #17). Appends ``[tool 17 = <name>]`` when the
+        index resolves against the request's tools array.
+        """
+        message = str(error)
+        match = cls._TOOL_INDEX_RE.search(message)
+        if not match:
+            return message
+        tools = request_params.get("tools") or []
+        index = int(match.group(1))
+        if not (0 <= index < len(tools)) or not isinstance(tools[index], dict):
+            return message
+        name = tools[index].get("name")
+        return f"{message} [tool {index} = {name}]" if name else message
+
     @staticmethod
     def _is_schema_too_complex_error(error: Exception) -> bool:
         """True if `error` is Anthropic's tool-schema grammar-compilation 400.
@@ -1573,7 +1597,9 @@ class AnthropicClient(ModelClient):
         except anthropic.RateLimitError as e:
             raise RateLimitError(str(e), self.provider_name, original_error=e)
         except anthropic.BadRequestError as e:
-            raise ModelError(str(e), self.model, original_error=e)
+            raise ModelError(
+                self._bad_request_detail(e, request_params), self.model, original_error=e
+            )
         except asyncio.TimeoutError as e:
             raise MiiflowTimeoutError("Request timed out", self.timeout, original_error=e)
         except Exception as e:
@@ -1950,7 +1976,9 @@ class AnthropicClient(ModelClient):
         except anthropic.RateLimitError as e:
             raise RateLimitError(str(e), self.provider_name, original_error=e)
         except anthropic.BadRequestError as e:
-            raise ModelError(str(e), self.model, original_error=e)
+            raise ModelError(
+                self._bad_request_detail(e, request_params), self.model, original_error=e
+            )
         except asyncio.TimeoutError as e:
             raise MiiflowTimeoutError("Streaming request timed out", self.timeout, original_error=e)
         except Exception as e:

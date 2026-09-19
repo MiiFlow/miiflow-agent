@@ -249,11 +249,28 @@ def visualization_observation(viz_data: Dict[str, Any]) -> str:
     spelled the auth case out while the batch path emitted the bare marker, so
     the same blocked tool explained itself or didn't depending on whether the
     model happened to call it alongside another one.
+
+    An ``auth_prompt`` is not always a blocked call, though. A card whose data
+    declares ``intent: "add"`` was shown because the USER asked to connect
+    something — another account, a different sign-in method — for a provider
+    that may be working fine. Telling the model that provider "is not
+    connected, do not retry any of its tools" would be false there, and would
+    talk it out of using connections that work. The blocked wording stays the
+    default: an undeclared card is the older, blocked kind.
     """
     marker = f"[VIZ:{viz_data.get('id', 'unknown')}]"
     if viz_data.get("type") != "auth_prompt":
         return f"{marker} {VISUALIZATION_MARKER_CONTRACT}"
-    provider_name = (viz_data.get("data") or {}).get("providerName") or "the provider"
+    data = viz_data.get("data") or {}
+    provider_name = data.get("providerName") or "the provider"
+    if data.get("intent") == "add":
+        return (
+            f"{marker} A connect card for {provider_name} has been shown to the "
+            f"user, as they asked. Nothing is connected yet — that happens only if "
+            f"they complete it, and they will tell you when they have. Any existing "
+            f"{provider_name} connection still works and its tools remain usable. "
+            f"Tell the user the card is there; do not send them elsewhere to connect."
+        )
     return (
         f"{marker} No data was returned: {provider_name} is not connected. "
         f"A connect prompt has been shown to the user. Do not retry this or any "

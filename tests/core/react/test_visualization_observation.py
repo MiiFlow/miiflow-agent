@@ -30,6 +30,12 @@ AUTH_PROMPT = {
     "type": "auth_prompt",
     "data": {"providerName": "GitHub", "mcpServerId": "srv_1"},
 }
+ADD_PROMPT = {
+    "__visualization__": True,
+    "id": "provider-auth-sp_1-add",
+    "type": "auth_prompt",
+    "data": {"providerName": "Gmail", "serviceProviderId": "sp_1", "intent": "add"},
+}
 
 
 class TestVisualizationObservation:
@@ -65,6 +71,33 @@ class TestVisualizationObservation:
         # tool whose credential cannot appear mid-run.
         observation = visualization_observation(AUTH_PROMPT)
         assert "Do not retry" in observation
+
+    def test_a_card_the_user_asked_for_does_not_claim_the_provider_is_broken(self):
+        # "Connect another Gmail account" on a workspace with two working
+        # mailboxes: the blocked wording would tell the model Gmail is not
+        # connected and to stop using Gmail tools (thread_OMz7i2nx0RxkjPzVx9bZARxh
+        # is the request this card exists for).
+        observation = visualization_observation(ADD_PROMPT)
+        assert observation.startswith("[VIZ:provider-auth-sp_1-add]")
+        assert "Gmail" in observation
+        assert "not connected" not in observation
+        assert "No data was returned" not in observation
+        assert "Do not retry" not in observation
+        assert "still works" in observation
+
+    def test_a_card_the_user_asked_for_is_not_reported_as_a_connection(self):
+        # Showing the card connects nothing; the model must not announce success.
+        observation = visualization_observation(ADD_PROMPT)
+        assert "Nothing is connected yet" in observation
+        assert "success" not in observation.lower()
+        assert VISUALIZATION_MARKER_CONTRACT not in observation
+
+    def test_an_undeclared_or_ensure_card_keeps_the_blocked_wording(self):
+        # Cards persisted before `intent` existed carry no such key, and the
+        # replay path hands them to this helper.
+        ensure = {**AUTH_PROMPT, "data": {**AUTH_PROMPT["data"], "intent": "ensure"}}
+        assert visualization_observation(ensure) == visualization_observation(AUTH_PROMPT)
+        assert "No data was returned" in visualization_observation(ensure)
 
     def test_a_nameless_provider_does_not_crash_the_turn(self):
         observation = visualization_observation(

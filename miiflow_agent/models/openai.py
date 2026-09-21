@@ -23,6 +23,14 @@ _REASONING_MODELS: set[str] = set()
 # reasoning to whatever model sits behind it — it has no token prices and does
 # not take a chat-completions request, so a ModelConfig here (whose whole
 # contract is per-token pricing plus a token_param_name) cannot describe it.
+#
+# Also deliberately absent: gpt-6-astra-law (Astra for Law, announced
+# September 17, 2026). It is GPT-6 Astra plus legal instructions and a Legal
+# Search Index tool, reached today through ChatGPT and a "Trusted Access"
+# programme for law firms; OpenAI says an API model id is coming but has
+# published neither a date nor a price, so there is nothing to price and the id
+# would 404. Revisit it once OpenAI lists it on the pricing page — it is the
+# most likely OpenAI addition at the next audit.
 _GPT5_MODELS = {
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -64,6 +72,12 @@ _GPT56_MODELS = {
 _GPT55_STANDARD_MODELS = {"gpt-5.5"}
 _GPT54_STANDARD_MODELS = {"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"}
 _GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
+# The only NON-reasoning models left in this catalog, and OpenAI shuts all
+# three down on October 14, 2026. When they go, so does every OpenAI model
+# that takes `temperature`, `max_tokens`, `frequency_penalty` and
+# `presence_penalty` — the audit that removes them must also drop those four
+# ParameterConfigs rather than leave the UI offering controls no remaining
+# model accepts.
 _GPT41_MODELS = {"gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"}
 
 # OpenAI applies a request-wide surcharge once a 1.05M-context GPT-5 model's
@@ -115,7 +129,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-6-astra": ModelConfig(
         model_identifier="gpt-6-astra",
         name="gpt-6-astra",
-        description="GPT-6 Astra is OpenAI's flagship model (generally available September 3, 2026, and still OpenAI's newest text model as of September 14, 2026), a single dense reasoning model for complex coding, reasoning, and long-horizon agentic work. 1.05M context window, 128K max output. $10/$50 per 1M input/output tokens, with cached input at $1 and cache writes at $12.50; past 272K input tokens the whole request bills at $20/$2/$75. Effort is the biggest cost dial — Artificial Analysis measures a 3.6x swing from low to max. Its parameter contract differs from GPT-5.6: temperature, top_p, top_logprobs (and logprobs on Chat Completions) are removed, prompt_cache_retention is replaced by prompt_cache_options.ttl, and the effort scale drops none/minimal. Tool calling requires the Responses API; `max` effort is Responses-only. Appending -fast to the model id runs it at up to 2x speed for 2x the price.",
+        description="GPT-6 Astra is OpenAI's flagship model (generally available September 3, 2026, and still OpenAI's newest text model as of September 21, 2026), a single dense reasoning model for complex coding, reasoning, and long-horizon agentic work. 1.05M context window, 128K max output. $10/$50 per 1M input/output tokens, with cached input at $1 and cache writes at $12.50; past 272K input tokens the whole request bills at $20/$2/$75. Effort is the biggest cost dial — Artificial Analysis measures a 3.6x swing from low to max. Its parameter contract differs from GPT-5.6: temperature, top_p, top_logprobs (and logprobs on Chat Completions) are removed, prompt_cache_retention is replaced by prompt_cache_options.ttl, and the effort scale drops none/minimal. Tool calling requires the Responses API; `max` effort is Responses-only. Appending -fast to the model id runs it at up to 2x speed for 2x the price.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -194,7 +208,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.5": ModelConfig(
         model_identifier="gpt-5.5",
         name="gpt-5.5",
-        description="GPT-5.5 (released April 23, 2026) — previous flagship, superseded by GPT-5.6 Sol. Strong coding and agentic model (82.7% on Terminal-Bench 2.0, 58.6% on SWE-Bench Pro) with a 1M context window. Note that it is no longer the cheaper choice: after Sol's August 21, 2026 cut to $4/$20, GPT-5.5 at $5/$30 costs more than the newer and more capable Sol. Kept for pinned workloads only.",
+        description="GPT-5.5 (released April 23, 2026) — previous flagship, superseded by GPT-5.6 Sol. Strong coding and agentic model (82.7% on Terminal-Bench 2.0, 58.6% on SWE-Bench Pro) with a 1M context window. Note that it is no longer the cheaper choice: after Sol's August 21, 2026 cut to $4/$20, GPT-5.5 at $5/$30 costs more than the newer and more capable Sol. Kept for pinned workloads only. Do NOT delete it over the October 14, 2026 date in the news: that retires GPT-5.5 from ChatGPT, ChatGPT Work and Codex only — the API model is untouched and appears nowhere on OpenAI's deprecations page.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -307,7 +321,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1": ModelConfig(
         model_identifier="gpt-4.1",
         name="gpt-4.1",
-        description="Deprecated — migrate to GPT-5.6 Terra NOW. General-purpose model with 1M token context. Retired from ChatGPT Feb 13, 2026; the API shutdown is Oct 14, 2026 — roughly a month out as of this catalog's September 14, 2026 audit — after which every request fails.",
+        description="Deprecated — migrate to GPT-5.6 Terra NOW. General-purpose model with 1M token context. Retired from ChatGPT Feb 13, 2026; the API shutdown is Oct 14, 2026 — THREE WEEKS out as of this catalog's September 21, 2026 audit — after which every request fails.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -325,7 +339,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1-mini": ModelConfig(
         model_identifier="gpt-4.1-mini",
         name="gpt-4.1-mini",
-        description="Deprecated — migrate to GPT-5.6 Luna or GPT-5.4 Mini NOW. Smaller GPT-4.1 with 1M token context. API shutdown is Oct 14, 2026 — roughly a month out as of this catalog's September 14, 2026 audit — after which every request fails.",
+        description="Deprecated — migrate to GPT-5.6 Luna or GPT-5.4 Mini NOW. Smaller GPT-4.1 with 1M token context. API shutdown is Oct 14, 2026 — THREE WEEKS out as of this catalog's September 21, 2026 audit — after which every request fails.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -343,7 +357,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1-nano": ModelConfig(
         model_identifier="gpt-4.1-nano",
         name="gpt-4.1-nano",
-        description="Deprecated — migrate to GPT-5.6 Luna or GPT-5.4 Nano NOW. Smallest, fastest 4.1 variant. API shutdown is Oct 14, 2026 — roughly a month out as of this catalog's September 14, 2026 audit — after which every request fails.",
+        description="Deprecated — migrate to GPT-5.6 Luna or GPT-5.4 Nano NOW. Smallest, fastest 4.1 variant. API shutdown is Oct 14, 2026 — THREE WEEKS out as of this catalog's September 21, 2026 audit — after which every request fails.",
         support_images=True,
         support_files=True,
         support_streaming=True,

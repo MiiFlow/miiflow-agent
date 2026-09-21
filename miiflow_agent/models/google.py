@@ -25,11 +25,19 @@ _NO_SAMPLING_PARAMS = {
 # a restricted access envelope — trusted defenders admitted to Google's Fairwind
 # programme, with no self-serve route — so it would fail for every key this
 # catalog serves. Same reasoning as gpt-5.6-cyber in the OpenAI catalog.
+#
+# Also deliberately absent, all released September 15, 2026: gemini-3.8-live and
+# gemini-3.8-live-extended-thinking (native speech-to-speech over the Live API's
+# WebSocket, billed per MINUTE — $0.005/min in, $0.018/min out) and
+# gemini-3.5-transcribe (a dedicated speech-to-text model). None of them takes a
+# generateContent request or has per-token prices, so a ModelConfig — whose whole
+# contract is per-token pricing plus a token_param_name — cannot describe them.
+# Same reasoning as gpt-live-1 in the OpenAI catalog.
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.8-flash": ModelConfig(
         model_identifier="models/gemini-3.8-flash",
         name="gemini-3.8-flash",
-        description="Google's newest and most capable Gemini model (released September 2, 2026, and still the newest as of September 14, 2026). Google's top tier is a Flash model because Gemini 3.5 Pro was never released — Gemini 3.1 Pro remains the Pro flagship. Improves on Gemini 3.7 Flash for reasoning, coding, and agentic workflows, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window, 64K max output. Thinking depth is controlled with thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); temperature, top_p, top_k, candidate_count and the frequency/presence penalties are accepted and silently ignored. Introductory pricing of $0.75/$3.75 per 1M input/output tokens (output includes thinking tokens) applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        description="Google's newest and most capable Gemini model (released September 2, 2026, and still the newest TEXT model as of September 21, 2026). Google's top tier is a Flash model because Gemini 3.5 Pro was never released — Gemini 3.1 Pro remains the Pro flagship. Improves on Gemini 3.7 Flash for reasoning, coding, and agentic workflows, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window, 64K max output. Thinking depth is controlled with thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); temperature, top_p, top_k, candidate_count and the frequency/presence penalties are accepted and silently ignored. Introductory pricing of $0.75/$3.75 per 1M input/output tokens (output includes thinking tokens) applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -119,7 +127,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.1-pro": ModelConfig(
         model_identifier="models/gemini-3.1-pro",
         name="gemini-3.1-pro",
-        description="Google's Pro flagship, with strong reasoning and an industry-leading 2M token context window (GA since May 2026). Still the current Pro tier as of September 14, 2026: Gemini 3.5 Pro slipped repeatedly and was never released, and Gemini 4 — which Google confirmed was in pre-training on July 21, 2026 — has no announced release date. Unlike the 3.6/3.7 Flash generation, it still honours temperature/top_p/top_k. Tiered pricing: $2/$12 per 1M input/output tokens for prompts up to 200K tokens, rising to $4/$18 above 200K.",
+        description="Google's Pro flagship, with strong reasoning and an industry-leading 2M token context window (GA since May 2026). Still the current Pro tier as of September 21, 2026: Gemini 3.5 Pro slipped repeatedly and was never released, and Gemini 4 — which Google confirmed was in pre-training on July 21, 2026 and, as of September 17, 2026, has still only been confirmed as in pre-training — has no announced release date, name, price or context window. A mid-August rumour of a September launch did not materialise. Unlike the 3.6/3.7 Flash generation, it still honours temperature/top_p/top_k. Tiered pricing: $2/$12 per 1M input/output tokens for prompts up to 200K tokens, rising to $4/$18 above 200K.",
         support_images=True,
         support_files=True,
         support_streaming=True,

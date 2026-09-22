@@ -433,6 +433,25 @@ class AnthropicClient(ModelClient):
                         }
                     )
                 elif isinstance(block, DocumentBlock):
+                    # Chat uploads can be 100 MB. Avoid sending a PDF that
+                    # alone exceeds Claude's 32 MB request budget. Unknown
+                    # sizes still use the normal path and media-error repair.
+                    # https://platform.claude.com/docs/en/build-with-claude/pdf-support
+                    file_size = block.metadata.get("file_size")
+                    if (
+                        block.document_type == "pdf"
+                        and isinstance(file_size, (int, float))
+                        and file_size >= 32 * 1024 * 1024
+                    ):
+                        content_list.append({
+                            "type": "text",
+                            "text": (
+                                f"[Attachment {block.filename or 'PDF'} was not read: "
+                                "it is too large for Claude. Ask the user to compress "
+                                "or split the PDF into smaller files before uploading again.]"
+                            ),
+                        })
+                        continue
                     # Claude document blocks only support PDF and plain text.
                     #
                     # The `url` source below is PDF-ONLY on Anthropic's side. A

@@ -173,6 +173,7 @@ _UNSUPPORTED_MEDIA_HINTS = (
     "file format is invalid or unsupported",
     "could not process image",
     "image exceeds",  # size limits: 5MB / 8000px
+    "the file exceeds the maximum allowed size",
     "could not fetch",  # URL source the provider cannot download
     "unsupported image type",
     "invalid image",
@@ -189,7 +190,8 @@ _UNSUPPORTED_MEDIA_HINTS = (
 
 _REMOVED_MEDIA_NOTE = (
     "[{label} removed: the model provider could not process it "
-    "({source}). It is not a viewable image/video for this model. If it is a "
+    "({source}). Its contents have not been read. Ask the user to compress or "
+    "split the file if it is too large. If it is a "
     "document (spreadsheet, PDF, Word), read it as text with read_file on its "
     "workspace path instead of view_media.]"
 )

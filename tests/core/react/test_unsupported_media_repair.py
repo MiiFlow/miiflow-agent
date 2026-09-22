@@ -167,6 +167,22 @@ def _repair(error, messages, *, media_repairs=0, structural_attempted=False):
 
 
 class TestRepairRejectedRequest:
+    def test_oversized_file_is_removed_before_resending(self):
+        history = [Message.user([
+            TextBlock(text="Summarize this report"),
+            DocumentBlock(document_url="https://example.test/large.pdf", filename="large.pdf"),
+        ])]
+        resend, state, context = _repair(
+            "Error code: 400 - {'error': {'type': 'invalid_request_error', "
+            "'message': 'The file exceeds the maximum allowed size.'}}",
+            history,
+        )
+        assert resend is True
+        assert state.media_repairs == 1
+        assert all(isinstance(block, TextBlock) for block in context.messages[0].content)
+        assert "could not process" in context.messages[0].content[1].text
+        assert isinstance(history[0].content[1], DocumentBlock)
+
     def test_media_400_strips_and_resends(self):
         resend, state, context = _repair(ANTHROPIC_400, _poisoned_history())
         assert resend is True

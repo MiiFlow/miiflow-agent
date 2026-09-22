@@ -59,6 +59,26 @@ def test_pdf_still_uses_the_url_source(client):
     assert docs[0]["source"] == {"type": "url", "url": "https://x.test/report.pdf"}
 
 
+def test_known_oversized_pdf_becomes_an_explicit_limitation(client):
+    result = _convert(client, DocumentBlock(
+        document_url="https://x.test/large.pdf", filename="large.pdf",
+        metadata={"file_size": 40 * 1024 * 1024},
+    ))
+    assert all(block["type"] != "document" for block in result["content"])
+    text = " ".join(block["text"] for block in result["content"])
+    assert "large.pdf" in text
+    assert "split" in text.lower()
+    assert "not read" in text.lower()
+
+
+def test_small_pdf_keeps_its_document_block(client):
+    result = _convert(client, DocumentBlock(
+        document_url="https://x.test/small.pdf",
+        metadata={"file_size": 1024},
+    ))
+    assert result["content"][0]["type"] == "document"
+
+
 def test_inline_base64_txt_stays_a_document_block(client):
     """A data: URI carries the bytes, so Claude can take it as a document."""
     result = _convert(

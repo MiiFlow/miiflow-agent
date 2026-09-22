@@ -9,11 +9,15 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     # SUBSTRING match, and "claude-fable-5" is a substring of every Fable 5.1
     # identifier. Fable 5.1 must be reached first or a Bedrock/Vertex spelling
     # of it (`anthropic.claude-fable-5-1`) resolves to Fable 5 and gets Fable
-    # 5's capabilities and prices.
+    # 5's capabilities and prices. The same collision exists one tier down:
+    # "claude-opus-5" is a substring of every Opus 5.5 identifier, so Opus 5.5
+    # is listed above Opus 5. Getting that order wrong is not cosmetic — it
+    # bills Opus 5.5 at Opus 5's rates and tells callers thinking can be
+    # disabled on a model that 400s on it.
     "claude-fable-5.1": ModelConfig(
         model_identifier="claude-fable-5-1",
         name="claude-fable-5.1",
-        description="Anthropic's most capable widely released model (released September 1, 2026), for demanding reasoning, long-horizon agentic coding, multistep research, and document/spreadsheet/slide work. Same input and output prices as Fable 5, with cache reads at a quarter of the rate ($0.25 vs $1.00 per 1M) — 2.5% of input, where every other Claude model charges 10% — which Anthropic estimates at ~25% lower cost on typical token-billed workloads and up to ~45% on highly agentic ones. Always-on adaptive thinking (default effort high), structured outputs, 1M context window. Forced tool use is NOT supported: it returns an error, so structured output must go through the native path, never the forced-`json_tool` fallback. Claude Mythos 5.1 shares its specifications and pricing but is invitation-only (Project Glasswing), so Fable 5.1 is the top tier reachable with a standard API key. Still Anthropic's newest model as of September 21, 2026; retirement not sooner than September 1, 2027.",
+        description="Anthropic's most capable widely released model (released September 1, 2026), for demanding reasoning, long-horizon agentic coding, multistep research, and document/spreadsheet/slide work. Same input and output prices as Fable 5, with cache reads at a quarter of the rate ($0.25 vs $1.00 per 1M) — 2.5% of input, where every other Claude model charges 10% — which Anthropic estimates at ~25% lower cost on typical token-billed workloads and up to ~45% on highly agentic ones. Always-on adaptive thinking (default effort high), structured outputs, 1M context window. Forced tool use is NOT supported: it returns an error, so structured output must go through the native path, never the forced-`json_tool` fallback. Claude Mythos 5.1 shares its specifications and pricing but is invitation-only (Project Glasswing), so Fable 5.1 is the top tier reachable with a standard API key. No longer Anthropic's newest model — Claude Opus 5.5 shipped September 22, 2026 — but still the most capable one, and the model to reach for when evals on Opus 5.5 at higher effort fall short. Retirement not sooner than September 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -52,10 +56,32 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         cache_read_cost_hint=1.0,  # 0.1x input
         cache_write_cost_hint=12.5,  # 1.25x input (5-min TTL)
     ),
+    "claude-opus-5.5": ModelConfig(
+        model_identifier="claude-opus-5-5",
+        name="claude-opus-5.5",
+        description="Anthropic's newest model (released September 22, 2026) and the recommended default for most workloads, built for long-running agentic coding and knowledge work. Undercuts Opus 5 on price ($4/$20 vs $5/$25) while beating it, and reads cached tokens at 5% of input ($0.20 vs $0.50 per 1M) where every Claude model outside the Fable line charges 10%. Always-on adaptive thinking that CANNOT be disabled: `thinking: {\"type\": \"disabled\"}` is a 400 at every effort level, unlike Opus 5 where it is rejected only at xhigh/max. Default effort is `medium`, not `high` — a request that omits `effort` runs one level lower than it did on Opus 5. Forced tool use is NOT supported (it returns an error), so structured output must go through the native path, never the forced-`json_tool` fallback. All five effort levels, structured outputs, 1M context window, 128K max output. Fast mode runs at $8/$40. Retirement not sooner than September 22, 2027.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        # Must stay True: the tool-based JSON fallback in AnthropicClient forces
+        # `tool_choice`, which this model rejects outright.
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=1000000,
+        maximum_output_tokens=128000,
+        token_param_name="max_tokens",
+        supports_temperature=False,
+        input_cost_hint=4.0,
+        output_cost_hint=20.0,
+        cache_read_cost_hint=0.20,  # 0.05x input — the Opus 5.5 rate
+        cache_write_cost_hint=5.0,  # 1.25x input (5-min TTL); $8 at 1h
+    ),
     "claude-opus-5": ModelConfig(
         model_identifier="claude-opus-5",
         name="claude-opus-5",
-        description="Anthropic's most capable Opus model (released July 24, 2026), delivering near-Fable 5 performance at half the token price. Features always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (2.5x faster at 2x the price), structured outputs, and a safety fallback that routes to Opus 4.8. 1M context window. Retirement not sooner than July 24, 2027.",
+        description="Legacy — succeeded by Claude Opus 5.5 (September 22, 2026), which is both stronger and cheaper ($4/$20 vs $5/$25) and reads cached tokens at 5% of input rather than 10%, so this is kept for pinned workloads only. Released July 24, 2026. Always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (2.5x faster at 2x the price), structured outputs, and a safety fallback that routes to Opus 4.8. Thinking can still be disabled here at effort <= high, which Opus 5.5 rejects outright. 1M context window. Retirement not sooner than July 24, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -135,7 +161,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-5": ModelConfig(
         model_identifier="claude-sonnet-5",
         name="claude-sonnet-5",
-        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. Supports all five effort levels. 1M context window. $2/$10 per 1M input/output tokens is the standard price — the launch rate was announced as introductory through August 31, 2026, and Anthropic then cancelled the scheduled September 1, 2026 increase to $3/$15, which has now passed with the $2/$10 rate standing. Retirement not sooner than June 30, 2027.",
+        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. Supports all five effort levels. 1M context window. $2/$10 per 1M input/output tokens is the standard price — the launch rate was announced as introductory through August 31, 2026, and Anthropic then cancelled the scheduled September 1, 2026 increase to $3/$15, which has passed with the $2/$10 rate standing (re-confirmed on the pricing page at the September 22, 2026 audit). Retirement not sooner than June 30, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -175,7 +201,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-haiku-4.5": ModelConfig(
         model_identifier="claude-haiku-4-5-20251001",
         name="claude-haiku-4.5",
-        description="Anthropic's fastest model with near-frontier intelligence, delivering Sonnet-4-level coding performance at one-third the cost and more than twice the speed. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window. Retirement not sooner than October 15, 2026 — the nearest retirement floor in this catalog, and now THREE AND A HALF WEEKS out as of the September 21, 2026 audit. Anthropic gives at least 60 days' notice before retiring a public model and has sent none, so the floor will move; it is not a shutdown date. Still no newer Haiku has been announced, so when it does move, plan for Sonnet 5 at low effort rather than another Haiku.",
+        description="Anthropic's fastest model with near-frontier intelligence, delivering Sonnet-4-level coding performance at one-third the cost and more than twice the speed. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window. Retirement not sooner than October 15, 2026 — the nearest retirement floor in this catalog, and now THREE WEEKS out as of the September 22, 2026 audit. Anthropic gives at least 60 days' notice before retiring a public model and has sent none, so the floor will move; it is not a shutdown date. Still no newer Haiku has been announced, so when it does move, plan for Sonnet 5 at low effort rather than another Haiku.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -257,6 +283,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
         max_value={
             "claude-fable-5.1": 128000,
             "claude-fable-5": 128000,
+            "claude-opus-5.5": 128000,
             "claude-opus-5": 128000,
             "claude-opus-4.8": 128000,
             "claude-opus-4.7": 128000,
@@ -279,6 +306,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
 _NO_EXTENDED_THINKING = {
     "claude-fable-5.1",
     "claude-fable-5",
+    "claude-opus-5.5",
     "claude-opus-5",
     "claude-opus-4.8",
     "claude-opus-4.7",
@@ -287,10 +315,10 @@ _NO_EXTENDED_THINKING = {
 
 # Models that THINK BY DEFAULT when the request omits `thinking` (adaptive is
 # the default, not off) and that accept `thinking: {"type": "disabled"}` at
-# effort <= high. The Fable line also thinks by default but rejects "disabled"
-# with a 400, so it lives in `_THINKING_ON_BY_DEFAULT_LOCKED` below instead;
-# Opus 4.8/4.7/4.6 and Sonnet 4.6 default to no thinking, so there is nothing
-# to disable.
+# effort <= high. The Fable line and Opus 5.5 also think by default but reject
+# "disabled" with a 400 at every level, so they live in
+# `_THINKING_ON_BY_DEFAULT_LOCKED` below instead; Opus 4.8/4.7/4.6 and Sonnet
+# 4.6 default to no thinking, so there is nothing to disable.
 _THINKING_ON_BY_DEFAULT_DISABLEABLE = {
     "claude-opus-5",
     "claude-sonnet-5",
@@ -301,18 +329,27 @@ _THINKING_ON_BY_DEFAULT_DISABLEABLE = {
 # `name == "claude-fable-5"` and silently answered False for Fable 5.1 — a
 # model with exactly the same behaviour. A caller told thinking is off budgets
 # `max_tokens` for text alone and gets `stop_reason=max_tokens` with no text.
+# Opus 5.5 belongs here and NOT in the effort-gated set below: Anthropic
+# documents `thinking: {"type": "disabled"}` as a 400 on it at every effort
+# level, where Opus 5 rejects it only at xhigh/max.
 _THINKING_ON_BY_DEFAULT_LOCKED = {
     "claude-fable-5.1",
     "claude-fable-5",
+    "claude-opus-5.5",
 }
 
 
 # `output_config.effort` — the GA knob that scales adaptive thinking (and overall
 # token spend) on the models that think by default. `budget_tokens` is rejected
-# on Sonnet 5 / Opus 5 / 4.7 / 4.8 / Fable 5 / Fable 5.1, so this is the ONLY way to bound
-# their deliberation short of disabling thinking (which is discouraged: with
-# thinking off these models sometimes write a tool call into visible text).
+# on Sonnet 5 / Opus 5.5 / Opus 5 / 4.7 / 4.8 / Fable 5 / Fable 5.1, so this is
+# the ONLY way to bound their deliberation short of disabling thinking (which is
+# discouraged: with thinking off these models sometimes write a tool call into
+# visible text, and Opus 5.5 and the Fable line refuse it outright).
 # Haiku 4.5 and older models 400 on the parameter.
+#
+# Note the DEFAULT differs: Opus 5.5 defaults to `medium`, every other model
+# here to `high`. A request that omits effort therefore runs one level lower on
+# Opus 5.5 than the same request did on Opus 5.
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 # The levels are NOT uniform across the models that accept the parameter, so a
@@ -324,6 +361,7 @@ EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _EFFORT_LEVELS_BY_MODEL: Dict[str, tuple] = {
     "claude-fable-5.1": EFFORT_LEVELS,
     "claude-fable-5": EFFORT_LEVELS,
+    "claude-opus-5.5": EFFORT_LEVELS,
     "claude-opus-5": EFFORT_LEVELS,
     "claude-opus-4.8": EFFORT_LEVELS,
     "claude-opus-4.7": EFFORT_LEVELS,
@@ -333,9 +371,10 @@ _EFFORT_LEVELS_BY_MODEL: Dict[str, tuple] = {
 }
 
 # Models that reject `thinking: {"type": "disabled"}` once effort is `xhigh` or
-# `max` — the combination is a 400, enforced per request. Anthropic documents
-# the restriction as applying to Claude Opus 5 and later; Sonnet 5 predates it
-# and accepts "disabled" at every level.
+# `max` — the combination is a 400, enforced per request. Only Opus 5 lands
+# here: Sonnet 5 predates the restriction and accepts "disabled" at every
+# level, and Opus 5.5 went further and rejects it at every level, so it is in
+# `_THINKING_ON_BY_DEFAULT_LOCKED` instead and never reaches this gate.
 _DISABLED_REJECTED_AT_EFFORT = frozenset({"xhigh", "max"})
 _DISABLED_EFFORT_GATED_MODELS = frozenset({"claude-opus-5"})
 

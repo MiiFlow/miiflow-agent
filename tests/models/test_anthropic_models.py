@@ -87,3 +87,68 @@ class TestFable51Contract:
             "xhigh",
             "max",
         )
+
+
+class TestOpus55ResolutionIsNotShadowedByItsPredecessor:
+    """`claude-opus-5` is a substring of every Opus 5.5 identifier."""
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "claude-opus-5.5",
+            "claude-opus-5-5",
+            "anthropic.claude-opus-5-5",
+            "us.anthropic.claude-opus-5-5",
+        ],
+    )
+    def test_every_spelling_resolves_to_opus_55(self, spelling):
+        # Same trap as Fable 5.1 above, one tier down. Reversed, an Opus 5.5
+        # request bills at Opus 5's $5/$25 and, worse, is told thinking can be
+        # disabled — which Opus 5.5 rejects with a 400 at every effort level.
+        assert _resolve_model_name(spelling) == "claude-opus-5.5"
+
+    @pytest.mark.parametrize(
+        "spelling", ["claude-opus-5", "anthropic.claude-opus-5"]
+    )
+    def test_opus_5_still_resolves_to_itself(self, spelling):
+        assert _resolve_model_name(spelling) == "claude-opus-5"
+
+    def test_opus_55_is_ordered_before_opus_5(self):
+        keys = list(ANTHROPIC_MODELS)
+        assert keys.index("claude-opus-5.5") < keys.index("claude-opus-5")
+
+
+class TestOpus55Contract:
+    def test_cache_reads_bill_at_the_reduced_rate(self):
+        # 5% of input, between Fable 5.1's 2.5% and the 10% every other Claude
+        # model charges.
+        config = ANTHROPIC_MODELS["claude-opus-5.5"]
+        assert config.cache_read_cost_hint == 0.20
+        assert config.input_cost_hint == 4.0
+        assert config.output_cost_hint == 20.0
+        assert ANTHROPIC_MODELS["claude-opus-5"].cache_read_cost_hint == 0.5
+
+    def test_thinking_is_on_and_cannot_be_turned_off_at_any_effort(self):
+        # The difference from Opus 5, and the one that 400s: Opus 5 accepts
+        # "disabled" below xhigh, Opus 5.5 at no level at all.
+        assert thinks_by_default("claude-opus-5.5")
+        for effort in (None, "low", "medium", "high", "xhigh", "max"):
+            assert thinking_disable_param("claude-opus-5.5", effort) is None
+        assert thinking_disable_param("claude-opus-5", "low") == {"type": "disabled"}
+
+    def test_structured_outputs_stay_native(self):
+        # Forced tool use returns an error here, so the forced-`tool_choice`
+        # JSON fallback would fail every schema request rather than loosen it.
+        assert supports_structured_outputs("claude-opus-5.5")
+
+    def test_sampling_parameters_are_refused(self):
+        assert not supports_temperature("claude-opus-5.5")
+
+    def test_all_five_effort_levels_are_accepted(self):
+        assert effort_levels("claude-opus-5.5") == (
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        )

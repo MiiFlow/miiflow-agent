@@ -85,6 +85,42 @@ class TestBudgetResolution:
         budget = ContextBudget.resolve("openai", "gpt-4o-mini-2024-07-18")
         assert budget.window > 0
 
+    @pytest.mark.parametrize(
+        "provider,table_name",
+        [
+            ("anthropic", "ANTHROPIC_MODELS"),
+            ("openai", "OPENAI_MODELS"),
+            ("gemini", "GOOGLE_MODELS"),
+            ("groq", "GROQ_MODELS"),
+            ("mistral", "MISTRAL_MODELS"),
+            ("deepseek", "DEEPSEEK_MODELS"),
+            ("xai", "XAI_MODELS"),
+            ("openrouter", "OPENROUTER_MODELS"),
+            ("ollama", "OLLAMA_MODELS"),
+        ],
+    )
+    def test_every_catalog_model_resolves_by_key_and_by_api_identifier(
+        self, provider, table_name
+    ):
+        """Callers hold the API identifier (``claude-sonnet-4-6``,
+        ``models/gemini-3.5-flash``), the registry is keyed by catalog name
+        (``claude-sonnet-4.6``). Matching the key alone sent 14 models to the
+        provider floor, so Sonnet 4.6 compacted at 150K on a 1M window."""
+        from miiflow_agent import models
+
+        table = getattr(models, table_name)
+        assert table, f"{table_name} is empty — the sweep would pass vacuously"
+        for key, config in table.items():
+            for spelling in (key, config.model_identifier):
+                budget = ContextBudget.resolve(provider, spelling)
+                assert budget.source == "registry", spelling
+                assert budget.window == config.maximum_context_tokens, spelling
+
+    def test_bedrock_inference_profile_resolves_to_its_model(self):
+        budget = ContextBudget.resolve("bedrock", "us.anthropic.claude-sonnet-4-6-v1:0")
+        assert budget.window == 1_000_000
+        assert budget.source == "registry"
+
     def test_unknown_provider_uses_global_fallback(self):
         budget = ContextBudget.resolve("nobody", "nothing")
         assert budget.window == 128_000

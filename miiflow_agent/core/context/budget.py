@@ -102,17 +102,44 @@ def _registry_window(provider: Optional[str], model: Optional[str]) -> Optional[
         table = getattr(model_registry, name, None)
         if not isinstance(table, dict):
             continue
-        config = table.get(model)
-        if config is None:
-            # Model ids often carry a deployment suffix ("claude-opus-5-v2",
-            # "gpt-4o-2024-08-06"). Fall back to the longest registry key the
-            # id starts with, so a dated snapshot resolves to its family.
-            matches = [key for key in table if model.startswith(key)]
-            if matches:
-                config = table[max(matches, key=len)]
+        config = _match_config(table, model)
         window = getattr(config, "maximum_context_tokens", 0) if config else 0
         if window:
             return int(window)
+    return None
+
+
+def _match_config(table: dict, model: str):
+    """The registry entry for ``model``, matched on BOTH spellings of a model.
+
+    A registry is keyed by catalog name (``claude-sonnet-4.6``,
+    ``gemini-3.5-flash``) while callers hold the API identifier the request is
+    sent with (``claude-sonnet-4-6``, ``models/gemini-3.5-flash``). Matching the
+    key alone missed every model whose two spellings differ, so 14 models fell
+    through to the provider floor: Claude Sonnet/Opus 4.6-4.8 compacted at
+    150K on a 1M window. Tiers, most specific first: exact key, exact
+    identifier, the longest key/identifier the id starts with (a dated
+    snapshot: ``gpt-4o-2024-08-06``), then the longest one it contains (a
+    Bedrock inference profile: ``us.anthropic.claude-sonnet-4-6-v1:0``).
+    Longest wins so ``gpt-5-mini`` never resolves to ``gpt-5``.
+    """
+    config = table.get(model)
+    if config is not None:
+        return config
+    spellings = []
+    for key, cfg in table.items():
+        spellings.append((key, cfg))
+        ident = getattr(cfg, "model_identifier", None)
+        if ident:
+            if ident == model:
+                return cfg
+            spellings.append((ident, cfg))
+    for matches in (
+        [(s, c) for s, c in spellings if model.startswith(s)],
+        [(s, c) for s, c in spellings if s in model],
+    ):
+        if matches:
+            return max(matches, key=lambda sc: len(sc[0]))[1]
     return None
 
 

@@ -24,6 +24,7 @@ from miiflow_agent.core.message import (
 )
 from miiflow_agent.core.react.message_repair import (
     is_unsupported_media_error,
+    provider_error_reason,
     strip_unprocessable_media,
 )
 from miiflow_agent.core.react.models import ReActStep
@@ -34,6 +35,31 @@ ANTHROPIC_400 = (
     "'message': 'messages.1.content.5.image.source.base64.data: The file format is "
     "invalid or unsupported'}, 'request_id': 'req_011CeAshG1WVYkKhsNnpPV4u'}"
 )
+
+# 2026-09-22, thread_WiSd7BESgqL3xL2LJeCSPstv: a 33.4 MB user-attached PDF.
+OVERSIZE_PDF_400 = (
+    "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+    "'message': 'The file exceeds the maximum allowed size.'}, "
+    "'request_id': 'req_011CfJtju4dmXSGC4JAJ1kYY'}"
+)
+
+
+def _oversize_pdf_history():
+    return [
+        Message(role=MessageRole.SYSTEM, content="sys"),
+        Message(
+            role=MessageRole.USER,
+            content=[
+                TextBlock(text="analyze the document"),
+                DocumentBlock(
+                    document_url="https://x.supabase.co/storage/v1/object/public/"
+                    "attachments/temp/attachment_1/Brand_Guidelines.pdf",
+                    document_type="pdf",
+                    filename="Brand Guidelines.pdf",
+                ),
+            ],
+        ),
+    ]
 
 
 def _call(call_id, name="view_media"):
@@ -68,6 +94,9 @@ class TestDetection:
         assert is_unsupported_media_error(
             Exception("400 messages.2.content.1.image: image exceeds 5 MB maximum")
         )
+
+    def test_oversize_file_wording(self):
+        assert is_unsupported_media_error(Exception(OVERSIZE_PDF_400))
 
     def test_openai_and_gemini_wordings(self):
         assert is_unsupported_media_error(
@@ -141,6 +170,17 @@ class TestStrip:
         assert "brief.docx" in anomalies[1]
         assert all(isinstance(b, TextBlock) for b in repaired[0].content)
 
+    def test_reason_is_carried_into_the_note(self):
+        repaired, _ = strip_unprocessable_media(
+            _oversize_pdf_history(), reason="The file exceeds the maximum allowed size."
+        )
+        text, note = repaired[1].content
+        assert text.text == "analyze the document"
+        assert isinstance(note, TextBlock)
+        assert "Brand_Guidelines.pdf" in note.text
+        assert "The file exceeds the maximum allowed size." in note.text
+        assert "tell the user" in note.text
+
     def test_no_media_means_no_change(self):
         messages = [
             Message(role=MessageRole.USER, content="hi"),
@@ -194,6 +234,16 @@ class TestRepairRejectedRequest:
             for b in m.content
         )
 
+    def test_oversize_pdf_400_strips_and_resends_with_the_reason(self):
+        resend, state, context = _repair(OVERSIZE_PDF_400, _oversize_pdf_history())
+        assert resend is True
+        assert state.media_repairs == 1
+        note = context.messages[1].content[1]
+        assert isinstance(note, TextBlock)
+        assert "The file exceeds the maximum allowed size." in note.text
+        # The SDK noise around the provider's sentence stays out of the note.
+        assert "req_011" not in note.text
+
     def test_media_repairs_are_capped(self):
         history = _poisoned_history()
         resend, state, context = _repair(
@@ -227,3 +277,17 @@ class TestRepairRejectedRequest:
         resend, state, context = _repair("rate_limit_error", _poisoned_history())
         assert resend is False
         assert isinstance(context.messages[5].content[1], ImageBlock)
+
+
+class TestProviderErrorReason:
+    def test_extracts_the_provider_sentence(self):
+        assert provider_error_reason(OVERSIZE_PDF_400) == (
+            "The file exceeds the maximum allowed size."
+        )
+
+    def test_falls_back_to_the_capped_text(self):
+        assert provider_error_reason("400 Unsupported MIME type: x") == (
+            "400 Unsupported MIME type: x"
+        )
+        assert len(provider_error_reason("x" * 500)) == 200
+        assert provider_error_reason("") == ""

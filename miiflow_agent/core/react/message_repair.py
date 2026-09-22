@@ -17,6 +17,7 @@ strict projection + ProjectionAnomaly design.
 """
 
 import logging
+import re
 from typing import List, Optional, Tuple
 
 from ..message import Message, MessageRole
@@ -173,6 +174,10 @@ _UNSUPPORTED_MEDIA_HINTS = (
     "file format is invalid or unsupported",
     "could not process image",
     "image exceeds",  # size limits: 5MB / 8000px
+    # A PDF over the request-size limit (32 MB). 2026-09-22,
+    # thread_WiSd7BESgqL3xL2LJeCSPstv: a 33.4 MB brand-guidelines PDF drew
+    # `400 invalid_request_error: The file exceeds the maximum allowed size.`
+    # four times per turn (guidance, compaction, …) before the halt.
     "the file exceeds the maximum allowed size",
     "could not fetch",  # URL source the provider cannot download
     "unsupported image type",
@@ -190,11 +195,24 @@ _UNSUPPORTED_MEDIA_HINTS = (
 
 _REMOVED_MEDIA_NOTE = (
     "[{label} removed: the model provider could not process it "
-    "({source}). Its contents have not been read. Ask the user to compress or "
-    "split the file if it is too large. If it is a "
-    "document (spreadsheet, PDF, Word), read it as text with read_file on its "
-    "workspace path instead of view_media.]"
+    "({source}){reason}. Its contents have not been read. If it is a "
+    "document (spreadsheet, PDF, Word) with a workspace path, read it as text "
+    "with read_file instead of view_media; otherwise tell the user it could "
+    "not be read and why, and if it is too large, ask them to compress or "
+    "split it.]"
 )
+
+# `'message': '...'` inside an SDK error's repr — the provider's own sentence,
+# without the status code, request id and dict noise around it.
+_PROVIDER_MESSAGE_RE = re.compile(r"""['"]message['"]\s*:\s*['"](.+?)['"]\s*[,}]""")
+
+
+def provider_error_reason(error_text: str) -> str:
+    """The provider's human-readable reason from an error string, capped."""
+    text = error_text or ""
+    match = _PROVIDER_MESSAGE_RE.search(text)
+    reason = match.group(1) if match else text
+    return reason.strip()[:200]
 
 
 def is_unsupported_media_error(error: BaseException) -> bool:
@@ -223,6 +241,7 @@ def _media_source(block: object) -> str:
 
 def strip_unprocessable_media(
     messages: List[Message],
+    reason: Optional[str] = None,
 ) -> Tuple[List[Message], List[str]]:
     """Replace the media blocks of the LAST media-bearing message with a note.
 
@@ -234,11 +253,17 @@ def strip_unprocessable_media(
     second bad block sits further back, the next rejection strips that one —
     the caller bounds how many times this may run.
 
+    ``reason`` — the provider's rejection, e.g. "The file exceeds the maximum
+    allowed size." — goes into the note so the model can tell the user why
+    the file was not read instead of guessing.
+
     Returns ``(repaired, anomalies)``; ``anomalies`` is empty (and ``repaired``
     is the input list) when no message holds a media block. The input is never
     mutated.
     """
     from ..message import TextBlock
+
+    reason_clause = f": {reason}" if reason else ""
 
     target = None
     for index in range(len(messages) - 1, -1, -1):
@@ -258,7 +283,11 @@ def strip_unprocessable_media(
             source = _media_source(block)
             anomalies.append(f"removed {label} block ({source})")
             new_content.append(
-                TextBlock(text=_REMOVED_MEDIA_NOTE.format(label=label, source=source))
+                TextBlock(
+                    text=_REMOVED_MEDIA_NOTE.format(
+                        label=label, source=source, reason=reason_clause
+                    )
+                )
             )
         else:
             new_content.append(block)

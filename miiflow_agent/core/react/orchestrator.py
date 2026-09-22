@@ -1441,7 +1441,8 @@ class ReActOrchestrator:
 
         * structural — tool_use/tool_result pairing (once per run);
         * unprocessable media — an image/document block the provider cannot
-          decode (bounded by MAX_MEDIA_REPAIRS).
+          decode or will not accept (a PDF over the size limit), bounded by
+          MAX_MEDIA_REPAIRS.
 
         Returns True when the history changed and the step should be resent.
         The error step stays on ``state.steps`` so the consecutive-error
@@ -1450,6 +1451,7 @@ class ReActOrchestrator:
         from .message_repair import (
             is_structural_message_error,
             is_unsupported_media_error,
+            provider_error_reason,
             repair_tool_pairing,
             strip_unprocessable_media,
         )
@@ -1465,7 +1467,9 @@ class ReActOrchestrator:
                     _preview(error_text, 200),
                 )
                 return False
-            repaired, anomalies = strip_unprocessable_media(context.messages)
+            repaired, anomalies = strip_unprocessable_media(
+                context.messages, reason=provider_error_reason(error_text)
+            )
             if not anomalies:
                 logger.warning(
                     "[ORCH] provider rejected a media block but the history "

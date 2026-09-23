@@ -302,7 +302,14 @@ async def forward_subagent_events(
             )
             continue
 
-        if et == ReActEventType.FINAL_ANSWER_CHUNK:
+        if et == ReActEventType.ASSISTANT_TEXT:
+            if promote_to_final:
+                await parent_event_bus.publish(ReActEvent(
+                    event_type=ReActEventType.ASSISTANT_TEXT,
+                    step_number=parent_step_number,
+                    data={**data, "transcript_step": f"{subagent_id}:{event.step_number}"},
+                ))
+        elif et == ReActEventType.FINAL_ANSWER_CHUNK:
             chunk = data.get("delta") or data.get("chunk") or data.get("content") or ""
             if chunk:
                 if not first_chunk_logged and started_at_monotonic is not None:
@@ -354,8 +361,26 @@ async def forward_subagent_events(
                         data.get("reason", "tool_call"),
                     )
                 )
-            # Non-transfer: the child's chunks only fed the nested panel's
-            # transient progress description; nothing to retract.
+            else:
+                # Report-mode progress is an optimistic answer buffer too.
+                # Clear it before demoted narration enters the nested timeline.
+                await parent_event_bus.publish(EventFactory.subagent_dispatch(
+                    parent_step_number, "retracted", {
+                        "subagent_id": subagent_id,
+                        "subagent_path": own_path,
+                        "reason": data.get("reason", "tool_call"),
+                    },
+                ))
+                # Tool/truncation paths emit their own demoted thinking event.
+                # Stream failures do not: retain that partial attempt once.
+                if data.get("reason") == "stream_error" and data.get("retracted_text"):
+                    await parent_event_bus.publish(EventFactory.subagent_dispatch(
+                        parent_step_number, "thinking", {
+                            "subagent_id": subagent_id,
+                            "subagent_path": own_path,
+                            "chunk": data["retracted_text"] + "\n\n",
+                        },
+                    ))
         elif et == ReActEventType.THINKING_CHUNK:
             # Stream the child's intermediate reasoning into a nested
             # thinking chunk on the parent's panel. The FE appends deltas

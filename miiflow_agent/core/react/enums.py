@@ -13,6 +13,7 @@ from enum import Enum
 class ReActEventType(Enum):
     """Types of events emitted during ReAct execution."""
 
+    ASSISTANT_TEXT = "assistant_text"  # Unclassified, user-visible speech
     STEP_START = "step_start"
     THOUGHT = "thought"
     THINKING_CHUNK = "thinking_chunk"  # Streaming chunks during thinking

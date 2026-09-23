@@ -249,6 +249,11 @@ class TestReActTurnClassification:
 
         events = list(orch.event_bus.event_buffer)
         event_types = [e.event_type for e in events]
+        # The new display channel emits speech exactly once, independently of
+        # the legacy candidate-answer/demotion protocol below.
+        speech = [e.data["delta"] for e in events if e.event_type == ReActEventType.ASSISTANT_TEXT]
+        assert "".join(speech) == "I'll check that. "
+        assert not any(e.data.get("native") for e in events if e.event_type == ReActEventType.THINKING_CHUNK)
         # Preamble streamed live...
         assert ReActEventType.FINAL_ANSWER_CHUNK in event_types
         # ...then retracted the moment the tool call arrived, and demoted to

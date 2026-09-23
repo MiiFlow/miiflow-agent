@@ -53,6 +53,8 @@ class StreamChunk:
     # of the discovery and re-searches every turn. Kept verbatim because the
     # API validates the pair.
     tool_search_blocks: Optional[List[Dict[str, Any]]] = None
+    # Opaque Gemini continuation parts, never projected into display text.
+    provider_content_parts: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass

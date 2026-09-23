@@ -80,7 +80,7 @@ def _convert_to_rest_format(messages: List[Dict[str, Any]]) -> List[Dict[str, An
         rest_msg = {"role": msg["role"], "parts": []}
         for part in msg.get("parts", []):
             if "text" in part:
-                rest_msg["parts"].append({"text": part["text"]})
+                rest_msg["parts"].append(dict(part))
             elif "function_call" in part:
                 fc = part["function_call"]
                 rest_fc: Dict[str, Any] = {"name": fc["name"], "args": fc.get("args", {})}
@@ -433,6 +433,12 @@ class GeminiClient(ModelClient):
                     gemini_messages.append({"role": "user", "parts": parts})
 
             elif message.role == MessageRole.ASSISTANT:
+                # Preserve signed parts exactly: coalescing text or moving a
+                # signature onto another part invalidates Gemini continuation.
+                original_parts = (message.metadata or {}).get("gemini_content_parts")
+                if original_parts:
+                    gemini_messages.append({"role": "model", "parts": original_parts})
+                    continue
                 parts = []
 
                 if message.content:
@@ -756,19 +762,19 @@ class GeminiClient(ModelClient):
 
                     async for chunk_dict in self._parse_sse_stream(resp):
                         # Feed dict chunks to normalizer
-                        normalized_chunk = self._stream_normalizer.normalize_chunk(chunk_dict)
+                        for normalized_chunk in self._stream_normalizer.normalize_ordered_chunks(chunk_dict):
 
-                        # Map tool names back to original names
-                        if normalized_chunk.tool_calls:
-                            for tool_call in normalized_chunk.tool_calls:
-                                func_data = tool_call.get("function", {})
-                                if func_data.get("name"):
-                                    original_name = self._tool_name_mapping.get(
-                                        func_data["name"], func_data["name"]
-                                    )
-                                    func_data["name"] = original_name
+                            # Map tool names back to original names
+                            if normalized_chunk.tool_calls:
+                                for tool_call in normalized_chunk.tool_calls:
+                                    func_data = tool_call.get("function", {})
+                                    if func_data.get("name"):
+                                        original_name = self._tool_name_mapping.get(
+                                            func_data["name"], func_data["name"]
+                                        )
+                                        func_data["name"] = original_name
 
-                        yield normalized_chunk
+                            yield normalized_chunk
 
         except ProviderError:
             raise

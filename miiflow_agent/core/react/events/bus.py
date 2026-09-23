@@ -329,12 +329,20 @@ class EventFactory:
         )
 
     @staticmethod
-    def thinking_chunk(step_number: int, delta: str, content: str) -> ReActEvent:
+    def thinking_chunk(step_number: int, delta: str, content: str, *, native: bool = False) -> ReActEvent:
         """Create thinking chunk event for real-time streaming."""
         return ReActEvent(
             event_type=ReActEventType.THINKING_CHUNK,
             step_number=step_number,
-            data={"delta": delta, "content": content}
+            data={"delta": delta, "content": content, "native": native}
+        )
+
+    @staticmethod
+    def assistant_text(step_number: int, delta: str) -> ReActEvent:
+        return ReActEvent(
+            event_type=ReActEventType.ASSISTANT_TEXT,
+            step_number=step_number,
+            data={"delta": delta},
         )
 
     @staticmethod

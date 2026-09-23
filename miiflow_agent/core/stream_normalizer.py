@@ -779,6 +779,28 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
         # Legacy protobuf path (SDK objects)
         return self._normalize_protobuf_chunk(chunk)
 
+    def normalize_ordered_chunks(self, chunk: dict):
+        """Yield parts in wire order; never aggregate speech across a tool boundary."""
+        candidates = chunk.get("candidates") or []
+        if not candidates:
+            yield self.normalize_chunk(chunk)
+            return
+        candidate = candidates[0]
+        parts = candidate.get("content", {}).get("parts") or []
+        if not parts:
+            yield self.normalize_chunk(chunk)
+            return
+        for index, part in enumerate(parts):
+            last = index == len(parts) - 1
+            item = {"candidates": [{**candidate, "content": {"parts": [part]}}]}
+            if not last:
+                item["candidates"][0].pop("finishReason", None)
+            elif "usageMetadata" in chunk:
+                item["usageMetadata"] = chunk["usageMetadata"]
+            normalized = self.normalize_chunk(item)
+            normalized.provider_content_parts = [part]
+            yield normalized
+
     def _normalize_dict_chunk(self, chunk: dict) -> StreamChunk:
         """Normalize a REST API JSON dict chunk to StreamChunk.
 
@@ -786,6 +808,7 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
         thoughtSignature on functionCall parts.
         """
         delta = ""
+        thinking = ""
         finish_reason = None
         usage = None
         tool_calls = None
@@ -827,7 +850,10 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
                         call_index = self._gemini_next_call_index()
 
                 if "text" in part:
-                    delta += part["text"]
+                    if part.get("thought"):
+                        thinking += part["text"]
+                    else:
+                        delta += part["text"]
 
             finish_reason = candidate.get("finishReason")
 
@@ -835,11 +861,12 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
         if usage_meta:
             usage = TokenCount.from_gemini_usage(usage_meta)
 
-        return self._build_chunk(delta=delta, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
+        return self._build_chunk(delta=delta, thinking_delta=thinking or None, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
 
     def _normalize_protobuf_chunk(self, chunk: Any) -> StreamChunk:
         """Normalize a protobuf SDK chunk to StreamChunk (legacy path)."""
         delta = ""
+        thinking = ""
         finish_reason = None
         usage = None
         tool_calls = None
@@ -891,7 +918,10 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
                         # Check for text content
                         text_content = getattr(part, "text", None)
                         if text_content:
-                            delta += text_content
+                            if getattr(part, "thought", False):
+                                thinking += text_content
+                            else:
+                                delta += text_content
 
                 if hasattr(candidate, "finish_reason") and candidate.finish_reason:
                     finish_reason = self._get_finish_reason_name(candidate.finish_reason)
@@ -904,7 +934,7 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
             else:
                 delta = str(chunk) if chunk else ""
 
-        return self._build_chunk(delta=delta, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
+        return self._build_chunk(delta=delta, thinking_delta=thinking or None, finish_reason=finish_reason, usage=usage, tool_calls=tool_calls)
 
     def _get_finish_reason_name(self, finish_reason: Any) -> Optional[str]:
         """Safely extract finish_reason name.

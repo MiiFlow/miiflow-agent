@@ -72,6 +72,7 @@ class StepStreamer:
         # entirely — an unbound local would raise from the finally and replace
         # the CancelledError, turning a graceful timeout into an internal error.
         provider_search_blocks: List[Dict[str, Any]] = []
+        provider_content_parts: List[Dict[str, Any]] = []
         # Watermark: messages at or after this index are the ones THIS step
         # appended. Search blocks may only attach within that window — see
         # _attach_search_blocks.
@@ -156,6 +157,8 @@ class StepStreamer:
             async for chunk in self._orch.tool_executor.stream_with_tools(
                 messages=context.messages, prebuilt_tools=step_tools
             ):
+                if getattr(chunk, "provider_content_parts", None):
+                    provider_content_parts.extend(chunk.provider_content_parts)
                 # Native extended thinking (Anthropic thinking blocks, OpenAI
                 # reasoning tokens) arrive on a dedicated channel separate
                 # from response text. Pass through to the UI's thinking panel;
@@ -163,7 +166,7 @@ class StepStreamer:
                 if getattr(chunk, "thinking_delta", None):
                     await self._orch.event_bus.publish(
                         EventFactory.thinking_chunk(
-                            state.current_step, chunk.thinking_delta, buffer
+                            state.current_step, chunk.thinking_delta, buffer, native=True
                         )
                     )
 
@@ -177,6 +180,11 @@ class StepStreamer:
                 # kill switch off, deltas are buffered and replayed after the
                 # stream closes (legacy behavior).
                 if chunk.delta:
+                    # The ordered transcript never guesses whether speech is final.
+                    # Legacy answer/retraction events below remain for older clients.
+                    await self._orch.event_bus.publish(
+                        EventFactory.assistant_text(state.current_step, chunk.delta)
+                    )
                     buffer += chunk.delta
                     if accumulated_tool_calls:
                         # Action turn already declared; treat further text as
@@ -1110,6 +1118,11 @@ class StepStreamer:
             # drops it. Bounded to messages this step appended: this finally also
             # runs on the error/truncation/empty-turn paths, where attaching to
             # an earlier message would mutate already-sent history.
+            if provider_content_parts:
+                for message in context.messages[messages_before_step:]:
+                    if message.role == MessageRole.ASSISTANT:
+                        message.metadata = {**(message.metadata or {}), "gemini_content_parts": provider_content_parts}
+                        break
             if provider_search_blocks:
                 _attach_search_blocks(
                     context.messages, provider_search_blocks, messages_before_step

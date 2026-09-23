@@ -537,9 +537,8 @@ def test_forward_subagent_events_transfer_bubbles_answer_retraction():
     assert received[2].data["content"] == "Real answer."
 
 
-def test_forward_subagent_events_non_transfer_drops_answer_retraction():
-    """Outside TRANSFER mode child chunks only feed the nested panel, so a
-    child retraction has nothing to retract on the parent — it is dropped."""
+def test_forward_subagent_events_report_retracts_nested_progress():
+    """Report retractions clear only the nested provisional answer."""
     from miiflow_agent.core.react.dispatch import forward_subagent_events
     from miiflow_agent.core.react.enums import ReActEventType
     from miiflow_agent.core.react.react_events import ReActEvent
@@ -560,7 +559,9 @@ def test_forward_subagent_events_non_transfer_drops_answer_retraction():
             own_path=["sub_x"],
         )
     )
-    assert received == []
+    assert len(received) == 1
+    assert received[0].data["sub_event"] == "retracted"
+    assert received[0].data["subagent_path"] == ["sub_x"]
 
 
 def test_forward_subagent_events_ignores_other_event_types():
@@ -1541,3 +1542,30 @@ def test_a_transferred_step_is_marked_final_via_answer_not_the_property():
     # Setting `answer` is the only way to mark a step final.
     step.answer = "Spend was $4,120 last week."
     assert step.is_final_step is True
+
+
+def test_report_progress_retraction_precedes_demoted_narration():
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    bus, received = _make_event_bus()
+    events = [
+        ReActEvent(event_type=kind, step_number=1, data=data)
+        for kind, data in [
+            (ReActEventType.FINAL_ANSWER_CHUNK, {"delta": "Now pull campaigns."}),
+            (ReActEventType.ANSWER_RETRACTED, {"reason": "tool_call"}),
+            (ReActEventType.THINKING_CHUNK, {"delta": "Now pull campaigns."}),
+            (ReActEventType.FINAL_ANSWER_CHUNK, {"delta": "Now retry."}),
+            (ReActEventType.ANSWER_RETRACTED, {"reason": "tool_call"}),
+            (ReActEventType.THINKING_CHUNK, {"delta": "Now retry."}),
+        ]
+    ]
+    asyncio.run(forward_subagent_events(
+        _gen_events(events), parent_event_bus=bus, parent_step_number=3,
+        subagent_id="budget", own_path=["budget"],
+    ))
+    assert [e.data["sub_event"] for e in received] == [
+        "progress", "retracted", "thinking", "progress", "retracted", "thinking",
+    ]
+    assert all(e.data["subagent_path"] == ["budget"] for e in received)

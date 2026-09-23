@@ -9,7 +9,7 @@ listed at the thread level.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 import uuid
 
 
@@ -68,6 +68,14 @@ class ArtifactResult:
 #: (a report tool's `document_id`, `builder_path`, ...).
 ATTACHED_ARTIFACTS_KEY = "__artifacts__"
 
+#: The `deps` key under which a host supplies page previews of a rendered
+#: artifact: `hook(artifact_data) -> [content block, ...]` (sync or async).
+#: The blocks ride on the tool result so the model sees the document it made.
+#: The hook must not raise -- deciding what a preview failure means (and which
+#: exceptions are control flow, e.g. a worker's time limit) is the host's.
+ARTIFACT_PREVIEWS_DEP = "artifact_previews"
+ArtifactPreviewHook = Callable[[Dict[str, Any]], Union[List[Dict[str, Any]], Awaitable[List[Dict[str, Any]]]]]
+
 
 def pop_attached_artifacts(output: Any) -> "tuple[Any, list[Dict[str, Any]]]":
     """``(output_without_the_key, [artifact dicts])`` for a dict result that
@@ -95,6 +103,15 @@ def is_file_backed_artifact(artifact_data: Dict[str, Any]) -> bool:
     and a different observation."""
     metadata = artifact_data.get("metadata") if isinstance(artifact_data, dict) else None
     return bool(isinstance(metadata, dict) and metadata.get("file_asset_id"))
+
+
+#: Where the file card goes. The chat renders `[ARTIFACT:id]` as the card at
+#: that spot in the answer, like `[VIZ:id]` for a chart; a marker left out
+#: puts the card under the answer instead, so omitting it is never an error.
+_PLACEMENT = (
+    "Put [ARTIFACT:{art_id}] on its own line in your answer where the file card "
+    "should appear; if you leave it out, the card is shown under your answer. "
+)
 
 
 def format_artifact_observation(artifact_data: Dict[str, Any]) -> str:
@@ -125,15 +142,29 @@ def format_artifact_observation(artifact_data: Dict[str, Any]) -> str:
         # the source is whatever produced the file.
         return (
             f"[ARTIFACT:{art_id}] {kind} file{title_suffix} is attached to your "
-            "reply as a downloadable file card; the person already has it. Refer "
-            "to it by name (\"the PDF above\"). Do NOT paste, quote, or invent a "
+            "reply as a downloadable file card; the person already has it. "
+            + _PLACEMENT.format(art_id=art_id)
+            + "Refer to it by name. Do NOT paste, quote, or invent a "
             "link for it. It is a rendered file, not an editable document: "
             "get_artifact and edit_artifact do not apply — to change it, change "
             "its source and produce it again."
         )
+    page_count = (artifact_data.get("metadata") or {}).get("page_count")
+    # What came out, so the answer describes the file the person got: the
+    # render used to happen after the answer was written, and a 3-page PDF
+    # was announced as "the 2-page summary".
+    rendered = (
+        f"It rendered to {page_count} page{'s' if page_count != 1 else ''}; if the "
+        "person asked for a different length, revise it with edit_artifact before "
+        "answering, or say how long it is. "
+        if isinstance(page_count, int) and page_count > 0
+        else ""
+    )
     return (
         f"[ARTIFACT:{art_id}] {kind} artifact created{title_suffix}. "
-        f'To revise it, first call get_artifact("{art_id}") to read its current '
+        + rendered
+        + _PLACEMENT.format(art_id=art_id)
+        + f'To revise it, first call get_artifact("{art_id}") to read its current '
         f'HTML, then call edit_artifact("{art_id}", html=<complete updated HTML>). '
         f"Do NOT rebuild the HTML from memory and do NOT pass a placeholder or "
         f"partial body — always send the full document."

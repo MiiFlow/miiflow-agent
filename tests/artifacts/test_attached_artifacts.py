@@ -78,6 +78,25 @@ class TestFileBackedObservation:
         assert 'edit_artifact("a-1"' not in text
         assert 'get_artifact("a-1"' not in text
 
+    def test_both_observations_say_where_the_card_goes(self):
+        """The chat draws the card at the `[ARTIFACT:id]` marker, so the model
+        is told to place it -- and that leaving it out is not an error."""
+        for data in (_file_artifact(), {**_file_artifact(), "metadata": {}}):
+            text = format_artifact_observation(data)
+            assert "Put [ARTIFACT:a-1] on its own line in your answer" in text
+            assert "the card is shown under your answer" in text
+
+    def test_the_observation_says_how_many_pages_came_out(self):
+        """The render happens before the tool returns, so the model is told
+        the length it produced instead of announcing the length it meant."""
+        rendered = {**_file_artifact(), "metadata": {"page_count": 3}}
+        text = format_artifact_observation(rendered)
+        assert "It rendered to 3 pages" in text
+        assert "revise it with edit_artifact" in text
+        one = format_artifact_observation({**_file_artifact(), "metadata": {"page_count": 1}})
+        assert "It rendered to 1 page;" in one
+        assert "rendered to" not in format_artifact_observation({**_file_artifact(), "metadata": {}})
+
     def test_rendered_artifacts_keep_the_revision_instruction(self):
         text = format_artifact_observation({**_file_artifact(), "metadata": {}})
         assert 'get_artifact("a-1")' in text
@@ -138,3 +157,46 @@ async def test_a_result_without_the_key_is_unchanged_by_the_seam():
 
     assert observation == str(output)
     assert not [e for e in events if e.event_type == ReActEventType.ARTIFACT]
+
+
+def _rendered_artifact():
+    from miiflow_agent.artifacts import ArtifactResult
+
+    return ArtifactResult(
+        kind="pdf", title="Summary", source_html="<p>x</p>",
+        metadata={"artifact_id": "artifact_1", "page_count": 3},
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_host_hook_attaches_page_previews_to_the_artifact_result():
+    """The model sees the pages it made: the host's `artifact_previews` hook
+    returns blocks that ride on the tool result."""
+    orch, _events = _handler()
+    seen = []
+
+    async def previews(data):
+        seen.append(data["metadata"]["artifact_id"])
+        return [{"type": "text", "text": "Page previews"}, {"type": "image_url", "image_url": "data:image/jpeg;base64,AAAA"}]
+
+    observation, blocks = await orch._tool_actions.process_result(
+        _rendered_artifact(), ExecutionState(current_step=1), "create_artifact",
+        RunContext(deps={"artifact_previews": previews}, messages=[]),
+    )
+
+    assert seen == ["artifact_1"]
+    assert "It rendered to 3 pages" in observation
+    assert [b["type"] for b in blocks] == ["text", "image_url"]
+
+
+@pytest.mark.asyncio
+async def test_no_hook_leaves_the_result_as_it_was():
+    # A failing hook is the host's to handle (ArtifactPreviewHook's contract);
+    # the host's own test pins that it never raises.
+    orch, _events = _handler()
+    observation, blocks = await orch._tool_actions.process_result(
+        _rendered_artifact(), ExecutionState(current_step=1), "create_artifact",
+        RunContext(deps={}, messages=[]),
+    )
+    assert blocks == []
+    assert "[ARTIFACT:" in observation

@@ -9,7 +9,9 @@ pattern.
 """
 
 from .types import (
+    ARTIFACT_PREVIEWS_DEP,
     ATTACHED_ARTIFACTS_KEY,
+    ArtifactPreviewHook,
     ArtifactResult,
     extract_artifact_data,
     format_artifact_observation,
@@ -19,7 +21,9 @@ from .types import (
 )
 
 __all__ = [
+    "ARTIFACT_PREVIEWS_DEP",
     "ATTACHED_ARTIFACTS_KEY",
+    "ArtifactPreviewHook",
     "ArtifactResult",
     "extract_artifact_data",
     "format_artifact_observation",

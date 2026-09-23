@@ -41,6 +41,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def _artifact_preview_blocks(context, data) -> list:
+    """Images of the rendered pages, so the model sees the document it made.
+
+    Everything wrong with a document so far was a layout decision the model
+    could not see (a half-empty page, a stranded table, a blank cover). The
+    host supplies the `ARTIFACT_PREVIEWS_DEP` hook; without it nothing
+    changes. The hook owns its failures (see `ArtifactPreviewHook`).
+    """
+    import inspect
+
+    from miiflow_agent.artifacts import ARTIFACT_PREVIEWS_DEP
+
+    hook = (getattr(context, "deps", None) or {}).get(ARTIFACT_PREVIEWS_DEP)
+    if not callable(hook):
+        return []
+    blocks = hook(data)
+    if inspect.isawaitable(blocks):
+        blocks = await blocks
+    return list(blocks or [])
+
+
 class ToolActionHandler:
     """The single-call and parallel-batch action paths of the loop."""
 
@@ -125,7 +146,7 @@ class ToolActionHandler:
                 await self._orch.event_bus.publish(
                     EventFactory.artifact(state.current_step, data, tool_name)
                 )
-                return format_artifact_observation(data), []
+                return format_artifact_observation(data), await _artifact_preview_blocks(context, data)
         # Ordinary domain results may ALSO deliver cards or files. Keep their
         # IDs and versions in the observation; replacing it with a bare VIZ
         # marker would erase the state needed by the next authoring tool.

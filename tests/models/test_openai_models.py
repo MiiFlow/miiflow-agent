@@ -160,3 +160,100 @@ class TestGpt6Astra:
         assert config.cache_write_cost_hint == 12.5
         assert config.maximum_context_tokens == 1_050_000
         assert config.maximum_output_tokens == 128_000
+
+
+class TestGpt6SolAndLuna:
+    """Sol and Luna share Astra's contract everywhere EXCEPT the effort scale."""
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-6-sol-fast",
+            "gpt-6-luna-fast",
+            "gpt-6-sol-2026-09-22",
+        ],
+    )
+    def test_every_spelling_answers_the_same(self, spelling):
+        # Same reasoning as the Astra case: the latency suffix and a dated
+        # snapshot are the same model, and a helper that disagrees is how a
+        # request goes out carrying a parameter the model rejects.
+        assert is_gpt6_model(spelling)
+        assert not supports_temperature(spelling)
+        assert get_token_param_name(spelling) == "max_completion_tokens"
+        assert tools_require_responses_api(spelling)
+        assert get_long_context_pricing_multipliers(spelling, 300_000) == (2.0, 1.5)
+        assert unsupported_request_params(spelling) == {
+            "logprobs",
+            "prompt_cache_retention",
+            "temperature",
+            "top_logprobs",
+            "top_p",
+        }
+
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    def test_effort_scale_keeps_none_unlike_astra(self, model):
+        # The one place the family is NOT uniform. `none` is load-bearing here:
+        # Chat Completions will only call function tools at effort `none`, so
+        # withholding it forces every tool call onto the Responses API. Astra
+        # returns a 400 on the same value, which is why the two are separate
+        # sets rather than one.
+        assert _parameter(model, "reasoning_effort").options == [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        assert "none" not in _parameter("gpt-6-astra", "reasoning_effort").options
+
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    def test_sampling_and_completion_params_match_the_family(self, model):
+        names = _parameter_names(model)
+        assert "temperature" not in names
+        assert "max_tokens" not in names
+        assert "max_completion_tokens" in names
+        # Pro is a mode on these ids, not a separate slug.
+        assert _parameter(model, "reasoning_mode").options == ["standard", "pro"]
+
+    def test_pro_is_a_mode_not_a_model_slug(self):
+        assert "gpt-6-sol-pro" not in OPENAI_MODELS
+        assert "gpt-6-luna-pro" not in OPENAI_MODELS
+
+    def test_there_is_no_gpt6_terra(self):
+        # OpenAI did not carry the GPT-5.6 mid tier into this generation. A
+        # `gpt-6-terra` entry would be an id that 404s.
+        assert "gpt-6-terra" not in OPENAI_MODELS
+
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("gpt-6-sol", (2.0, 10.0, 0.20, 2.5)),
+            ("gpt-6-luna", (0.10, 0.50, 0.01, 0.125)),
+        ],
+    )
+    def test_pricing_matches_published_rates(self, model, expected):
+        config = OPENAI_MODELS[model]
+        assert (
+            config.input_cost_hint,
+            config.output_cost_hint,
+            config.cache_read_cost_hint,
+            config.cache_write_cost_hint,
+        ) == expected
+        assert config.maximum_context_tokens == 1_050_000
+        assert config.maximum_output_tokens == 128_000
+
+    @pytest.mark.parametrize(
+        ("newer", "older"),
+        [("gpt-6-sol", "gpt-5.6-sol"), ("gpt-6-luna", "gpt-5.6-luna")],
+    )
+    def test_each_undercuts_the_gpt56_tier_it_succeeds(self, newer, older):
+        # The reason both GPT-5.6 entries are now marked legacy. If a future
+        # reprice inverts this, the descriptions saying "half the price" are
+        # wrong and this fails rather than going stale silently.
+        assert OPENAI_MODELS[newer].input_cost_hint < OPENAI_MODELS[older].input_cost_hint
+        assert (
+            OPENAI_MODELS[newer].output_cost_hint < OPENAI_MODELS[older].output_cost_hint
+        )

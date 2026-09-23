@@ -32,12 +32,14 @@ _NO_SAMPLING_PARAMS = {
 # gemini-3.5-transcribe (a dedicated speech-to-text model). None of them takes a
 # generateContent request or has per-token prices, so a ModelConfig — whose whole
 # contract is per-token pricing plus a token_param_name — cannot describe them.
-# Same reasoning as gpt-live-1 in the OpenAI catalog.
+# Same reasoning as gpt-live-1 in the OpenAI catalog. gemini-omni-1.1-flash (GA
+# September 2026) is excluded for the same reason: it is a video generation and
+# editing model billed per second of video, not per token.
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.8-flash": ModelConfig(
         model_identifier="models/gemini-3.8-flash",
         name="gemini-3.8-flash",
-        description="Google's newest and most capable Gemini model (released September 2, 2026, and still the newest TEXT model as of September 22, 2026). Google's top tier is a Flash model because Gemini 3.5 Pro was never released — Gemini 3.1 Pro remains the Pro flagship. Improves on Gemini 3.7 Flash for reasoning, coding, and agentic workflows, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window, 64K max output. Thinking depth is controlled with thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); temperature, top_p, top_k, candidate_count and the frequency/presence penalties are accepted and silently ignored. Introductory pricing of $0.75/$3.75 per 1M input/output tokens (output includes thinking tokens) applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        description="Google's newest and most capable Gemini model (released September 2, 2026, and still the newest TEXT model as of September 23, 2026). Google's top tier is a Flash model because Gemini 3.5 Pro was never released — Gemini 3.1 Pro remains the Pro flagship. Improves on Gemini 3.7 Flash for reasoning, coding, and agentic workflows, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window, 64K max output. Thinking depth is controlled with thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); temperature, top_p, top_k, candidate_count and the frequency/presence penalties are accepted and silently ignored. Introductory pricing of $0.75/$3.75 per 1M input/output tokens (output includes thinking tokens) applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -109,7 +111,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.5-flash": ModelConfig(
         model_identifier="models/gemini-3.5-flash",
         name="gemini-3.5-flash",
-        description="Legacy — succeeded by Gemini 3.6 Flash (July 2026). No longer a cost saving either: at $1.50/$9.00 it is priced well above both newer Flash generations, which run at $0.75/$3.75 through December 31, 2026. Kept for pinned workloads only; it remains the last Flash generation to honour temperature/top_p/top_k. 1M token context window.",
+        description="Legacy — succeeded by Gemini 3.6 Flash (July 2026), and superseded twice over since. Google cut it from its $1.50/$9.00 launch price to $0.75/$4.50, so it now matches the newer Flash generations on input while still costing more per output token than their $0.75/$3.75 introductory rate — no cost argument remains for it. Kept for pinned workloads only, where it is the last Flash generation to honour temperature/top_p/top_k. 1M token context window.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -121,13 +123,13 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         maximum_output_tokens=65536,
         token_param_name="max_output_tokens",
         supports_temperature=True,
-        input_cost_hint=1.50,
-        output_cost_hint=9.00,
+        input_cost_hint=0.75,
+        output_cost_hint=4.50,
     ),
     "gemini-3.1-pro": ModelConfig(
         model_identifier="models/gemini-3.1-pro",
         name="gemini-3.1-pro",
-        description="Google's Pro flagship, with strong reasoning and an industry-leading 2M token context window (GA since May 2026). Still the current Pro tier as of September 22, 2026: Gemini 3.5 Pro slipped repeatedly and was never released, and Gemini 4 — which Google confirmed was in pre-training on July 21, 2026 and, as of September 20, 2026, has still only been confirmed as in pre-training — has no announced release date, name, price or context window. A mid-August rumour of a September launch did not materialise, and the October window now circulating is third-party speculation, not a Google statement. Unlike the 3.6/3.7 Flash generation, it still honours temperature/top_p/top_k. Tiered pricing: $2/$12 per 1M input/output tokens for prompts up to 200K tokens, rising to $4/$18 above 200K.",
+        description="Google's Pro flagship, with strong reasoning and an industry-leading 2M token context window (GA since May 2026). Still the current Pro tier as of September 23, 2026: Gemini 3.5 Pro slipped repeatedly and was never released, and Gemini 4 — which Google confirmed was in pre-training on July 21, 2026 and, as of September 23, 2026, has still only been confirmed as in pre-training — has no announced release date, name, price or context window. A mid-August rumour of a September launch did not materialise, and the October window now circulating is third-party speculation, not a Google statement. Unlike the 3.6/3.7 Flash generation, it still honours temperature/top_p/top_k. Tiered pricing: $2/$12 per 1M input/output tokens for prompts up to 200K tokens, rising to $4/$18 above 200K.",
         support_images=True,
         support_files=True,
         support_streaming=True,

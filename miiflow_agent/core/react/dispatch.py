@@ -307,7 +307,7 @@ async def forward_subagent_events(
                 await parent_event_bus.publish(ReActEvent(
                     event_type=ReActEventType.ASSISTANT_TEXT,
                     step_number=parent_step_number,
-                    data={**data, "transcript_step": f"{subagent_id}:{event.step_number}"},
+                    data={**data, "transcript_step": f"{subagent_id}:{child_event.step_number}"},
                 ))
         elif et == ReActEventType.FINAL_ANSWER_CHUNK:
             chunk = data.get("delta") or data.get("chunk") or data.get("content") or ""
@@ -584,22 +584,33 @@ async def dispatch_subagent(
         # iterator itself, since some implementations get this wrong.
         if asyncio.iscoroutine(child_stream):
             child_stream = await child_stream  # type: ignore[assignment]
-        if parent_event_bus is not None:
-            captured_interrupt = await forward_subagent_events(
-                child_stream,
-                parent_event_bus=parent_event_bus,
-                parent_step_number=parent_step_number,
-                subagent_id=subagent_id,
-                own_path=own_path,
-                handle=handle,
-                started_at_monotonic=started_at,
-                surface_interrupts=surface_interrupts,
-                promote_to_final=transfer,
-            )
-        else:
-            # No bus — just drain the stream so the child completes.
-            async for _ in child_stream:
-                pass
+        try:
+            if parent_event_bus is not None:
+                captured_interrupt = await forward_subagent_events(
+                    child_stream,
+                    parent_event_bus=parent_event_bus,
+                    parent_step_number=parent_step_number,
+                    subagent_id=subagent_id,
+                    own_path=own_path,
+                    handle=handle,
+                    started_at_monotonic=started_at,
+                    surface_interrupts=surface_interrupts,
+                    promote_to_final=transfer,
+                )
+            else:
+                # No bus — just drain the stream so the child completes.
+                async for _ in child_stream:
+                    pass
+        finally:
+            # This dispatch owns the child's run. Close it HERE, in the task
+            # that started it, however forwarding ended — a raised forwarder
+            # or a cancelled parent must stop the child, not leave its stream
+            # for the garbage collector to close later from another task
+            # (where the child's ContextVar resets raise "created in a
+            # different Context" and its reply is never persisted).
+            aclose = getattr(child_stream, "aclose", None)
+            if aclose is not None:
+                await aclose()
         result = sub_agent.final_result()
     except DispatchGuardrailError:
         # These are pre-flight; we should never reach here with one, but

@@ -14,10 +14,12 @@ import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING, List
+from urllib.parse import urlsplit
 
 from ..message import Message, MessageRole
 from .enums import StopReason
 from .events import EventFactory
+from .media_refs import referenced_media_ids
 from .models import ReActResult, ReActStep
 from .orchestrator import _extract_partial_results, _preview
 
@@ -27,6 +29,14 @@ if TYPE_CHECKING:
     from .orchestrator import ReActOrchestrator
 
 logger = logging.getLogger(__name__)
+
+_VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".m4v")
+
+
+def _media_type(url: str) -> str:
+    """The media store keeps only URLs; the path's suffix names the kind."""
+    path = urlsplit(url).path.lower()
+    return "video" if path.endswith(_VIDEO_SUFFIXES) else "image"
 
 
 class AnswerSynthesis:
@@ -75,6 +85,8 @@ class AnswerSynthesis:
                 await self._orch.event_bus.publish(
                     EventFactory.final_answer(state.current_step, state.final_answer)
                 )
+
+        await self.present_referenced_media(state)
 
         logger.info(
             "[ORCH] result stop_reason=%s steps=%d final_answer=%s",
@@ -128,6 +140,33 @@ class AnswerSynthesis:
                 result.metadata["partial_results"] = partial
 
         return result
+
+    async def present_referenced_media(self, state: "ExecutionState") -> None:
+        """Publish MEDIA for every ref the answer shows but the run never did.
+
+        The chat renders ``[MEDIA:<id>]`` only for media attached to the
+        message, and attachment happens when a MEDIA event is published. A
+        tool that hands the model a ref without publishing it — ``read_file``
+        on a saved image puts the file's id in ``media_store`` — left the
+        model's correct marker rendering "Preview unavailable" (2026-09-24:
+        a finished storyboard could not be shown). Any ref this run can
+        resolve is presentable; refs it cannot resolve are left to the
+        chat's unavailable state rather than guessed.
+        """
+        for media_id in referenced_media_ids(state.final_answer):
+            if media_id in state.presented_media_ids:
+                continue
+            url = state.media_store.get(media_id)
+            if not url or url.startswith("data:"):
+                continue
+            await self._orch.event_bus.publish(
+                EventFactory.media(
+                    state.current_step,
+                    {"id": media_id, "url": url, "media_type": _media_type(url)},
+                    "answer_reference",
+                )
+            )
+            state.presented_media_ids.add(media_id)
 
     def build_error_result(
         self, state: "ExecutionState", error: Exception

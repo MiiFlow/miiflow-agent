@@ -120,6 +120,7 @@ class ToolActionHandler:
                 await self._orch.event_bus.publish(
                     EventFactory.media(state.current_step, item, tool_name)
                 )
+                state.presented_media_ids.add(media_id)
                 details = (
                     metadata[index] if index < len(metadata) else item.get("metadata")
                 )

@@ -884,6 +884,9 @@ class ReActOrchestrator:
                     )
                 if isinstance(preseeded_media, dict) and preseeded_media:
                     execution_state.media_store.update(preseeded_media)
+                    # Seeded from the thread's earlier messages, which already
+                    # carry these media — the chat rehydrates them from there.
+                    execution_state.presented_media_ids.update(preseeded_media)
                 context.run_state.media_store = execution_state.media_store
 
                 # Legacy dual-write to ctx.deps for callers that haven't

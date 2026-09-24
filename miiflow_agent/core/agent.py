@@ -1038,6 +1038,20 @@ class Agent(Generic[Deps, Result]):
 
         finally:
             orchestrator.event_bus.unsubscribe(real_time_stream)
+            # The run lives in its own task, so a consumer that stops reading
+            # (closed stream, crashed forwarder, cancelled parent) must also
+            # stop the run. Otherwise it keeps calling tools and writing files
+            # with nobody reading its output — the 2026-09-24 orphaned
+            # sub-agents regenerated and overwrote a storyboard for 8 minutes
+            # after their dispatch had already reported "failed".
+            if not execution_task.done():
+                execution_task.cancel()
+                # wait() lets the run unwind its own finally blocks without
+                # re-raising its CancelledError here, while a cancellation of
+                # THIS task still propagates.
+                await asyncio.wait({execution_task})
+                if not execution_task.cancelled():
+                    execution_task.exception()  # retrieved; the consumer is gone
 
     def _prepare_messages_for_llm(self, messages: List[Message]) -> List[Message]:
         """Prepare messages for LLM by filtering out mid-conversation SYSTEM messages.

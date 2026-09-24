@@ -6,7 +6,7 @@ to track progress and manage execution lifecycle.
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 
 @dataclass
@@ -49,6 +49,12 @@ class ExecutionState:
     # Media store - maps media IDs to their URLs so subsequent tool calls
     # (e.g. image editing) can reference generated images via media_ref:<id>
     media_store: Dict[str, str] = field(default_factory=dict)
+
+    # Ids in ``media_store`` the conversation has already shown: published as
+    # MEDIA this run, or seeded from the thread's earlier messages. Anything
+    # else the final answer references (e.g. a ref `read_file` handed out for
+    # a saved image) is presented when the run finishes.
+    presented_media_ids: Set[str] = field(default_factory=set)
 
     # Per-run citation-label counters, keyed by shortened tool name. Every
     # observation opens with `[ref:{short_tool_name}_{n}]` so the model can

@@ -102,3 +102,20 @@ def resolve_media_refs(
             resolved[key] = value
 
     return resolved
+
+
+# The two answer-text forms the chat renders as media (chat-ui
+# `utils/media.ts`): an inline `[MEDIA:<id>]` marker and a Markdown image
+# whose target is `media_ref:<id>`. Keep in step with that parser — a form
+# the server does not extract is a form that renders "Preview unavailable".
+_ANSWER_MEDIA_MARKER = re.compile(r"\[MEDIA:([^\]\s]+)\]", re.IGNORECASE)
+_ANSWER_MEDIA_IMAGE = re.compile(r"\]\(media_ref:([^)\s]+)\)")
+
+
+def referenced_media_ids(text: Optional[str]) -> list:
+    """Media ids an answer references, in first-mention order."""
+    if not text:
+        return []
+    ids = [m.group(1) for m in _ANSWER_MEDIA_MARKER.finditer(text)]
+    ids += [m.group(1) for m in _ANSWER_MEDIA_IMAGE.finditer(text)]
+    return list(dict.fromkeys(ids))

@@ -896,9 +896,34 @@ class ToolActionHandler:
             # Provide context only if any tool needs it (single-tool path
             # checks per-tool; here we pass it always — execute_tool
             # internally handles the per-tool needs_context check).
+            # One action_executing per call, published when the executor
+            # actually starts it — the single-tool path's contract. Its
+            # timestamp is the call's start, so overlap between siblings is
+            # measured rather than inferred from the batch shape (a staged or
+            # rate-limited batch runs partly serial).
+            # `runnable` is built from `invocations`, so every call has one.
+            description_by_call = {inv.tool_call_id: inv.description for inv in invocations}
+
+            async def publish_started(call: ToolCall) -> None:
+                # Same contract as this batch's action_planned publishes: a bus
+                # failure must not surface as the TOOL failing, which is what
+                # raising inside the executor's per-call task would report.
+                try:
+                    await self._orch.event_bus.publish(
+                        EventFactory.action_executing(
+                            state.current_step,
+                            call.name,
+                            call.inputs,
+                            description_by_call[call.tool_call_id],
+                            tool_call_id=call.tool_call_id,
+                        )
+                    )
+                except Exception as evt_err:
+                    logger.debug("Failed to publish action_executing: %s", evt_err)
+
             try:
                 batch_results = await self._orch.tool_executor.execute_many(
-                    runnable, context=context
+                    runnable, context=context, on_start=publish_started
                 )
                 for runnable_pos, idx in enumerate(runnable_indices):
                     results[idx] = batch_results[runnable_pos]

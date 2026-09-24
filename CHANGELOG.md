@@ -2,6 +2,12 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [Unreleased]
+
+### Added
+- **`execute_many(on_start=…)` marks each call's real start (`core/react/tool_executor.py`)**: awaited immediately before a call begins, after any concurrency slot is acquired, in the parallel, staged and serial paths alike. Whether a batch overlaps depends on the gather-safe rule and the adaptive limiter, so only the executor knows that moment.
+- **Batched tool calls publish `ACTION_EXECUTING` (`core/react/tool_actions.py`)**: one per call, at its real start, matching the single-tool path. Consumers read concurrency from measured intervals rather than inferring it from the batch shape.
+
 ## [1.20.0] - 2026-09-23
 
 ### Added

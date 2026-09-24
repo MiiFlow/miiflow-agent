@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, is_dataclass, replace
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from ..callbacks import CallbackEvent, CallbackEventType, get_active_registry
 from ..callback_context import get_callback_context
@@ -323,6 +323,7 @@ class AgentToolExecutor:
         self,
         tool_calls: List[ToolCall],
         context=None,
+        on_start: Optional[Callable[[ToolCall], Awaitable[None]]] = None,
     ) -> List[ToolResult]:
         """Execute a batch of tool calls; return results in input order.
 
@@ -347,13 +348,28 @@ class AgentToolExecutor:
         tools force the batch serial via ``is_batch_parallelizable``). When
         raised, it propagates up to the orchestrator which pauses the run
         for user approval — same as today.
+
+        ``on_start`` is awaited immediately before each call actually begins,
+        after any concurrency slot is acquired. Only the executor knows that
+        moment: whether a batch overlaps depends on the gather-safe rule and the
+        adaptive limiter, so callers cannot derive it from the batch shape.
         """
         if not tool_calls:
             return []
 
         if self.is_batch_parallelizable(tool_calls):
-            return await self._execute_parallel(tool_calls, context)
-        return await self._execute_staged(tool_calls, context)
+            return await self._execute_parallel(tool_calls, context, on_start)
+        return await self._execute_staged(tool_calls, context, on_start)
+
+    async def _start_and_execute(
+        self,
+        tc: ToolCall,
+        context,
+        on_start: Optional[Callable[[ToolCall], Awaitable[None]]],
+    ) -> ToolResult:
+        if on_start is not None:
+            await on_start(tc)
+        return await self.execute_tool(tc.name, tc.inputs, context=context)
 
     def _ensure_parallel_limiter(self):
         """Per-run adaptive concurrency gate for parallel batches.
@@ -396,6 +412,7 @@ class AgentToolExecutor:
         self,
         tool_calls: List[ToolCall],
         context,
+        on_start: Optional[Callable[[ToolCall], Awaitable[None]]] = None,
     ) -> List[ToolResult]:
         """Run a mixed batch as ordered stages: maximal runs of consecutive
         gather-safe calls overlap; every other call runs serially at its
@@ -415,10 +432,10 @@ class AgentToolExecutor:
                 return
             if len(run) == 1:
                 results.append(
-                    await self.execute_tool(run[0].name, run[0].inputs, context=context)
+                    await self._start_and_execute(run[0], context, on_start)
                 )
             else:
-                results.extend(await self._execute_parallel(run, context))
+                results.extend(await self._execute_parallel(run, context, on_start))
             run.clear()
 
         for tc in tool_calls:
@@ -429,7 +446,7 @@ class AgentToolExecutor:
             # Serial call at its original position; control-flow exceptions
             # (ToolApprovalRequired, PlanApprovalRequired) propagate from
             # here exactly as they do on the single-tool path.
-            results.append(await self.execute_tool(tc.name, tc.inputs, context=context))
+            results.append(await self._start_and_execute(tc, context, on_start))
         await flush_run()
         return results
 
@@ -450,6 +467,7 @@ class AgentToolExecutor:
         self,
         tool_calls: List[ToolCall],
         context,
+        on_start: Optional[Callable[[ToolCall], Awaitable[None]]] = None,
     ) -> List[ToolResult]:
         """Run the batch via ``asyncio.gather``. Each tool's success/failure
         is independently captured. Raw exceptions get wrapped into
@@ -485,7 +503,7 @@ class AgentToolExecutor:
         async def _run(tc: ToolCall) -> ToolResult:
             await limiter.acquire()
             try:
-                result = await self.execute_tool(tc.name, tc.inputs, context=context)
+                result = await self._start_and_execute(tc, context, on_start)
             except BaseException as exc:
                 if looks_like_rate_limit(exc):
                     limiter.report_rate_limit()

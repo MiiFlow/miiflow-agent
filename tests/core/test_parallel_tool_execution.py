@@ -313,6 +313,52 @@ async def test_execute_many_runs_serial_when_any_unsafe():
 
 
 @pytest.mark.asyncio
+async def test_execute_many_on_start_marks_each_calls_real_start():
+    """``on_start`` fires as each call begins, so a consumer can tell overlap
+    from sequence: parallel calls all start before any finishes; a serial
+    call starts only after its predecessor returned."""
+    from miiflow_agent.core.react.tool_executor import ToolCall
+
+    tools = {
+        "r1": _fake_tool(parallelizable=True),
+        "r2": _fake_tool(parallelizable=True),
+        "write1": _fake_tool(parallelizable=False),
+    }
+    executor = _make_executor_with_tools(tools)
+    log = []
+
+    async def fake_execute_tool(name, inputs, context=None):
+        await asyncio.sleep(0.01)
+        log.append(("done", name))
+        return _make_tool_result(name, output=f"{name}-ok")
+
+    async def on_start(call):
+        log.append(("start", call.name))
+
+    executor.execute_tool = fake_execute_tool
+
+    parallel = [
+        ToolCall(tool_call_id="a", name="r1", inputs={}),
+        ToolCall(tool_call_id="b", name="r2", inputs={}),
+    ]
+    await executor.execute_many(parallel, on_start=on_start)
+    assert log[:2] == [("start", "r1"), ("start", "r2")]
+
+    log.clear()
+    staged = [
+        ToolCall(tool_call_id="c", name="r1", inputs={}),
+        ToolCall(tool_call_id="d", name="write1", inputs={}),
+    ]
+    await executor.execute_many(staged, on_start=on_start)
+    assert log == [
+        ("start", "r1"),
+        ("done", "r1"),
+        ("start", "write1"),
+        ("done", "write1"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_execute_many_partial_failure_does_not_abort_batch():
     """One bad tool doesn't kill the others — each result independently
     carries success/error."""

@@ -22,8 +22,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
-from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Set
+from contextvars import ContextVar, Token
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Set, Tuple
 
 if TYPE_CHECKING:
     from .registry import ToolRegistry
@@ -156,17 +156,30 @@ def tool_search_session(initial: Optional[Set[str]] = None) -> Iterator[Dict[str
     try:
         yield enabled
     finally:
-        # When the owning async generator is closed from a different asyncio
-        # context (GeneratorExit during teardown), token.reset raises
-        # "created in a different Context" — and, raised from a finally,
-        # REPLACES the real exception that closed the generator. Fall back to
-        # clearing the vars directly: same end state, nothing masked.
-        try:
-            _enabled_tools.reset(token)
-            _pinned_tools.reset(ptoken)
-        except ValueError:
-            _enabled_tools.set(None)
-            _pinned_tools.set(frozenset())
+        restore_tool_search_state(token, ptoken)
+
+
+def suspend_tool_search_session() -> Tuple[Token, Token]:
+    """Hide the current task's ToolSearch session (e.g. from a child agent run
+    inline on the parent's task). Undo with ``restore_tool_search_state``."""
+    return _enabled_tools.set(None), _pinned_tools.set(frozenset())
+
+
+def restore_tool_search_state(enabled_token: Token, pinned_token: Token) -> None:
+    """Undo a ``tool_search_session`` / ``suspend_tool_search_session``.
+
+    Both are opened inside async generators, and a generator can be closed from
+    a different asyncio context (GeneratorExit during teardown), where
+    ``token.reset`` raises "created in a different Context" — and, raised from
+    a ``finally``, REPLACES the real exception that closed the generator. Fall
+    back to clearing the vars directly: same end state, nothing masked.
+    """
+    try:
+        _enabled_tools.reset(enabled_token)
+        _pinned_tools.reset(pinned_token)
+    except ValueError:
+        _enabled_tools.set(None)
+        _pinned_tools.set(frozenset())
 
 
 def mark_tools_enabled(names: List[str]) -> None:

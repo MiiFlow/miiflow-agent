@@ -677,3 +677,45 @@ def test_clear_drops_pending_servers_too():
     reg.clear_native_mcp_servers()
     assert reg.get_pending_native_mcp_configs() == []
     assert reg.get_native_mcp_configs() == []
+
+
+# ---- suspend / restore across contexts ---------------------------------------
+
+
+def test_suspend_hides_the_session_and_restore_brings_it_back():
+    from miiflow_agent.core.tools.tool_search import (
+        get_pinned_tool_names,
+        is_session_active,
+        restore_tool_search_state,
+        suspend_tool_search_session,
+        tool_search_session,
+    )
+
+    with tool_search_session(initial={"pinned_tool"}) as enabled:
+        enabled["found_tool"] = None
+        tokens = suspend_tool_search_session()
+        assert not is_session_active()
+        assert get_pinned_tool_names() == frozenset()
+
+        restore_tool_search_state(*tokens)
+        assert get_enabled_tool_names() == {"found_tool"}
+        assert get_pinned_tool_names() == frozenset({"pinned_tool"})
+
+
+def test_restore_from_a_different_context_does_not_raise():
+    """An async generator can be closed from another asyncio context; the
+    raw ``token.reset`` then raises "created in a different Context" out of
+    the generator's ``finally`` and masks the real exit (prod 2026-09-24,
+    ``AssistantInvoker.stream``)."""
+    import contextvars
+
+    from miiflow_agent.core.tools.tool_search import (
+        restore_tool_search_state,
+        suspend_tool_search_session,
+    )
+
+    tokens = contextvars.copy_context().run(suspend_tool_search_session)
+
+    restore_tool_search_state(*tokens)  # would raise ValueError with token.reset
+
+    assert get_enabled_tool_names() is None

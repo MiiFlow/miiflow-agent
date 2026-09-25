@@ -203,13 +203,26 @@ class ToolActionHandler:
     async def execute_tool(
         self, step: ReActStep, context: RunContext, state: "ExecutionState" = None
     ):
-        """Execute tool with proper context injection."""
+        """Execute tool with proper context injection.
+
+        A malformed call from the model (unknown tool, non-dict input) is a
+        failed ToolResult, not an exception — the same shape the registry and
+        the batch path return — so the model sees it as an observation and it
+        is not reported as a server crash.
+        """
+        from ..tools import ToolResult
+
         # Tool name should already be resolved by _handle_tool_action
         # Just verify it exists (fuzzy matching was already done if needed)
         if not self._orch.tool_executor.has_tool(step.action):
             available_tools = self._orch.tool_executor.list_tools()
-            step.error = f"Tool '{step.action}' not found. Available: {available_tools}"
-            raise Exception(step.error)
+            return ToolResult(
+                name=step.action,
+                input=step.action_input if isinstance(step.action_input, dict) else {},
+                success=False,
+                error=f"Tool '{step.action}' not found. Available: {available_tools}",
+                metadata={"error_type": "tool_not_found"},
+            )
 
         if step.action_input is None:
             step.action_input = {}
@@ -223,8 +236,12 @@ class ToolActionHandler:
                 param_name = next(iter(params.keys()))
                 step.action_input = {param_name: step.action_input}
             else:
-                raise Exception(
-                    f"Tool '{step.action}' expects dict input but got: {step.action_input}"
+                return ToolResult(
+                    name=step.action,
+                    input={},
+                    success=False,
+                    error=f"Tool '{step.action}' expects dict input but got: {step.action_input}",
+                    metadata={"error_type": "invalid_input"},
                 )
 
         # Resolve media_ref:<id> references in tool inputs to actual URLs.

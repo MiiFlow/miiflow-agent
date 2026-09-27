@@ -122,6 +122,12 @@ class CallbackEvent:
     # two drifting turns can be diffed without re-running anything.
     tools_names: Optional[List[str]] = None
 
+    # The shape of the request the provider client finally sent — the parts
+    # it adds on its own (native MCP connectors, deferral, document/image
+    # blocks) plus short hashes of the system prompt and of each message.
+    # See `core.wire_shape`. None when the provider records nothing.
+    wire_shape: Optional[Dict[str, Any]] = None
+
     # Error information (for ON_ERROR)
     error: Optional[Exception] = None
     error_type: Optional[str] = None

@@ -43,12 +43,16 @@ def _content_text(content: Any) -> str:
     ``[TextBlock, ImageBlock, TextBlock]``). Used to dedupe a query against an
     existing user message in chat history regardless of content shape — a
     naive ``content == query`` check fails for multimodal because list != str.
+    Volatile blocks (per-request context, see ``TextBlock.volatile``) are not
+    what the user wrote and are skipped.
     """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         parts = []
         for block in content:
+            if getattr(block, "volatile", False):
+                continue
             text = getattr(block, "text", None)
             if text is None and isinstance(block, dict) and block.get("type") == "text":
                 text = block.get("text")
@@ -56,6 +60,22 @@ def _content_text(content: Any) -> str:
                 parts.append(text)
         return " ".join(parts)
     return ""
+
+
+def _ends_with_tool_answer(messages: Any) -> bool:
+    """Whether the conversation ends with a tool result — a resume turn.
+
+    When a user answers a clarification or an approval, their answer arrives
+    as the ``tool_result`` for the pending call, and the caller's ``query`` is
+    that same answer. Appending it again as a USER message repeats the answer
+    to the model, and the extra message is never stored, so on the next turn
+    the replayed history no longer matches what was cached.
+    """
+    for msg in reversed(messages or []):
+        if msg.role == MessageRole.SYSTEM:
+            continue
+        return msg.role == MessageRole.TOOL
+    return False
 
 
 def _recent_tool_call_names(messages: Any, max_assistant_turns: int = 1) -> set:
@@ -884,7 +904,12 @@ class Agent(Generic[Deps, Result]):
             msg.role == MessageRole.USER and _content_text(msg.content) == query
             for msg in context.messages
         )
-        if not has_user_message and query and query.strip():
+        if (
+            not has_user_message
+            and query
+            and query.strip()
+            and not _ends_with_tool_answer(context.messages)
+        ):
             context.messages.append(Message(role=MessageRole.USER, content=query))
 
         # Get callback context and emit AGENT_RUN_START
@@ -1091,7 +1116,9 @@ class Agent(Generic[Deps, Result]):
         # (list of blocks) aren't mistaken for a missing turn and re-appended
         # as a flat-string duplicate that doubles input tokens.
         last = context.messages[-1] if context.messages else None
-        if not last or _content_text(last.content) != user_prompt:
+        if (
+            not last or _content_text(last.content) != user_prompt
+        ) and not _ends_with_tool_answer(context.messages):
             user_msg = Message(role=MessageRole.USER, content=user_prompt)
             context.messages.append(user_msg)
 

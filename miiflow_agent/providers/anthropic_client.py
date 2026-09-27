@@ -17,6 +17,7 @@ from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import AnthropicStreamNormalizer, extract_mcp_result_text
 from ..core.streaming import StreamChunk
+from ..core import wire_shape
 from ..models.anthropic import (
     EFFORT_LEVELS,
     effort_levels,
@@ -37,6 +38,30 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MAX_TOKENS = 32768
+
+
+def _without_cache_control(value: Any) -> Any:
+    """`value` with every `cache_control` key removed (for stable digests).
+
+    String message content is spelled as its one text block: marking a
+    message turns ``"x"`` into ``[{"type": "text", "text": "x"}]``, and both
+    are the same prompt to the provider.
+    """
+    if isinstance(value, dict) and isinstance(value.get("content"), str) and "role" in value:
+        value = {**value, "content": [{"type": "text", "text": value["content"]}]}
+    if isinstance(value, dict):
+        return {k: _without_cache_control(v) for k, v in value.items() if k != "cache_control"}
+    if isinstance(value, list):
+        return [_without_cache_control(v) for v in value]
+    return value
+
+
+def _wire_digest(value: Any) -> str:
+    """Short digest of a JSON-able value, stable across processes."""
+    import hashlib
+
+    raw = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
 
 
 class AnthropicClient(ModelClient):
@@ -193,8 +218,60 @@ class AnthropicClient(ModelClient):
             "source": {"type": "base64", "media_type": media_type, "data": data},
         }
 
+    # Private markers `convert_message_to_provider_format` leaves on the wire
+    # dicts for `_apply_prompt_caching`, which reads and strips them before the
+    # request is sent. See `TextBlock.volatile` and the "cache_anchor" message
+    # metadata.
+    _VOLATILE_KEY = "_miiflow_volatile"
+    _ANCHOR_KEY = "_miiflow_cache_anchor"
+
     def convert_message_to_provider_format(self, message: Message) -> Dict[str, Any]:
-        """Convert Message to Anthropic format."""
+        """Convert Message to Anthropic format.
+
+        Volatile text blocks (``TextBlock.volatile``) are split off, the rest
+        of the message is converted exactly as it would be without them — the
+        shape the same message has when it is replayed as history on a later
+        turn — and the volatile text goes last, tagged so the cache breakpoint
+        lands before it. A message whose metadata carries ``cache_anchor`` is
+        tagged for a breakpoint of its own (see ``_apply_prompt_caching``).
+        """
+        from dataclasses import replace
+
+        from ..core.message import TextBlock
+
+        content = message.content
+        volatile = (
+            [b for b in content if isinstance(b, TextBlock) and b.volatile]
+            if isinstance(content, list)
+            else []
+        )
+        if volatile:
+            stable = [b for b in content if not (isinstance(b, TextBlock) and b.volatile)]
+            if not stable:
+                stable_content: Any = ""
+            elif len(stable) == 1 and isinstance(stable[0], TextBlock):
+                # A lone text block converts through the string path, which is
+                # how the stored message replays (the string path also strips).
+                stable_content = stable[0].text
+            else:
+                stable_content = stable
+            converted = self._convert_message_body(replace(message, content=stable_content))
+            blocks = converted["content"]
+            if isinstance(blocks, str):
+                blocks = [{"type": "text", "text": blocks}]
+            converted["content"] = list(blocks) + [
+                {"type": "text", "text": b.text, self._VOLATILE_KEY: True}
+                for b in volatile
+                if b.text and b.text.strip()
+            ]
+        else:
+            converted = self._convert_message_body(message)
+        if (message.metadata or {}).get("cache_anchor"):
+            converted[self._ANCHOR_KEY] = True
+        return converted
+
+    def _convert_message_body(self, message: Message) -> Dict[str, Any]:
+        """Convert one Message to Anthropic format (no volatile blocks)."""
         from ..core.message import DocumentBlock, ImageBlock, TextBlock, VideoBlock
 
         # Handle tool result messages (for sending tool outputs back)
@@ -1161,6 +1238,8 @@ class AnthropicClient(ModelClient):
 
         - last tool          → tool definitions
         - last system block  → tools + system prompt
+        - anchor message     → tools + system + conversation up to the
+                               previous turn's user message
         - last message block → tools + system + conversation so far
 
         The message breakpoint is what makes multi-turn agent loops cheap:
@@ -1171,7 +1250,22 @@ class AnthropicClient(ModelClient):
         subsumes its prefix — tools and system are separate cache tiers, so
         a system-prompt change still leaves the tools tier hittable.
 
-        Anthropic allows 4 breakpoints per request; we place at most 3.
+        Anthropic allows 4 breakpoints per request; we place at most 4.
+
+        Anchor: the caller marks the previous turn's user-authored message
+        (``metadata["cache_anchor"]``). A turn's replayed history is not the
+        trajectory it sent live (tool calls come back collapsed, with
+        excerpted results), so the only cache entry a new turn can reuse is
+        the one the previous turn's FIRST call wrote, ending at that user
+        message. Anthropic finds an entry only by exact breakpoint or by
+        looking back ~20 content blocks, and a replayed turn with ten tool
+        calls is already more than twenty blocks. The anchor breakpoint reads
+        it at its exact position however many blocks the turn added.
+
+        Volatile blocks (``TextBlock.volatile``) are never marked: a
+        breakpoint goes on the last block before them, so the per-request
+        context they carry stays out of every cached prefix.
+
         TTL: within-turn agent rounds are seconds apart, so the message
         breakpoint defaults to 5 minutes. ``conversation_ttl`` opts long
         sessions into longer history reuse. The tools/system
@@ -1181,10 +1275,10 @@ class AnthropicClient(ModelClient):
         prompt), which "1h" on the stable prefix converts to reads at a
         one-time 2x write premium.
 
-        Known limit: a breakpoint only looks back 20 content blocks for the
-        previous cache entry, so a single turn that adds more than 20 blocks
-        (e.g. a very wide parallel tool batch) re-writes the prefix once
-        instead of reading it. The tools/system tiers still hit.
+        Known limit: within a turn, a breakpoint only looks back 20 content
+        blocks for the previous round's entry, so one round that adds more
+        than 20 blocks (e.g. a very wide parallel tool batch) re-writes the
+        prefix once instead of reading it. The anchor still hits.
         """
         # The prefix tiers' marker. Anthropic's default TTL is 5m; only a
         # non-default value is sent on the wire so unconfigured clients keep
@@ -1222,27 +1316,128 @@ class AnthropicClient(ModelClient):
                 new_system[-1] = last_copy
                 request_params["system"] = new_system
 
-        cls._mark_final_message_block(request_params, ttl=conversation_ttl)
-
-    @classmethod
-    def _mark_final_message_block(
-        cls, request_params: Dict[str, Any], *, ttl: Optional[str] = None
-    ) -> None:
-        """Mark the last cacheable content block of the final message."""
         messages = request_params.get("messages")
         if not messages:
             return
-        last_msg = messages[-1]
-        if not isinstance(last_msg, dict):
-            return
+        messages, anchor_idx, volatile = cls._take_cache_markers(messages)
+        last_idx = len(messages) - 1
+        targets = [last_idx]
+        if anchor_idx is not None and anchor_idx != last_idx:
+            targets.append(anchor_idx)
+        for i in targets:
+            marked = cls._mark_message_block(
+                messages[i], ttl=conversation_ttl, skip=volatile.get(i, ())
+            )
+            if marked is not None:
+                messages[i] = marked
+        request_params["messages"] = messages
+
+    @classmethod
+    def _record_wire_shape(cls, request_params: Dict[str, Any]) -> None:
+        """Record what this request adds beyond the caller's messages and tools.
+
+        See `core.wire_shape`. Counts, names and short hashes only — never
+        content. `msg_hashes` is one 10-hex digest per message (cache markers
+        excluded), so two turns' first calls can be compared message by
+        message to find the first one that changed.
+        """
+        try:
+            tools = [t for t in (request_params.get("tools") or []) if isinstance(t, dict)]
+            toolsets = [t for t in tools if t.get("type") == "mcp_toolset"]
+            deferred = sum(1 for t in tools if t.get("defer_loading"))
+            blocks: Dict[str, int] = {}
+            mcp_result_chars = 0
+            msg_hashes = []
+            for msg in request_params.get("messages") or []:
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        kind = block.get("type")
+                        if kind in ("document", "image", "tool_search_tool_result"):
+                            blocks[kind] = blocks.get(kind, 0) + 1
+                        elif kind == "mcp_tool_result":
+                            mcp_result_chars += len(json.dumps(block.get("content"), default=str))
+                msg_hashes.append(_wire_digest(_without_cache_control(msg)))
+            wire_shape.record(
+                tools_loaded=len(tools) - deferred - len(toolsets),
+                tools_deferred=deferred,
+                mcp_servers=[
+                    s.get("name") for s in request_params.get("mcp_servers") or [] if isinstance(s, dict)
+                ],
+                mcp_toolsets=[
+                    {
+                        "server": t.get("mcp_server_name"),
+                        "deferred": bool((t.get("default_config") or {}).get("defer_loading")),
+                    }
+                    for t in toolsets
+                ],
+                blocks=blocks,
+                mcp_result_chars=mcp_result_chars,
+                sys_hash=_wire_digest(_without_cache_control(request_params.get("system"))),
+                msg_hashes=msg_hashes,
+            )
+        except Exception:  # diagnostics must never fail a request
+            logger.debug("wire shape not recorded", exc_info=True)
+
+    @classmethod
+    def _take_cache_markers(
+        cls, messages: List[Any]
+    ) -> tuple[List[Any], Optional[int], Dict[int, tuple]]:
+        """Strip the private markers `convert_message_to_provider_format` set.
+
+        Returns the cleaned messages (copies only where something was
+        stripped), the index of the last anchor-tagged message, and, per
+        message index, the positions of its volatile blocks.
+        """
+        anchor_idx: Optional[int] = None
+        volatile: Dict[int, tuple] = {}
+        cleaned: List[Any] = list(messages)
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+            if cls._ANCHOR_KEY in msg:
+                anchor_idx = i
+                msg = {k: v for k, v in msg.items() if k != cls._ANCHOR_KEY}
+            content = msg.get("content")
+            if isinstance(content, list):
+                positions = tuple(
+                    j
+                    for j, block in enumerate(content)
+                    if isinstance(block, dict) and cls._VOLATILE_KEY in block
+                )
+                if positions:
+                    volatile[i] = positions
+                    msg = dict(msg)
+                    msg["content"] = [
+                        {k: v for k, v in block.items() if k != cls._VOLATILE_KEY}
+                        if j in positions
+                        else block
+                        for j, block in enumerate(content)
+                    ]
+            cleaned[i] = msg
+        return cleaned, anchor_idx, volatile
+
+    @classmethod
+    def _mark_message_block(
+        cls, msg: Any, *, ttl: Optional[str] = None, skip: tuple = ()
+    ) -> Optional[Dict[str, Any]]:
+        """A copy of `msg` with its last cacheable block marked, or None.
+
+        Blocks at the `skip` positions (volatile context) are passed over, so
+        the breakpoint sits on the last block before them.
+        """
+        if not isinstance(msg, dict):
+            return None
         cache_control = {"type": "ephemeral"}
         if ttl == "1h":
             cache_control["ttl"] = ttl
 
-        content = last_msg.get("content")
+        content = msg.get("content")
         if isinstance(content, str):
             if not content:
-                return
+                return None
             new_content: List[Any] = [
                 {
                     "type": "text",
@@ -1255,25 +1450,24 @@ class AnthropicClient(ModelClient):
                 (
                     i
                     for i in range(len(content) - 1, -1, -1)
-                    if isinstance(content[i], dict)
+                    if i not in skip
+                    and isinstance(content[i], dict)
                     and content[i].get("type") in cls._CACHEABLE_BLOCK_TYPES
                 ),
                 None,
             )
             if idx is None:
-                return
+                return None
             new_content = list(content)
             block_copy = dict(new_content[idx])
             block_copy["cache_control"] = dict(cache_control)
             new_content[idx] = block_copy
         else:
-            return
+            return None
 
-        new_messages = list(messages)
-        new_msg = dict(last_msg)
+        new_msg = dict(msg)
         new_msg["content"] = new_content
-        new_messages[-1] = new_msg
-        request_params["messages"] = new_messages
+        return new_msg
 
     @retry(
         stop=stop_after_attempt(3),
@@ -1448,6 +1642,7 @@ class AnthropicClient(ModelClient):
                 ttl=self.cache_ttl,
                 conversation_ttl=self.conversation_cache_ttl,
             )
+            self._record_wire_shape(request_params)
 
             # Use beta client for structured outputs or native MCP
             use_beta_client = use_native_structured_output or use_native_mcp
@@ -1827,6 +2022,7 @@ class AnthropicClient(ModelClient):
                 ttl=self.cache_ttl,
                 conversation_ttl=self.conversation_cache_ttl,
             )
+            self._record_wire_shape(request_params)
 
             # Determine which client to use
             # Use beta client for structured outputs or native MCP
@@ -1866,6 +2062,7 @@ class AnthropicClient(ModelClient):
                     # Without this the mismatch fails every request for that
                     # assistant, with no ladder to recover — pre-loading the
                     # full tool list costs prompt tokens but keeps it working.
+                    wire_shape.record(deferral_stripped=True)
                     logger.warning(
                         "[TOOL_SEARCH_UNSUPPORTED] Anthropic rejected deferred "
                         "tool loading (model=%s); retrying with all tools loaded. "

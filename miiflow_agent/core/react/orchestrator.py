@@ -1226,11 +1226,14 @@ class ReActOrchestrator:
 
         # Only append query as a new user message if:
         # 1. Query is not empty AND
-        # 2. No user message already exists at the end
-        # This prevents duplicate messages when user message is already in context
+        # 2. The conversation does not already end with the user's turn —
+        #    a USER message, or a tool result carrying the user's answer to a
+        #    clarification/approval (a resume turn: the query IS that answer,
+        #    and a repeated USER copy is never stored, so it would also stop
+        #    the next turn's replay from matching the prompt cache).
         if query and query.strip():
             last_msg = messages[-1] if messages else None
-            if not last_msg or last_msg.role != MessageRole.USER:
+            if not last_msg or last_msg.role not in (MessageRole.USER, MessageRole.TOOL):
                 messages.append(Message(role=MessageRole.USER, content=query))
 
         context.messages = messages

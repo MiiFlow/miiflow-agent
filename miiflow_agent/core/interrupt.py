@@ -214,9 +214,11 @@ def decide_clarification(
 def render_established_facts_block(facts: List[EstablishedFact]) -> str:
     """Render the "already settled — do not ask again" prompt block.
 
-    Injected into every agent's system prompt (root + sub) so settled answers are
-    salient and identical across the whole dispatch tree. Empty string when there are
-    no facts, so callers can unconditionally concatenate.
+    Shown to every agent (root + sub) so settled answers are salient and identical
+    across the whole dispatch tree. Not part of the system prompt: it changes
+    whenever a user answers a clarification, so it rides with the turn's other
+    per-request context, after the prompt-cache breakpoint. Empty string when
+    there are no facts, so callers can unconditionally concatenate.
     """
     if not facts:
         return ""

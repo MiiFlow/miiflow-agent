@@ -30,10 +30,18 @@ class ContentType(Enum):
 
 @dataclass
 class TextBlock:
-    """Text content block."""
+    """Text content block.
+
+    ``volatile`` marks per-request context (the page the user is on, answers
+    already settled) that is rebuilt fresh for every request and never stored
+    with the message. Providers send it after the message's cache breakpoint,
+    so it never becomes part of a cached prefix: the same message replayed on
+    a later turn — without the block — still matches what was cached.
+    """
 
     type: Literal["text"] = "text"
     text: str = ""
+    volatile: bool = False
 
 
 @dataclass

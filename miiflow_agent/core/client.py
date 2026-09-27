@@ -31,6 +31,7 @@ from .message import Message, MessageRole
 from .metrics import MetricsCollector, TokenCount, UsageData
 from .streaming import StreamChunk
 from .tools import FunctionTool, ToolRegistry
+from .wire_shape import open_slot as open_wire_slot
 
 if TYPE_CHECKING:
     from .callbacks import CallbackEvent, CallbackRegistry
@@ -489,6 +490,7 @@ class LLMClient:
         usage_event_id = f"llm_{uuid.uuid4().hex}"
 
         start_time = time.time()
+        wire = open_wire_slot()
         try:
             response = await self.client.achat(normalized_messages, tools=formatted_tools, **kwargs)
             latency_ms = (time.time() - start_time) * 1000
@@ -517,6 +519,7 @@ class LLMClient:
                 credential_metadata=getattr(self, "credential_metadata", None),
                 tokens=response.usage,
                 latency_ms=latency_ms,
+                wire_shape=dict(wire) or None,
                 context=ctx,
                 success=True,
             )
@@ -711,6 +714,7 @@ class LLMClient:
                 if first_open_at is None:
                     first_open_at = open_at
                 try:
+                    wire = open_wire_slot()
                     provider_stream = self.client.astream_chat(
                         normalized_messages, tools=formatted_tools, **kwargs
                     )
@@ -852,6 +856,7 @@ class LLMClient:
                         transport_retries=attempts_used,
                         tools_fingerprint=tools_fingerprint,
                         tools_names=tools_names,
+                        wire_shape=dict(wire) or None,
                         context=ctx,
                         success=True,
                     )

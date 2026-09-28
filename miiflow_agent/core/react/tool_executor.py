@@ -143,6 +143,29 @@ class AgentToolExecutor:
 
         with tool_span(tool_name, inputs) as span:
             result = await self._execute_tool_gated(tool_name, inputs, context)
+            # Opt-in tool contract, never inferred from text in an observation.
+            schema = self._get_tool_schema_obj(tool_name)
+            metadata = getattr(schema, "metadata", None) or {}
+            wait_statuses = metadata.get("wait_statuses")
+            if (
+                wait_statuses
+                and getattr(schema, "writes", None) is False
+                and result.is_success
+                and isinstance(result.output, dict)
+                and not result.output.get("error")
+                and result.output.get("status") in wait_statuses
+                and result.output.get("wait_pending") is True
+            ):
+                result.metadata["pending_wait"] = True
+            if (
+                metadata.get("durable_wait") is True
+                and getattr(schema, "writes", None) is False
+                and result.is_success
+                and isinstance(result.output, dict)
+                and isinstance(result.output.get("background_wait"), dict)
+                and not result.output.get("error")
+            ):
+                result.metadata["background_wait"] = result.output["background_wait"]
             record_tool_result(span, result)
             return result
 

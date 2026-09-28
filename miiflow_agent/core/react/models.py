@@ -36,6 +36,8 @@ class ToolInvocation:
     # runtime ladder — the per-invocation observation already carries the
     # corrective hint the LLM needs.
     is_validation_error: bool = False
+    # Trusted executor signal: a bounded wait returned a nonterminal status.
+    pending_wait: bool = False
 
     @property
     def is_success(self) -> bool:
@@ -151,6 +153,7 @@ class ReActStep:
                     # so it stashes the ref here; carry it through or the
                     # synthesized invocation would look ref-less.
                     observation_ref=self.metadata.get("observation_ref"),
+                    pending_wait=bool(self.metadata.get("pending_wait")),
                 )
             ]
         return []
@@ -171,6 +174,7 @@ class ReActStep:
                     "inputs": inv.inputs,
                     "observation": inv.observation,
                     "observation_ref": inv.observation_ref,
+                    "pending_wait": inv.pending_wait,
                     "error": inv.error,
                     "description": inv.description,
                 }

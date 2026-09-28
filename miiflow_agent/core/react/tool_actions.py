@@ -505,6 +505,9 @@ class ToolActionHandler:
             # no new row, no ledger freshness refresh (TTL measures the
             # DATA's age, not the last time someone asked).
             _result_meta = getattr(result, "metadata", None) or {}
+            if result.is_success and isinstance(_result_meta.get("background_wait"), dict):
+                state.background_wait = _result_meta["background_wait"]
+            step.metadata["pending_wait"] = result.is_success and _result_meta.get("pending_wait") is True
             _served = bool(_result_meta.get("served_from_ledger"))
             if _served:
                 observation_ref = _result_meta.get("observation_ref")
@@ -1069,6 +1072,9 @@ class ToolActionHandler:
             # Per-invocation canonical record + observation event. Served
             # results reuse their existing ref (no new row, no TTL refresh).
             _result_meta = getattr(result, "metadata", None) or {}
+            if result.is_success and isinstance(_result_meta.get("background_wait"), dict):
+                state.background_wait = _result_meta["background_wait"]
+            inv.pending_wait = result.is_success and _result_meta.get("pending_wait") is True
             _served = bool(_result_meta.get("served_from_ledger"))
             if _served:
                 observation_ref = _result_meta.get("observation_ref")

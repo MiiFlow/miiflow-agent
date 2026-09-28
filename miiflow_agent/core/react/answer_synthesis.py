@@ -64,7 +64,10 @@ class AnswerSynthesis:
     ) -> ReActResult:
         """Build successful result."""
         # Determine stop reason
-        if state.needs_clarification:
+        if state.background_wait:
+            stop_reason = StopReason.BACKGROUND_WAIT
+            state.final_answer = ""
+        elif state.needs_clarification:
             stop_reason = StopReason.NEEDS_CLARIFICATION
             # Don't generate fallback - we're waiting for user input
             state.final_answer = ""

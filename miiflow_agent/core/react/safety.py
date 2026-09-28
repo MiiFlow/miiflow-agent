@@ -48,6 +48,18 @@ def invocation_names(step: ReActStep) -> List[str]:
     return [step.action] if step.action else []
 
 
+def is_pending_wait(step: ReActStep) -> bool:
+    """Only all-successful wait batches may bypass repetition guards.
+
+    Failures, mixed batches and terminal reads retain the normal guards.
+    Total time, cost and step limits still apply to waiting.
+    """
+    invocations = step.all_invocations
+    return bool(invocations) and not step.error and all(
+        inv.pending_wait and inv.is_success for inv in invocations
+    )
+
+
 def make_hashable(obj: Any) -> Any:
     """
     Recursively convert an object to a hashable type.
@@ -181,6 +193,9 @@ class RepeatedActionsCondition(StopCondition):
         if not last_actions:
             return False
 
+        if any(is_pending_wait(step) for step in last_actions):
+            return False
+
         first_action = last_actions[0]
         for action_step in last_actions[1:]:
             if (
@@ -234,6 +249,8 @@ class ExcessiveSameToolCondition(StopCondition):
     def should_stop(self, steps: List[ReActStep], current_step: int) -> bool:
         counts: Dict[str, int] = {}
         for s in steps:
+            if is_pending_wait(s):
+                continue
             for name in invocation_names(s):
                 if name in _EXCESSIVE_TOOL_EXEMPT:
                     continue
@@ -420,8 +437,12 @@ class InfiniteLoopDetector(StopCondition):
 
         # Extract action signatures for pattern matching
         action_signatures = []
-        for step in steps:
-            if step.is_action_step:
+        for index, step in enumerate(steps):
+            if is_pending_wait(step):
+                # A wait breaks a repeating pattern; removing it would join
+                # unrelated reads on either side into an artificial loop.
+                action_signatures.append(("pending_wait", index))
+            elif step.is_action_step:
                 # Convert action_input to hashable form for signature matching
                 hashable_input = make_hashable(step.action_input) if step.action_input else None
                 signature = (step.action, hashable_input)

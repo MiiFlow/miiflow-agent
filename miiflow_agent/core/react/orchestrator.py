@@ -1064,9 +1064,17 @@ class ReActOrchestrator:
                     )
                 )
 
-                # Check if clarification was requested during this step
+                # Human input takes precedence over a parallel dependency wait.
                 if execution_state.needs_clarification:
-                    logger.info("Breaking execution loop - clarification requested")
+                    execution_state.background_wait = None
+                    break
+
+                if execution_state.background_wait:
+                    await self.event_bus.publish(ReActEvent(
+                        event_type=ReActEventType.BACKGROUND_WAIT,
+                        step_number=execution_state.current_step,
+                        data=execution_state.background_wait,
+                    ))
                     break
 
                 # Trace: one line per step summarizing the outcome so the log

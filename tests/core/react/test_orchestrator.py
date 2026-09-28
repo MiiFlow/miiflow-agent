@@ -1540,3 +1540,32 @@ from miiflow_agent.core.react.orchestrator import _sanitize_error_message
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.asyncio
+async def test_durable_background_wait_stops_before_another_model_call():
+    descriptor = {"id": "wait_1", "thread_id": "child", "deadline": "2026-09-28T20:00:00Z"}
+    helper = TestNativeToolCallingMode()
+    agent = helper._create_mock_agent_with_native_tools([{
+        "content": "", "finish_reason": "tool_calls",
+        "tool_calls": [{"id": "tc_wait", "type": "function", "function": {
+            "name": "calculator", "arguments": {"expression": "1+1"},
+        }}],
+    }])
+    @tool()
+    def calculator(expression: str) -> str:
+        """Test-only tool; the executor result is stubbed below."""
+        return expression
+    agent.tool_registry.register(calculator)
+    orch = ReActFactory.create_orchestrator(agent=agent, max_steps=5)
+    orch.tool_executor.execute_tool = AsyncMock(return_value=ToolResult(
+        name="calculator", input={}, output={"status": "running", "background_wait": descriptor},
+        metadata={"background_wait": descriptor},
+    ))
+    result = await orch.execute("Wait for my report", RunContext(deps={}, messages=[]))
+    assert result.stop_reason == StopReason.BACKGROUND_WAIT
+    assert result.final_answer == ""
+    assert len(result.steps) == 1
+    events = list(orch.event_bus.event_buffer)
+    assert any(e.event_type == ReActEventType.BACKGROUND_WAIT and e.data == descriptor for e in events)
+    assert not any(e.event_type == ReActEventType.FINAL_ANSWER for e in events)

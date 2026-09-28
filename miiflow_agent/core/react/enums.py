@@ -28,6 +28,7 @@ class ReActEventType(Enum):
     ERROR = "error"
     STOP_CONDITION = "stop_condition"
     INTERRUPT_REQUESTED = "interrupt_requested"  # Canonical human-in-the-loop pause
+    BACKGROUND_WAIT = "background_wait"
     CLARIFICATION_NEEDED = "clarification_needed"  # Agent needs user input
     TOOL_APPROVAL_NEEDED = (
         "tool_approval_needed"  # Tool requires user approval before execution
@@ -50,6 +51,7 @@ class ReActEventType(Enum):
 class StopReason(Enum):
     """Reasons why ReAct loop terminated."""
 
+    BACKGROUND_WAIT = "background_wait"
     ANSWER_COMPLETE = "answer_complete"
     MAX_STEPS = "max_steps"
     MAX_BUDGET = "max_budget"

@@ -30,7 +30,7 @@ _REASONING_MODELS: set[str] = set()
 # today through ChatGPT and a "Trusted Access" programme for law firms. OpenAI
 # names `gpt-6-astra-law` as the coming API id but has published neither a date
 # nor a price, so there is nothing to price and the id would 404. Re-checked at
-# the September 23, 2026 audit and still unlisted; it remains the most likely
+# the September 28, 2026 audit and still unlisted; it remains the most likely
 # OpenAI addition at the next one.
 #
 # Also deliberately absent: gpt-6-luna-pro and gpt-6-sol-pro. Third-party
@@ -94,12 +94,25 @@ _GPT56_MODELS = {
 _GPT55_STANDARD_MODELS = {"gpt-5.5"}
 _GPT54_STANDARD_MODELS = {"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"}
 _GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
-# The only NON-reasoning models left in this catalog, and OpenAI shuts all
-# three down on October 14, 2026. When they go, so does every OpenAI model
-# that takes `temperature`, `max_tokens`, `frequency_penalty` and
-# `presence_penalty` — the audit that removes them must also drop those four
-# ParameterConfigs rather than leave the UI offering controls no remaining
-# model accepts.
+# The only NON-reasoning models left in this catalog.
+#
+# CORRECTION (September 28, 2026 audit): a previous audit recorded "OpenAI
+# shuts all three down on October 14, 2026" here and wrote it into all three
+# descriptions. That date could not be reconfirmed. OpenAI's deprecations page
+# lists no API shutdown for the 4.1 family, and the February 13, 2026
+# retirement notice is explicit that it covers ChatGPT only, with no change to
+# the API. The October 14 date circulating in third-party write-ups traces to
+# Microsoft Foundry, where FINE-TUNED gpt-4.1 and gpt-4.1-mini deployments
+# retire on October 14, 2027 — a different platform and a different year. So
+# these three are superseded, not expiring this month: keep steering new work
+# to GPT-6 Sol / Luna, but do not tell anyone their requests stop working in
+# two weeks. Re-check the deprecations page every audit; openai.com was not
+# reachable from the audit environment, so this rests on secondary sources.
+#
+# When these three do go, so does every OpenAI model that takes `temperature`,
+# `max_tokens`, `frequency_penalty` and `presence_penalty` — the audit that
+# removes them must also drop those four ParameterConfigs rather than leave
+# the UI offering controls no remaining model accepts.
 _GPT41_MODELS = {"gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"}
 
 # OpenAI applies a request-wide surcharge once a 1.05M-context GPT-5 model's
@@ -393,7 +406,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1": ModelConfig(
         model_identifier="gpt-4.1",
         name="gpt-4.1",
-        description="Deprecated — migrate to GPT-6 Sol NOW. General-purpose model with 1M token context. Retired from ChatGPT Feb 13, 2026; the API shutdown is Oct 14, 2026 — THREE WEEKS out as of this catalog's September 23, 2026 audit — after which every request fails.",
+        description="Superseded — migrate to GPT-6 Sol. General-purpose non-reasoning model with a 1M token context window, retired from ChatGPT on February 13, 2026 with no change to the API at that time. At $2/$8 it is no longer a saving: GPT-6 Sol matches its input price at $2/$10 and GPT-6 Luna is a twentieth of it at $0.10/$0.50, both newer and stronger. As of the September 28, 2026 audit OpenAI has published NO API shutdown date for it — the October 14, 2026 date an earlier audit recorded could not be reconfirmed and appears to trace to Microsoft Foundry's October 14, 2027 retirement of fine-tuned gpt-4.1 deployments. Migrate on capability and price, not on a deadline.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -411,7 +424,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1-mini": ModelConfig(
         model_identifier="gpt-4.1-mini",
         name="gpt-4.1-mini",
-        description="Deprecated — migrate to GPT-6 Luna NOW. Smaller GPT-4.1 with 1M token context. API shutdown is Oct 14, 2026 — THREE WEEKS out as of this catalog's September 23, 2026 audit — after which every request fails.",
+        description="Superseded — migrate to GPT-6 Luna. Smaller GPT-4.1 with a 1M token context window, retired from ChatGPT on February 13, 2026 with no change to the API. GPT-6 Luna undercuts it four-fold ($0.10/$0.50 vs $0.40/$1.60) and reasons besides. As of the September 28, 2026 audit OpenAI has published no API shutdown date for it; the October 14, 2026 date an earlier audit recorded could not be reconfirmed (see the note on _GPT41_MODELS).",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -429,7 +442,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-4.1-nano": ModelConfig(
         model_identifier="gpt-4.1-nano",
         name="gpt-4.1-nano",
-        description="Deprecated — migrate to GPT-6 Luna NOW. Smallest, fastest 4.1 variant. API shutdown is Oct 14, 2026 — THREE WEEKS out as of this catalog's September 23, 2026 audit — after which every request fails.",
+        description="Superseded — migrate to GPT-6 Luna. Smallest, fastest 4.1 variant, retired from ChatGPT on February 13, 2026 with no change to the API. GPT-6 Luna matches its $0.10 input price and costs slightly more per output token ($0.50 vs $0.40) — the only line in this catalog where a 4.1 model is still the cheaper of the pair — while adding reasoning and a 1.05M context window, so the 25% output premium buys a generation. As of the September 28, 2026 audit OpenAI has published no API shutdown date for it; the October 14, 2026 date an earlier audit recorded could not be reconfirmed (see the note on _GPT41_MODELS).",
         support_images=True,
         support_files=True,
         support_streaming=True,

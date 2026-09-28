@@ -4,6 +4,16 @@ from typing import Dict, Optional
 
 from .base import ModelConfig, ParameterConfig, ParameterType
 
+# EFFECTIVE COST, NOT JUST PER-TOKEN COST: Claude Opus 4.7 and later — that is
+# Opus 4.7 / 4.8 / 5 / 5.5, Sonnet 5, Fable 5 and Fable 5.1 — use a newer
+# tokenizer that emits roughly 30% MORE tokens for the same text than the one
+# Opus 4.6, Sonnet 4.6 and Haiku 4.5 use. The prices below are the published
+# per-token rates and are correct as written, but a like-for-like comparison
+# across that boundary has to scale the newer models' token counts up by ~30%:
+# Sonnet 5 at $2/$10 is not simply "cheaper than Sonnet 4.6 at $3/$15" on the
+# same prompt. The exact increase depends on the content and workload shape,
+# so this is a caveat for cost modelling, not a multiplier to hard-code.
+
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     # Ordered newest-first on purpose: `_resolve_model_name`'s third tier is a
     # SUBSTRING match, and "claude-fable-5" is a substring of every Fable 5.1
@@ -59,7 +69,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-5.5": ModelConfig(
         model_identifier="claude-opus-5-5",
         name="claude-opus-5.5",
-        description="Anthropic's newest model (released September 22, 2026) and the recommended default for most workloads, built for long-running agentic coding and knowledge work. Undercuts Opus 5 on price ($4/$20 vs $5/$25) while beating it, and reads cached tokens at 5% of input ($0.20 vs $0.50 per 1M) where every Claude model outside the Fable line charges 10%. Always-on adaptive thinking that CANNOT be disabled: `thinking: {\"type\": \"disabled\"}` is a 400 at every effort level, unlike Opus 5 where it is rejected only at xhigh/max. Default effort is `medium`, not `high` — a request that omits `effort` runs one level lower than it did on Opus 5. Forced tool use is NOT supported (it returns an error), so structured output must go through the native path, never the forced-`json_tool` fallback. All five effort levels, structured outputs, 1M context window, 128K max output. Fast mode runs at $8/$40. Still Anthropic's newest model as of the September 23, 2026 audit, and the first of the Claude 5.5 family: Anthropic said at launch that Claude Sonnet 5.5 and Claude Haiku 5.5 follow \"in the coming weeks\" with the same performance, efficiency and safety gains, but gave no date, price or benchmark for either, so neither can be catalogued yet — they are the most likely Anthropic additions at the next audit. Retirement not sooner than September 22, 2027.",
+        description="Anthropic's newest model (released September 22, 2026) and the recommended default for most workloads, built for long-running agentic coding and knowledge work. Undercuts Opus 5 on price ($4/$20 vs $5/$25) while beating it, and reads cached tokens at 5% of input ($0.20 vs $0.50 per 1M) where every Claude model outside the Fable line charges 10%. Always-on adaptive thinking that CANNOT be disabled: `thinking: {\"type\": \"disabled\"}` is a 400 at every effort level, unlike Opus 5 where it is rejected only at xhigh/max. Default effort is `medium`, not `high` — a request that omits `effort` runs one level lower than it did on Opus 5. Forced tool use is NOT supported (it returns an error), so structured output must go through the native path, never the forced-`json_tool` fallback. All five effort levels, structured outputs, 1M context window, 128K max output. Fast mode runs at $8/$40. Still Anthropic's newest model at the September 28, 2026 audit, and the first of the Claude 5.5 family: Anthropic said at launch that Claude Sonnet 5.5 and Claude Haiku 5.5 follow \"in the coming weeks\" with the same performance, efficiency and safety gains. Re-checked September 28, 2026 — still no date, price, benchmark or model card for either, and the models overview still lists Sonnet 5 as the current Sonnet — so neither can be catalogued yet; they remain the most likely Anthropic additions at the next audit. Retirement not sooner than September 22, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -161,7 +171,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-5": ModelConfig(
         model_identifier="claude-sonnet-5",
         name="claude-sonnet-5",
-        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. Supports all five effort levels. 1M context window. $2/$10 per 1M input/output tokens is the standard price — the launch rate was announced as introductory through August 31, 2026, and Anthropic then cancelled the scheduled September 1, 2026 increase to $3/$15, which has passed with the $2/$10 rate standing (re-confirmed on the pricing page at the September 23, 2026 audit). Retirement not sooner than June 30, 2027.",
+        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. Supports all five effort levels. 1M context window. $2/$10 per 1M input/output tokens is the standard price — the launch rate was announced as introductory through August 31, 2026, and Anthropic then cancelled the scheduled September 1, 2026 increase to $3/$15, which has passed with the $2/$10 rate standing (re-confirmed on the pricing page at the September 28, 2026 audit). Retirement not sooner than June 30, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -201,7 +211,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-haiku-4.5": ModelConfig(
         model_identifier="claude-haiku-4-5-20251001",
         name="claude-haiku-4.5",
-        description="Anthropic's fastest model with near-frontier intelligence, delivering Sonnet-4-level coding performance at one-third the cost and more than twice the speed. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window. Retirement not sooner than October 15, 2026 — the nearest retirement floor in this catalog, and now THREE WEEKS out as of the September 23, 2026 audit. Anthropic gives at least 60 days' notice before retiring a public model and has sent none, so the floor will move; it is not a shutdown date. Still no newer Haiku has been announced, so when it does move, plan for Sonnet 5 at low effort rather than another Haiku.",
+        description="Anthropic's fastest model with near-frontier intelligence, delivering Sonnet-4-level coding performance at one-third the cost and more than twice the speed. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window. Retirement not sooner than October 15, 2026 — the nearest retirement floor in this catalog, and SEVENTEEN DAYS out as of the September 28, 2026 audit. Anthropic gives at least 60 days' notice before retiring a public model and has sent none, so the floor will move; it is not a shutdown date. A newer Haiku now exists on paper: Anthropic named Claude Haiku 5.5 at the Opus 5.5 launch on September 22, 2026 as shipping \"in the coming weeks\", but has published no date, price or model card, so it cannot be catalogued yet. Until it does ship, the fallback for this tier is Sonnet 5 at low effort.",
         support_images=True,
         support_files=True,
         support_streaming=True,

@@ -108,12 +108,12 @@ class TestOpenAIClient:
     @pytest.fixture
     def client(self):
         """Create test client."""
-        return OpenAIClient(model="gpt-4.1-nano", api_key="test-key", timeout=30.0)
+        return OpenAIClient(model="gpt-4.1-mini", api_key="test-key", timeout=30.0)
 
     @pytest.mark.asyncio
     async def test_client_initialization(self, client):
         """Test client initialization."""
-        assert client.model == "gpt-4.1-nano"
+        assert client.model == "gpt-4.1-mini"
         assert client.api_key == "test-key"
         assert client.timeout == 30.0
         assert client.provider_name == "openai"
@@ -135,14 +135,14 @@ class TestOpenAIClient:
             assert response.usage.prompt_tokens == 10
             assert response.usage.completion_tokens == 20
             assert response.usage.total_tokens == 30
-            assert response.model == "gpt-4.1-nano"
+            assert response.model == "gpt-4.1-mini"
             assert response.provider == "openai"
             assert response.finish_reason == "stop"
 
             # Verify API call
             mock_create.assert_called_once()
             call_args = mock_create.call_args
-            assert call_args.kwargs["model"] == "gpt-4.1-nano"
+            assert call_args.kwargs["model"] == "gpt-4.1-mini"
             assert len(call_args.kwargs["messages"]) == 2
 
     @pytest.mark.asyncio
@@ -372,7 +372,7 @@ class TestReasoningEffort:
     async def test_reasoning_effort_dropped_for_unsupported_model(
         self, sample_messages, mock_openai_response
     ):
-        client = self._client(model="gpt-4.1-nano")
+        client = self._client(model="gpt-4.1-mini")
         with patch.object(
             client.client.chat.completions, "create", new_callable=AsyncMock
         ) as mock_create:

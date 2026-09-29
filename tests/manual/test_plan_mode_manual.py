@@ -41,7 +41,7 @@ from miiflow_agent.core.tools import tool
 PROVIDERS = {
     "openai": {
         "provider": "openai",
-        "model": "gpt-4.1-nano",
+        "model": "gpt-6-luna",
         "env_var": "OPENAI_API_KEY",
     },
     "gemini": {

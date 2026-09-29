@@ -5,7 +5,7 @@ from typing import Dict, Optional
 from .base import ModelConfig, ParameterConfig, ParameterType
 
 # EFFECTIVE COST, NOT JUST PER-TOKEN COST: Claude Opus 4.7 and later — that is
-# Opus 4.7 / 4.8 / 5 / 5.5, Sonnet 5, Fable 5 and Fable 5.1 — use a newer
+# Opus 4.7 / 4.8 / 5 / 5.5, Sonnet 5 and 5.5, Fable 5 and Fable 5.1 — use a newer
 # tokenizer that emits roughly 30% MORE tokens for the same text than the one
 # Opus 4.6, Sonnet 4.6 and Haiku 4.5 use. The prices below are the published
 # per-token rates and are correct as written, but a like-for-like comparison
@@ -21,13 +21,15 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     # of it (`anthropic.claude-fable-5-1`) resolves to Fable 5 and gets Fable
     # 5's capabilities and prices. The same collision exists one tier down:
     # "claude-opus-5" is a substring of every Opus 5.5 identifier, so Opus 5.5
-    # is listed above Opus 5. Getting that order wrong is not cosmetic — it
-    # bills Opus 5.5 at Opus 5's rates and tells callers thinking can be
-    # disabled on a model that 400s on it.
+    # is listed above Opus 5, and "claude-sonnet-5" is a substring of every
+    # Sonnet 5.5 identifier, so Sonnet 5.5 is listed above Sonnet 5. Getting
+    # that order wrong is not cosmetic — it bills the newer model at the older
+    # one's rates and tells callers thinking can be disabled with
+    # `{"type": "disabled"}` on a model that 400s on it.
     "claude-fable-5.1": ModelConfig(
         model_identifier="claude-fable-5-1",
         name="claude-fable-5.1",
-        description="Anthropic's most capable widely released model (released September 1, 2026), for demanding reasoning, long-horizon agentic coding, multistep research, and document/spreadsheet/slide work. Same input and output prices as Fable 5, with cache reads at a quarter of the rate ($0.25 vs $1.00 per 1M) — 2.5% of input, where every other Claude model charges 10% — which Anthropic estimates at ~25% lower cost on typical token-billed workloads and up to ~45% on highly agentic ones. Always-on adaptive thinking (default effort high), structured outputs, 1M context window. Forced tool use is NOT supported: it returns an error, so structured output must go through the native path, never the forced-`json_tool` fallback. Claude Mythos 5.1 shares its specifications and pricing but is invitation-only (Project Glasswing), so Fable 5.1 is the top tier reachable with a standard API key. No longer Anthropic's newest model — Claude Opus 5.5 shipped September 22, 2026 — but still the most capable one, and the model to reach for when evals on Opus 5.5 at higher effort fall short. Retirement not sooner than September 1, 2027.",
+        description="Anthropic's most capable widely released model (released September 1, 2026), for demanding reasoning, long-horizon agentic coding, multistep research, and document/spreadsheet/slide work. Same input and output prices as Fable 5, with cache reads at a quarter of the rate ($0.25 vs $1.00 per 1M) — 2.5% of input, where every other Claude model charges 10% — which Anthropic estimates at ~25% lower cost on typical token-billed workloads and up to ~45% on highly agentic ones. Always-on adaptive thinking (default effort high), structured outputs, 1M context window. Forced tool use is NOT supported: it returns an error, so structured output must go through the native path, never the forced-`json_tool` fallback. Claude Mythos 5.1 shares its specifications and pricing but is invitation-only (Project Glasswing), so Fable 5.1 is the top tier reachable with a standard API key. No longer Anthropic's newest model — Opus 5.5 shipped September 22, 2026 and Sonnet 5.5 on September 28 — but still the most capable one, and the model to reach for when evals on Opus 5.5 at higher effort fall short. Retirement not sooner than September 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -69,7 +71,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-5.5": ModelConfig(
         model_identifier="claude-opus-5-5",
         name="claude-opus-5.5",
-        description="Anthropic's newest model (released September 22, 2026) and the recommended default for most workloads, built for long-running agentic coding and knowledge work. Undercuts Opus 5 on price ($4/$20 vs $5/$25) while beating it, and reads cached tokens at 5% of input ($0.20 vs $0.50 per 1M) where every Claude model outside the Fable line charges 10%. Always-on adaptive thinking that CANNOT be disabled: `thinking: {\"type\": \"disabled\"}` is a 400 at every effort level, unlike Opus 5 where it is rejected only at xhigh/max. Default effort is `medium`, not `high` — a request that omits `effort` runs one level lower than it did on Opus 5. Forced tool use is NOT supported (it returns an error), so structured output must go through the native path, never the forced-`json_tool` fallback. All five effort levels, structured outputs, 1M context window, 128K max output. Fast mode runs at $8/$40. Still Anthropic's newest model at the September 28, 2026 audit, and the first of the Claude 5.5 family: Anthropic said at launch that Claude Sonnet 5.5 and Claude Haiku 5.5 follow \"in the coming weeks\" with the same performance, efficiency and safety gains. Re-checked September 28, 2026 — still no date, price, benchmark or model card for either, and the models overview still lists Sonnet 5 as the current Sonnet — so neither can be catalogued yet; they remain the most likely Anthropic additions at the next audit. Retirement not sooner than September 22, 2027.",
+        description="Anthropic's newest Opus (released September 22, 2026) and the recommended default for most workloads, built for long-running agentic coding and knowledge work. Undercuts Opus 5 on price ($4/$20 vs $5/$25) while beating it, and reads cached tokens at 5% of input ($0.20 vs $0.50 per 1M) where every Claude model outside the Fable line charges 10%. Always-on adaptive thinking that CANNOT be disabled: `thinking: {\"type\": \"disabled\"}` is a 400 at every effort level, unlike Opus 5 where it is rejected only at xhigh/max. Default effort is `medium`, not `high` — a request that omits `effort` runs one level lower than it did on Opus 5. Forced tool use is NOT supported (it returns an error), so structured output must go through the native path, never the forced-`json_tool` fallback. All five effort levels, structured outputs, 1M context window, 128K max output. Fast mode runs at $8/$40. The first of the Claude 5.5 family, and no longer the newest of it: Claude Sonnet 5.5 shipped September 28, 2026 and is catalogued here. Claude Haiku 5.5, named at this launch as following \"in the coming weeks\", still has no date, price, benchmark or model card at the September 29, 2026 audit and so cannot be catalogued yet; it is the most likely Anthropic addition at the next one. Note the effort default still differs from Sonnet 5.5, which defaults to high. Retirement not sooner than September 22, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -168,10 +170,32 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
         cache_read_cost_hint=0.5,  # 0.1x input
         cache_write_cost_hint=6.25,  # 1.25x input (5-min TTL)
     ),
+    "claude-sonnet-5.5": ModelConfig(
+        model_identifier="claude-sonnet-5-5",
+        name="claude-sonnet-5.5",
+        description="Anthropic's newest model (released September 28, 2026) and the best combination of speed and intelligence, succeeding Sonnet 5 at identical prices ($2/$10, cache reads $0.20, cache writes $2.50). Anthropic measures output more than 30% faster and up to 30% lower cost per task than Sonnet 5, from the speed and from fewer tool calls; strongest on well-scoped everyday work, bug fixes, and polished documents, slides and spreadsheets. Same tokenizer as Sonnet 5, so identical text bills the same token count. Adaptive thinking on by default, DEFAULT EFFORT high (Opus 5.5 defaults to medium), all five effort levels, 1M context window, 128K max output. Three parameter changes from Sonnet 5, each a 400: `thinking: {\"type\": \"disabled\"}` is rejected and replaced by `thinking: {\"type\": \"between_tools\"}`, which is accepted ONLY at low/medium/high effort and takes no other field; manual `budget_tokens` thinking is rejected; and forced tool use (`tool_choice` of `any` or `tool`) is rejected, so structured output must go through the native path rather than the forced-`json_tool` fallback. Effort levels are recalibrated — an effort sweep carried over from Sonnet 5 does not produce the same amount of thinking. Prompt caching needs only a 512-token prefix here, against 1,024 on Sonnet 5. Its thinking blocks are bound to the model, the conversation and the account, so keep histories append-only. On Amazon Bedrock, structured outputs (including strict tool use) are NOT available for this model. Retirement not sooner than September 28, 2027.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        # Must stay True: the tool-based JSON fallback in AnthropicClient forces
+        # `tool_choice`, which this model rejects outright.
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=1000000,
+        maximum_output_tokens=128000,
+        token_param_name="max_tokens",
+        supports_temperature=False,
+        input_cost_hint=2.0,
+        output_cost_hint=10.0,
+        cache_read_cost_hint=0.2,  # 0.1x input
+        cache_write_cost_hint=2.5,  # 1.25x input (5-min TTL); $4 at 1h
+    ),
     "claude-sonnet-5": ModelConfig(
         model_identifier="claude-sonnet-5",
         name="claude-sonnet-5",
-        description="Anthropic's most agentic Sonnet model (released June 30, 2026), succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. Supports all five effort levels. 1M context window. $2/$10 per 1M input/output tokens is the standard price — the launch rate was announced as introductory through August 31, 2026, and Anthropic then cancelled the scheduled September 1, 2026 increase to $3/$15, which has passed with the $2/$10 rate standing (re-confirmed on the pricing page at the September 28, 2026 audit). Retirement not sooner than June 30, 2027.",
+        description="Legacy — succeeded by Claude Sonnet 5.5 (September 28, 2026), which is stronger and faster at exactly the same prices, so this is kept for pinned workloads only. It is still the right target for two things Sonnet 5.5 cannot do: forced tool use (`tool_choice` of `any` or `tool`), and turning thinking off with `thinking: {\"type\": \"disabled\"}` — Sonnet 5.5 400s on both. It is also the server-side fallback Sonnet 5.5 retries \"cyber\" and \"frontier_llm\" refusals onto. Released June 30, 2026, succeeding Sonnet 4.6 and closing much of the gap with Opus 4.8 on reasoning, tool use, and coding. Adaptive thinking is on by default; manual extended thinking and non-default temperature/top_p/top_k are rejected. All five effort levels, 1M context window, 1,024-token minimum cacheable prompt (Sonnet 5.5 needs only 512). $2/$10 per 1M input/output tokens is the standard price — the launch rate was announced as introductory through August 31, 2026, and Anthropic then cancelled the scheduled September 1, 2026 increase to $3/$15, which has passed with the $2/$10 rate standing (re-confirmed on the pricing page at the September 29, 2026 audit). Retirement not sooner than June 30, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -211,7 +235,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-haiku-4.5": ModelConfig(
         model_identifier="claude-haiku-4-5-20251001",
         name="claude-haiku-4.5",
-        description="Anthropic's fastest model with near-frontier intelligence, delivering Sonnet-4-level coding performance at one-third the cost and more than twice the speed. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window. Retirement not sooner than October 15, 2026 — the nearest retirement floor in this catalog, and SEVENTEEN DAYS out as of the September 28, 2026 audit. Anthropic gives at least 60 days' notice before retiring a public model and has sent none, so the floor will move; it is not a shutdown date. A newer Haiku now exists on paper: Anthropic named Claude Haiku 5.5 at the Opus 5.5 launch on September 22, 2026 as shipping \"in the coming weeks\", but has published no date, price or model card, so it cannot be catalogued yet. Until it does ship, the fallback for this tier is Sonnet 5 at low effort.",
+        description="Anthropic's fastest model with near-frontier intelligence, delivering Sonnet-4-level coding performance at one-third the cost and more than twice the speed. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window. Retirement not sooner than October 15, 2026 — the nearest retirement floor in this catalog, and SIXTEEN DAYS out as of the September 29, 2026 audit. Anthropic gives at least 60 days' notice before retiring a public model and has sent none, so the floor will move; it is not a shutdown date. A newer Haiku now exists on paper: Anthropic named Claude Haiku 5.5 at the Opus 5.5 launch on September 22, 2026 as shipping \"in the coming weeks\", and it was still unannounced when Sonnet 5.5 shipped on September 28, with no date, price or model card, so it cannot be catalogued yet. Until it does ship, the fallback for this tier is Sonnet 5.5 at low effort.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -298,6 +322,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
             "claude-opus-4.8": 128000,
             "claude-opus-4.7": 128000,
             "claude-opus-4.6": 128000,
+            "claude-sonnet-5.5": 128000,
             "claude-sonnet-5": 128000,
             "claude-sonnet-4.6": 128000,
             "claude-haiku-4.5": 64000,
@@ -320,6 +345,7 @@ _NO_EXTENDED_THINKING = {
     "claude-opus-5",
     "claude-opus-4.8",
     "claude-opus-4.7",
+    "claude-sonnet-5.5",
     "claude-sonnet-5",
 }
 
@@ -327,12 +353,32 @@ _NO_EXTENDED_THINKING = {
 # the default, not off) and that accept `thinking: {"type": "disabled"}` at
 # effort <= high. The Fable line and Opus 5.5 also think by default but reject
 # "disabled" with a 400 at every level, so they live in
-# `_THINKING_ON_BY_DEFAULT_LOCKED` below instead; Opus 4.8/4.7/4.6 and Sonnet
-# 4.6 default to no thinking, so there is nothing to disable.
+# `_THINKING_ON_BY_DEFAULT_LOCKED` below instead; Sonnet 5.5 rejects it too but
+# has a REPLACEMENT rather than nothing, so it lives in
+# `_THINKING_OFF_VIA_BETWEEN_TOOLS`; Opus 4.8/4.7/4.6 and Sonnet 4.6 default to
+# no thinking, so there is nothing to disable.
 _THINKING_ON_BY_DEFAULT_DISABLEABLE = {
     "claude-opus-5",
     "claude-sonnet-5",
 }
+
+# Thinks by default, rejects `{"type": "disabled"}` with a 400, and turns
+# up-front thinking off through `{"type": "between_tools"}` instead — the
+# lowest thinking setting on the model. Kept apart from the two sets around it
+# because it is neither: the off switch exists, but it is spelled differently
+# and it is gated on effort the opposite way round from Opus 5. `between_tools`
+# is accepted at low/medium/high and 400s at xhigh/max, and it takes NO other
+# field — `display`, `budget_tokens` or `block_binding` alongside it is also a
+# 400 — so the value returned below has to stay a bare one-key dict.
+_THINKING_OFF_VIA_BETWEEN_TOOLS = {
+    "claude-sonnet-5.5",
+}
+
+# The effort levels at which `between_tools` itself is refused. The same pair
+# of levels gates "disabled" on Opus 5, by a different mechanism: there the
+# request succeeds and the model keeps thinking, here the request fails
+# outright unless the caller falls back to adaptive thinking.
+_BETWEEN_TOOLS_REJECTED_AT_EFFORT = frozenset({"xhigh", "max"})
 
 # Thinks by default AND refuses to be turned off. Spelled as a set rather than
 # a name compared inline in `thinks_by_default`, because that comparison was
@@ -358,8 +404,11 @@ _THINKING_ON_BY_DEFAULT_LOCKED = {
 # Haiku 4.5 and older models 400 on the parameter.
 #
 # Note the DEFAULT differs: Opus 5.5 defaults to `medium`, every other model
-# here to `high`. A request that omits effort therefore runs one level lower on
-# Opus 5.5 than the same request did on Opus 5.
+# here — Sonnet 5.5 included — to `high`. A request that omits effort therefore
+# runs one level lower on Opus 5.5 than the same request did on Opus 5, and at
+# the same level on Sonnet 5.5 as it did on Sonnet 5. Sonnet 5.5 has however
+# RECALIBRATED what each level spends, so an effort sweep tuned on Sonnet 5
+# does not carry over unchanged.
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 # The levels are NOT uniform across the models that accept the parameter, so a
@@ -375,6 +424,7 @@ _EFFORT_LEVELS_BY_MODEL: Dict[str, tuple] = {
     "claude-opus-5": EFFORT_LEVELS,
     "claude-opus-4.8": EFFORT_LEVELS,
     "claude-opus-4.7": EFFORT_LEVELS,
+    "claude-sonnet-5.5": EFFORT_LEVELS,
     "claude-sonnet-5": EFFORT_LEVELS,
     "claude-opus-4.6": ("low", "medium", "high", "max"),
     "claude-sonnet-4.6": ("low", "medium", "high", "max"),
@@ -404,13 +454,15 @@ def thinks_by_default(model: str) -> bool:
 
     A superset of `_THINKING_ON_BY_DEFAULT_DISABLEABLE`: the Fable models think
     by default but reject `thinking: {"type": "disabled"}`, so there are models
-    where thinking is on and cannot be turned off. Callers that budget
+    where thinking is on and cannot be turned off, and Sonnet 5.5 thinks by
+    default but spells the off switch `between_tools`. Callers that budget
     `max_tokens` for text alone need this to know when the budget is shared.
     """
     name = _resolve_model_name(model) or ""
     return (
         name in _THINKING_ON_BY_DEFAULT_DISABLEABLE
         or name in _THINKING_ON_BY_DEFAULT_LOCKED
+        or name in _THINKING_OFF_VIA_BETWEEN_TOOLS
     )
 
 
@@ -424,13 +476,21 @@ def thinking_disable_param(
     thinking-by-default models: otherwise adaptive thinking runs first and
     `max_tokens` — a hard cap on thinking PLUS text — can be consumed entirely
     by the thinking block, returning `stop_reason=max_tokens` with no text at
-    all. Returns None where nothing needs sending (defaults to off), where the
-    API would reject "disabled" outright (the Fable models), or where the model rejects
-    it at the effort level this request carries (Opus 5 at `xhigh` / `max`) —
-    hence `effort`: the answer depends on the whole request, not the model
-    alone, and returning the parameter without it is a guaranteed 400.
+    all. The VALUE is per-model, not a constant: Sonnet 5.5 renamed the setting
+    to `{"type": "between_tools"}` and 400s on "disabled", so a caller that
+    hard-codes either spelling is wrong on part of the catalog. Returns None
+    where nothing needs sending (defaults to off), where the API would reject
+    every off switch outright (the Fable models, Opus 5.5), or where the model
+    rejects the one it has at the effort level this request carries (Opus 5 and
+    Sonnet 5.5 at `xhigh` / `max`) — hence `effort`: the answer depends on the
+    whole request, not the model alone, and returning the parameter without it
+    is a guaranteed 400.
     """
     name = _resolve_model_name(model)
+    if name in _THINKING_OFF_VIA_BETWEEN_TOOLS:
+        if (effort or "").lower() in _BETWEEN_TOOLS_REJECTED_AT_EFFORT:
+            return None
+        return {"type": "between_tools"}
     if name not in _THINKING_ON_BY_DEFAULT_DISABLEABLE:
         return None
     if (

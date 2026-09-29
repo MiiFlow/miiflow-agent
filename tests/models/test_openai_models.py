@@ -89,7 +89,7 @@ def test_openai_cache_prices_cover_gpt56_writes_and_gpt55_pro_no_discount():
 
 
 def test_gpt41_context_window_uses_exact_documented_limit():
-    for model in ("gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"):
+    for model in ("gpt-4.1", "gpt-4.1-mini"):
         assert OPENAI_MODELS[model].maximum_context_tokens == 1_047_576
 
 

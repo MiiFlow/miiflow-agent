@@ -13,7 +13,7 @@ from miiflow_agent import LLMClient, Message
 def sync_example():
     """Synchronous chat example."""
     # Create client (uses OPENAI_API_KEY env var)
-    client = LLMClient.create("openai", model="gpt-4.1-nano")
+    client = LLMClient.create("openai", model="gpt-6-luna")
 
     # Simple chat
     response = client.chat([Message.user("What is Python in one sentence?")])
@@ -23,7 +23,7 @@ def sync_example():
 
 async def async_example():
     """Asynchronous chat example."""
-    client = LLMClient.create("openai", model="gpt-4.1-nano")
+    client = LLMClient.create("openai", model="gpt-6-luna")
 
     # Async chat
     response = await client.achat([Message.user("What is Rust in one sentence?")])
@@ -32,7 +32,7 @@ async def async_example():
 
 async def multi_turn_conversation():
     """Multi-turn conversation example."""
-    client = LLMClient.create("openai", model="gpt-4.1-nano")
+    client = LLMClient.create("openai", model="gpt-6-luna")
 
     messages = [
         Message.system("You are a helpful coding assistant."),
@@ -55,7 +55,7 @@ def switch_providers():
     """Example showing how to switch between providers."""
     # Same interface, different providers
     providers = [
-        ("openai", "gpt-4.1-nano"),
+        ("openai", "gpt-6-luna"),
         ("anthropic", "claude-3-5-sonnet-20241022"),
         # ("groq", "llama-3.1-8b-instant"),  # Uncomment if you have GROQ_API_KEY
     ]

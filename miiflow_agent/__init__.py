@@ -9,7 +9,7 @@ Quick Start:
     from miiflow_agent import LLMClient, Message
 
     # Simple chat
-    client = LLMClient.create("openai", model="gpt-4.1-nano")
+    client = LLMClient.create("openai", model="gpt-6-luna")
     response = client.chat([Message.user("Hello")])
 
     # Agent with ReAct

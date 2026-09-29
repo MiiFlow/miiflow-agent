@@ -147,7 +147,7 @@ class TestRealLLMIntegration:
         # Use core Agent class directly for better compatibility
         llm_client = LLMClient.create(
             provider=provider,
-            model='llama-3.1-8b-instant' if provider == 'groq' else 'gpt-4.1-nano'
+            model='llama-3.1-8b-instant' if provider == 'groq' else 'gpt-4.1-mini'
         )
         
         # User context

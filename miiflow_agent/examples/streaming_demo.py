@@ -21,7 +21,7 @@ async def test_streaming_normalization():
     """Test streaming normalization across different providers."""
     
     providers_to_test = [
-        ("openai", "gpt-4.1-nano"),
+        ("openai", "gpt-6-luna"),
         ("anthropic", "claude-3-haiku-20240307"), 
         ("groq", "llama-3.1-8b-instant"),
         ("xai", "grok-beta"),

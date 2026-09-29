@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from ..message import Message, MessageRole
 from ..streaming import canonical_finish_reason
@@ -37,6 +37,37 @@ if TYPE_CHECKING:
     from .orchestrator import ReActOrchestrator
 
 logger = logging.getLogger(__name__)
+
+
+
+async def _answer_check_correction(context, state, answer: str) -> Optional[str]:
+    """The host's correction for a final answer, or None to accept it.
+
+    See `ANSWER_CHECK_DEP`. Bounded by `MAX_ANSWER_CHECK_FAILURES`: past it
+    the answer stands as written, so a check the model cannot satisfy ends
+    in an answer rather than a loop.
+    """
+    import inspect
+
+    from miiflow_agent.artifacts import ANSWER_CHECK_DEP, MAX_ANSWER_CHECK_FAILURES
+
+    hook = (getattr(context, "deps", None) or {}).get(ANSWER_CHECK_DEP)
+    failed = getattr(state, "answer_checks_failed", 0)
+    if not callable(hook) or failed >= MAX_ANSWER_CHECK_FAILURES:
+        return None
+    correction = hook(answer, context)
+    if inspect.isawaitable(correction):
+        correction = await correction
+    if not correction:
+        return None
+    state.answer_checks_failed = failed + 1
+    logger.warning(
+        "Step %d - final answer failed the host check (%d/%d); retracting and continuing",
+        state.current_step,
+        state.answer_checks_failed,
+        MAX_ANSWER_CHECK_FAILURES,
+    )
+    return str(correction)
 
 
 class StepStreamer:
@@ -1087,7 +1118,21 @@ class StepStreamer:
                         metadata=provider_mcp_metadata,
                     )
                 )
-                step.answer = assistant_content
+                correction = await _answer_check_correction(context, state, assistant_content)
+                if correction:
+                    # The answer went out as it streamed; take it back so no
+                    # consumer keeps it, then let the model act on the note.
+                    await self._orch.event_bus.publish(
+                        EventFactory.answer_retracted(
+                            state.current_step, assistant_content, "answer_check"
+                        )
+                    )
+                    context.messages.append(
+                        Message(role=MessageRole.USER, content=correction)
+                    )
+                    # Don't set step.answer — loop will continue
+                else:
+                    step.answer = assistant_content
 
         except Exception as e:
             # The stream died mid-answer: any optimistically streamed deltas

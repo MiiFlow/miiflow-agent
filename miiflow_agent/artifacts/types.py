@@ -74,6 +74,15 @@ ATTACHED_ARTIFACTS_KEY = "__artifacts__"
 #: The hook must not raise -- deciding what a preview failure means (and which
 #: exceptions are control flow, e.g. a worker's time limit) is the host's.
 ARTIFACT_PREVIEWS_DEP = "artifact_previews"
+#: The `deps` key under which a host checks a final answer before the run
+#: accepts it: `hook(answer_text, context) -> Optional[str]` (sync or async).
+#: A string is a correction for the model -- the answer is retracted and the
+#: loop continues with that note -- and None accepts the answer. The host
+#: owns what "wrong" means (an answer naming a file no tool made); the loop
+#: owns the bound (`MAX_ANSWER_CHECK_FAILURES`), after which the answer is
+#: accepted as written. The hook must not raise.
+ANSWER_CHECK_DEP = "answer_check"
+MAX_ANSWER_CHECK_FAILURES = 2
 ArtifactPreviewHook = Callable[[Dict[str, Any]], Union[List[Dict[str, Any]], Awaitable[List[Dict[str, Any]]]]]
 
 

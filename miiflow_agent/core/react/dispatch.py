@@ -279,10 +279,18 @@ async def forward_subagent_events(
             ReActEventType.CLARIFICATION_NEEDED,
             ReActEventType.TOOL_APPROVAL_NEEDED,
         ):
-            # Capture the child's pause and forward it up (path-prefixed) so it
-            # reaches the user instead of being dropped. The child's stream ends
-            # right after this (its orchestrator suspended); dispatch_subagent
-            # reads the captured interrupt rather than an empty final_result().
+            # Capture the child's pause (path-prefixed) so it reaches the user
+            # instead of being dropped. The child's stream ends right after
+            # this (its orchestrator suspended); dispatch_subagent reads the
+            # captured interrupt rather than an empty final_result(), and the
+            # parent publishes the card when the dispatch call returns
+            # (`approval_flow`), after recording the interrupt.
+            #
+            # Not republished from here: the card would reach the person while
+            # the parent is still running sibling calls of the same step, long
+            # before the pause exists to answer. In production an approval
+            # clicked in that gap found nothing pending, started a fresh run
+            # that replayed the turn, and the change ran three times.
             captured_interrupt = {
                 "kind": (
                     "tool_approval"
@@ -293,13 +301,6 @@ async def forward_subagent_events(
                 "subagent_path": own_path,
                 "data": dict(data),
             }
-            await parent_event_bus.publish(
-                ReActEvent(
-                    event_type=et,
-                    step_number=parent_step_number,
-                    data={**data, "subagent_id": subagent_id, "subagent_path": own_path},
-                )
-            )
             continue
 
         if et == ReActEventType.ASSISTANT_TEXT:

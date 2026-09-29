@@ -47,6 +47,11 @@ class ExecutionState:
     # silently disables the loop.
     last_estimated_prompt_tokens: Optional[int] = None
 
+    # How many times the host's final-answer check (`ANSWER_CHECK_DEP`) has
+    # sent an answer back this run. Bounded so a check the model cannot
+    # satisfy never loops the run.
+    answer_checks_failed: int = 0
+
     # Media store - maps media IDs to their URLs so subsequent tool calls
     # (e.g. image editing) can reference generated images via media_ref:<id>
     media_store: Dict[str, str] = field(default_factory=dict)

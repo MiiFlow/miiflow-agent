@@ -59,7 +59,7 @@ def _approval_event():
 
 
 @pytest.mark.asyncio
-async def test_forward_captures_and_forwards_child_clarification():
+async def test_forward_captures_child_clarification_without_publishing_it():
     bus = _Bus()
     captured = await forward_subagent_events(
         _events(_clarification_event()),
@@ -72,14 +72,14 @@ async def test_forward_captures_and_forwards_child_clarification():
     assert captured is not None
     assert captured["kind"] == "clarification"
     assert captured["subagent_path"] == ["sub_x"]
-    # The interrupt was re-published up the parent bus (path-annotated) for live UI.
-    assert any(e.event_type == ReActEventType.CLARIFICATION_NEEDED for e in bus.published)
-    fwd = next(e for e in bus.published if e.event_type == ReActEventType.CLARIFICATION_NEEDED)
-    assert fwd.data["subagent_id"] == "sub_x"
+    # Not published from here: the parent publishes the card once it has
+    # recorded the interrupt, after the whole step returns. A card sent now
+    # could be answered before any pause exists to answer.
+    assert not any(e.event_type == ReActEventType.CLARIFICATION_NEEDED for e in bus.published)
 
 
 @pytest.mark.asyncio
-async def test_forward_captures_and_forwards_child_tool_approval():
+async def test_forward_captures_child_tool_approval_without_publishing_it():
     bus = _Bus()
     captured = await forward_subagent_events(
         _events(_approval_event()),
@@ -92,9 +92,8 @@ async def test_forward_captures_and_forwards_child_tool_approval():
     assert captured is not None
     assert captured["kind"] == "tool_approval"
     assert captured["subagent_path"] == ["sub_x"]
-    fwd = next(e for e in bus.published if e.event_type == ReActEventType.TOOL_APPROVAL_NEEDED)
-    assert fwd.data["tool_call_id"] == "child_tool_call"
-    assert fwd.data["subagent_id"] == "sub_x"
+    assert captured["data"]["tool_call_id"] == "child_tool_call"
+    assert not any(e.event_type == ReActEventType.TOOL_APPROVAL_NEEDED for e in bus.published)
 
 
 @pytest.mark.asyncio

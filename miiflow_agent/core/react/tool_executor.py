@@ -49,6 +49,78 @@ NATIVE_TOOL_SEARCH_TOOL: Dict[str, str] = {
 DEFAULT_MAX_PARALLEL_TOOLS = _env_max_parallel_tools()
 
 
+async def _unless_run_stopped(call, tool_name: str, inputs: dict, context, *, writes: bool = False) -> ToolResult:
+    """Run one tool call, abandoning it the moment the run is stopped.
+
+    The loop only checks `cancel_event` between steps, so a stopped run
+    used to finish every call already in flight -- in production a run
+    superseded by the person's next message kept a specialist dispatch
+    going for minutes, which then raised a second approval card for a
+    change already queued. A stopped call is cancelled and reported as a
+    failed result, so the transcript still pairs every tool_use.
+    Exceptions (approval pauses included) propagate unchanged.
+
+    A call declared to write (`writes=True`) is let finish: cancelling the
+    await does not stop a write already sent (a sync client keeps running on
+    its thread), and the transcript would then call a change that happened
+    "cancelled". Its real result is recorded, and the loop stops at the next
+    step boundary.
+    """
+    cancel_event = getattr(context, "cancel_event", None)
+    if not isinstance(cancel_event, asyncio.Event) or writes:
+        return await call
+    stopped = ToolResult(
+        name=tool_name,
+        input=inputs,
+        output=None,
+        error=(
+            "Cancelled: the run was stopped before this call returned. Anything it "
+            "had already started (a specialist's own changes, say) may still have "
+            "completed -- check before retrying."
+        ),
+        success=False,
+    )
+    if cancel_event.is_set():
+        call.close()
+        return stopped
+    # Cancel THIS task on stop rather than running the call in a task of its
+    # own: the call keeps the caller's contextvars (approval passes,
+    # tool-search session) exactly as before.
+    current = asyncio.current_task()
+    fired = consumed = False
+
+    def _on_stop(_waiter) -> None:
+        nonlocal fired
+        if not _waiter.cancelled() and current is not None and not current.done():
+            fired = True
+            current.cancel()
+
+    def _consume() -> None:
+        # Take back exactly the one cancel we sent, however the call ended:
+        # absorbed, converted to another exception, or raised as ours.
+        nonlocal consumed
+        if fired and not consumed and hasattr(current, "uncancel"):
+            current.uncancel()
+            consumed = True
+
+    stop_wait = asyncio.ensure_future(cancel_event.wait())
+    stop_wait.add_done_callback(_on_stop)
+    try:
+        return await call
+    except asyncio.CancelledError:
+        if not fired:
+            raise
+        _consume()
+        if getattr(current, "cancelling", lambda: 0)():
+            raise  # the host cancelled too (shutdown drain): it must unwind
+        logger.info("[TOOL] %s cancelled: the run was stopped", tool_name)
+        return stopped
+    finally:
+        stop_wait.remove_done_callback(_on_stop)
+        stop_wait.cancel()
+        _consume()
+
+
 @dataclass
 class ToolCall:
     """One tool invocation in a (possibly parallel) batch.
@@ -142,7 +214,13 @@ class AgentToolExecutor:
         from ..observability.spans import record_tool_result, tool_span
 
         with tool_span(tool_name, inputs) as span:
-            result = await self._execute_tool_gated(tool_name, inputs, context)
+            result = await _unless_run_stopped(
+                self._execute_tool_gated(tool_name, inputs, context),
+                tool_name,
+                inputs,
+                context,
+                writes=getattr(self._get_tool_schema_obj(tool_name), "writes", None) is True,
+            )
             # Opt-in tool contract, never inferred from text in an observation.
             schema = self._get_tool_schema_obj(tool_name)
             metadata = getattr(schema, "metadata", None) or {}

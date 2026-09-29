@@ -62,6 +62,11 @@ async def _artifact_preview_blocks(context, data) -> list:
     return list(blocks or [])
 
 
+#: What a dispatched child's clarification carries about who asked, copied
+#: onto the pause and its interrupt.
+_CHILD_DISPATCH_META_KEYS = ("handle", "child_assistant_id", "subagent_id", "status", "subagent_path")
+
+
 class ToolActionHandler:
     """The single-call and parallel-batch action paths of the loop."""
 
@@ -365,130 +370,11 @@ class ToolActionHandler:
                         "Tool execution paused - waiting for user approval."
                     )
 
-                # Check if this is a clarification request
-                from ..tools.clarification import (
-                    is_clarification_result,
-                    extract_clarification_data,
+                resolved = await self.handle_clarification_result(
+                    context, state, result, tool_call_id
                 )
-
-                if not state.needs_clarification and is_clarification_result(result):
-                    clarification = extract_clarification_data(result)
-                    if clarification:
-                        # Phase 1: deterministic established-facts short-circuit (R4).
-                        # Check the asked questions against facts already resolved this
-                        # run (threaded in via deps["established_facts"] by the adapter —
-                        # absent ⇒ behaviour identical to before). Questions whose stable
-                        # key is already answered NEVER re-pause; if every question is
-                        # resolved we skip the pause entirely and hand the model the
-                        # known answers as the observation.
-                        from ..checkpoint import EstablishedFact
-                        from ..interrupt import decide_clarification
-
-                        facts_by_key = {}
-                        deps = getattr(context, "deps", None)
-                        if isinstance(deps, dict):
-                            for fd in deps.get("established_facts") or []:
-                                try:
-                                    f = EstablishedFact.from_dict(fd)
-                                    facts_by_key[f.key] = f
-                                except Exception:
-                                    continue
-
-                        question_dicts = [q.to_dict() for q in clarification.questions]
-                        clarification_round = 0
-                        if isinstance(deps, dict):
-                            clarification_round = int(
-                                deps.get("clarification_round", 0) or 0
-                            )
-                        decision = decide_clarification(
-                            question_dicts,
-                            facts_by_key,
-                            interrupt_count=clarification_round,
-                        )
-
-                        if not decision.should_pause:
-                            # Either everything was already answered, or the round
-                            # held nothing answerable. Do NOT pause; the model gets
-                            # the decision's observation and keeps working.
-                            step.observation = (
-                                decision.resolved_observation or step.observation
-                            )
-                            logger.info(
-                                "Clarification short-circuited (%s)",
-                                "no answerable questions"
-                                if not question_dicts
-                                else "all question(s) already settled",
-                            )
-                        else:
-                            state.needs_clarification = True
-                            clarification_data = clarification.to_dict()
-                            clarification_data["questions"] = decision.pause_questions
-                            clarification_data["tool_call_id"] = tool_call_id
-                            raw_clarification_output = (
-                                result.output if isinstance(result.output, dict) else {}
-                            )
-                            for meta_key in (
-                                "handle",
-                                "child_assistant_id",
-                                "subagent_id",
-                                "status",
-                                "subagent_path",
-                            ):
-                                if meta_key in raw_clarification_output:
-                                    clarification_data[meta_key] = (
-                                        raw_clarification_output[meta_key]
-                                    )
-                            subagent_path = raw_clarification_output.get(
-                                "subagent_path"
-                            )
-                            raised_by_path = ["root"] + list(subagent_path or [])
-                            interrupt = await self._orch._record_interrupt(
-                                context,
-                                state,
-                                kind="clarification",
-                                payload={
-                                    "questions": decision.pause_questions,
-                                    "context": clarification.context,
-                                    **{
-                                        k: v
-                                        for k, v in clarification_data.items()
-                                        if k
-                                        in (
-                                            "handle",
-                                            "child_assistant_id",
-                                            "subagent_id",
-                                            "status",
-                                            "subagent_path",
-                                        )
-                                    },
-                                },
-                                tool_call_id=tool_call_id,
-                                raised_by_path=raised_by_path,
-                            )
-                            clarification_data["interrupt_id"] = interrupt.interrupt_id
-                            clarification_data["raised_by_path"] = (
-                                interrupt.raised_by_path
-                            )
-                            state.clarification_data = clarification_data
-                            logger.info(
-                                f"Clarification requested: {len(decision.pause_questions)} question(s)"
-                            )
-
-                            # Emit clarification event
-                            await self._orch.event_bus.publish(
-                                ReActEvent(
-                                    event_type=ReActEventType.CLARIFICATION_NEEDED,
-                                    step_number=state.current_step,
-                                    data={
-                                        "step": state.current_step,
-                                        "questions": decision.pause_questions,
-                                        "context": clarification.context,
-                                        "tool_call_id": tool_call_id,
-                                        "interrupt_id": interrupt.interrupt_id,
-                                        "raised_by_path": interrupt.raised_by_path,
-                                    },
-                                )
-                            )
+                if resolved:
+                    step.observation = resolved
             else:
                 # Sanitize error message for LLM consumption
                 sanitized_error = _sanitize_error_message(result.error)
@@ -701,6 +587,129 @@ class ToolActionHandler:
                 logger.debug(
                     f"Step {state.current_step} - Added error tool result to context with ID: {tool_call_id}"
                 )
+
+    async def handle_clarification_result(self, context, state, result, tool_call_id) -> Optional[str]:
+        """Pause on a clarification a tool (or a dispatched child) asked for.
+
+        Shared by the single-call and parallel-batch paths: a child's
+        question from inside a batch used to reach the person only through
+        the dispatch layer's early event, with no interrupt recorded to
+        answer. Returns an observation to use instead of the tool's when the
+        questions were already settled and the run should not pause.
+        """
+        resolved_observation = None
+        # Check if this is a clarification request
+        from ..tools.clarification import (
+            is_clarification_result,
+            extract_clarification_data,
+        )
+
+        if state.needs_clarification or not is_clarification_result(result):
+            return None
+        clarification = extract_clarification_data(result)
+        if not clarification:
+            return None
+        # Phase 1: deterministic established-facts short-circuit (R4).
+        # Check the asked questions against facts already resolved this
+        # run (threaded in via deps["established_facts"] by the adapter —
+        # absent ⇒ behaviour identical to before). Questions whose stable
+        # key is already answered NEVER re-pause; if every question is
+        # resolved we skip the pause entirely and hand the model the
+        # known answers as the observation.
+        from ..checkpoint import EstablishedFact
+        from ..interrupt import decide_clarification
+
+        facts_by_key = {}
+        deps = getattr(context, "deps", None)
+        if isinstance(deps, dict):
+            for fd in deps.get("established_facts") or []:
+                try:
+                    f = EstablishedFact.from_dict(fd)
+                    facts_by_key[f.key] = f
+                except Exception:
+                    continue
+
+        question_dicts = [q.to_dict() for q in clarification.questions]
+        clarification_round = 0
+        if isinstance(deps, dict):
+            clarification_round = int(
+                deps.get("clarification_round", 0) or 0
+            )
+        decision = decide_clarification(
+            question_dicts,
+            facts_by_key,
+            interrupt_count=clarification_round,
+        )
+
+        if not decision.should_pause:
+            # Either everything was already answered, or the round
+            # held nothing answerable. Do NOT pause; the model gets
+            # the decision's observation and keeps working.
+            resolved_observation = decision.resolved_observation
+            logger.info(
+                "Clarification short-circuited (%s)",
+                "no answerable questions"
+                if not question_dicts
+                else "all question(s) already settled",
+            )
+        else:
+            state.needs_clarification = True
+            clarification_data = clarification.to_dict()
+            clarification_data["questions"] = decision.pause_questions
+            clarification_data["tool_call_id"] = tool_call_id
+            raw_clarification_output = (
+                result.output if isinstance(result.output, dict) else {}
+            )
+            for meta_key in _CHILD_DISPATCH_META_KEYS:
+                if meta_key in raw_clarification_output:
+                    clarification_data[meta_key] = (
+                        raw_clarification_output[meta_key]
+                    )
+            subagent_path = raw_clarification_output.get(
+                "subagent_path"
+            )
+            raised_by_path = ["root"] + list(subagent_path or [])
+            interrupt = await self._orch._record_interrupt(
+                context,
+                state,
+                kind="clarification",
+                payload={
+                    "questions": decision.pause_questions,
+                    "context": clarification.context,
+                    **{
+                        k: v
+                        for k, v in clarification_data.items()
+                        if k in _CHILD_DISPATCH_META_KEYS
+                    },
+                },
+                tool_call_id=tool_call_id,
+                raised_by_path=raised_by_path,
+            )
+            clarification_data["interrupt_id"] = interrupt.interrupt_id
+            clarification_data["raised_by_path"] = (
+                interrupt.raised_by_path
+            )
+            state.clarification_data = clarification_data
+            logger.info(
+                f"Clarification requested: {len(decision.pause_questions)} question(s)"
+            )
+
+            # Emit clarification event
+            await self._orch.event_bus.publish(
+                ReActEvent(
+                    event_type=ReActEventType.CLARIFICATION_NEEDED,
+                    step_number=state.current_step,
+                    data={
+                        "step": state.current_step,
+                        "questions": decision.pause_questions,
+                        "context": clarification.context,
+                        "tool_call_id": tool_call_id,
+                        "interrupt_id": interrupt.interrupt_id,
+                        "raised_by_path": interrupt.raised_by_path,
+                    },
+                )
+            )
+        return resolved_observation
 
     async def handle_parallel_tool_batch(
         self,
@@ -1068,6 +1077,12 @@ class ToolActionHandler:
                 parent_tool_call_id=inv.tool_call_id,
             ):
                 inv.observation = "Tool execution paused - waiting for user approval."
+            elif result.success:
+                resolved = await self.handle_clarification_result(
+                    context, state, result, inv.tool_call_id
+                )
+                if resolved:
+                    inv.observation = resolved
 
             # Per-invocation canonical record + observation event. Served
             # results reuse their existing ref (no new row, no TTL refresh).

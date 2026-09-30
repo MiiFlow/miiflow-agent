@@ -257,3 +257,97 @@ class TestGpt6SolAndLuna:
         assert (
             OPENAI_MODELS[newer].output_cost_hint < OPENAI_MODELS[older].output_cost_hint
         )
+
+
+class TestGpt61Sol:
+    """GPT-6.1 Sol takes GPT-6's parameter contract but ASTRA's effort scale.
+
+    The trap this guards is the tier name: it succeeds `gpt-6-sol`, so the
+    obvious move is to clone that entry. Doing so would advertise effort `none`
+    (a 400 here) and `reasoning.mode: "pro"` (undocumented for 6.1), and bill
+    cached input at twice the real rate.
+    """
+
+    @pytest.mark.parametrize(
+        "spelling",
+        ["gpt-6.1-sol", "gpt-6.1-sol-fast", "gpt-6.1-sol-2026-09-29"],
+    )
+    def test_every_spelling_answers_the_same(self, spelling):
+        assert is_gpt6_model(spelling)
+        assert not supports_temperature(spelling)
+        assert get_token_param_name(spelling) == "max_completion_tokens"
+        assert tools_require_responses_api(spelling)
+        assert get_long_context_pricing_multipliers(spelling, 300_000) == (2.0, 1.5)
+        assert unsupported_request_params(spelling) == {
+            "logprobs",
+            "prompt_cache_retention",
+            "temperature",
+            "top_logprobs",
+            "top_p",
+        }
+
+    def test_effort_scale_follows_astra_not_the_sol_it_succeeds(self):
+        # OpenAI's model page lists low..max and marks `none`/`minimal` as not
+        # supported. `gpt-6-sol` keeps `none`, so copying that tier's scale
+        # across would put a 400 behind a UI dropdown.
+        assert _parameter("gpt-6.1-sol", "reasoning_effort").options == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        assert "none" in _parameter("gpt-6-sol", "reasoning_effort").options
+
+    def test_pro_mode_is_not_offered(self):
+        # `reasoning.mode` is documented on GPT-5.6, Astra and GPT-6 Sol/Luna,
+        # but not on this tier. It stays off until OpenAI publishes it.
+        assert "reasoning_mode" not in _parameter_names("gpt-6.1-sol")
+        assert "reasoning_mode" in _parameter_names("gpt-6-sol")
+
+    def test_temperature_and_max_tokens_are_not_offered(self):
+        names = _parameter_names("gpt-6.1-sol")
+        assert "temperature" not in names
+        assert "max_tokens" not in names
+        assert "max_completion_tokens" in names
+
+    def test_pricing_matches_published_rates(self):
+        config = OPENAI_MODELS["gpt-6.1-sol"]
+        assert (config.input_cost_hint, config.output_cost_hint) == (2.0, 10.0)
+        assert config.cache_write_cost_hint == 2.5
+        assert config.maximum_context_tokens == 1_050_000
+        assert config.maximum_output_tokens == 128_000
+
+    def test_cached_input_is_half_the_rest_of_the_family(self):
+        # The only price that moved from GPT-6 Sol, and the reason 6.1 cannot
+        # reuse the family's 0.1x cache-read assumption: reads are 5% of input
+        # here. Getting this wrong overstates cached spend by 2x.
+        config = OPENAI_MODELS["gpt-6.1-sol"]
+        assert config.cache_read_cost_hint == pytest.approx(
+            config.input_cost_hint * 0.05
+        )
+        assert config.cache_read_cost_hint == pytest.approx(
+            OPENAI_MODELS["gpt-6-sol"].cache_read_cost_hint / 2
+        )
+
+    def test_input_and_output_prices_match_the_tier_it_succeeds(self):
+        # Unlike every other succession in this catalog, 6.1 did NOT undercut
+        # its predecessor on input/output. A description claiming it is cheaper
+        # per token would be wrong.
+        newer = OPENAI_MODELS["gpt-6.1-sol"]
+        older = OPENAI_MODELS["gpt-6-sol"]
+        assert newer.input_cost_hint == older.input_cost_hint
+        assert newer.output_cost_hint == older.output_cost_hint
+
+    def test_the_cancelled_and_unreleased_ids_are_absent(self):
+        # GPT-6.1 Astra was cancelled over safety findings and there is no
+        # GPT-6.1 Luna or Terra. Each would be an id that 404s.
+        for model in ("gpt-6.1-astra", "gpt-6.1-luna", "gpt-6.1-terra"):
+            assert model not in OPENAI_MODELS
+
+    def test_ultrafast_is_a_service_tier_not_a_model_id(self):
+        # Three speed tiers with three shapes: standard, the `-fast` suffix on
+        # the id, and `service_tier: "ultrafast"`. Only the suffix is part of a
+        # model spelling.
+        assert "gpt-6.1-sol-ultrafast" not in OPENAI_MODELS
+        assert "gpt-6-astra-ultrafast" not in OPENAI_MODELS

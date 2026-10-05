@@ -288,6 +288,7 @@ class AgentToolExecutor:
                 output=None,
                 error=str(ver.reason),
                 success=False,
+                metadata={"is_validation_error": ver.is_argument_error},
             )
 
         # ── Read-through dedupe gate ────────────────────────────────────
@@ -787,6 +788,7 @@ class AgentToolExecutor:
                 tool_name=tool_name,
                 tool_inputs=inputs,
                 reason=event.validation_error,
+                is_argument_error=event.validation_error_is_argument,
             )
 
         if event.blocked:

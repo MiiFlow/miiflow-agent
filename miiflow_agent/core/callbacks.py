@@ -159,6 +159,9 @@ class CallbackEvent:
     # inputs and retries — the human is never asked to approve a call that
     # would bounce off the API anyway.
     validation_error: Optional[str] = None
+    # Only argument-shape failures feed schema recovery and retry-pair metrics.
+    # Permission and approval-policy refusals keep the default False.
+    validation_error_is_argument: bool = False
 
     # PRE_TOOL_USE: set this in callback to REPLACE the tool inputs before
     # execution (e.g. a user approved a tool but edited its arguments). The

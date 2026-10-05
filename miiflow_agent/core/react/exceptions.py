@@ -44,10 +44,11 @@ class ToolInputValidationRejected(Exception):
     the inputs and retries without a wasted approval modal.
     """
 
-    def __init__(self, tool_name: str, tool_inputs: dict, reason: str = None):
+    def __init__(self, tool_name: str, tool_inputs: dict, reason: str = None, *, is_argument_error: bool = False):
         self.tool_name = tool_name
         self.tool_inputs = tool_inputs
         self.reason = reason or "Tool inputs failed validation"
+        self.is_argument_error = is_argument_error
         super().__init__(f"Tool '{tool_name}' inputs rejected: {self.reason}")
 
 

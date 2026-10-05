@@ -46,7 +46,10 @@ _NO_SAMPLING_PARAMS = {
 # pre-release evaluation; only after that do paid API customers and Google AI
 # Ultra subscribers get it, and developers and the public after them. Google has
 # published no date for any of those later phases and no API model id, so an
-# entry here would fail on every request. Same reasoning as
+# entry here would fail on every request. Re-checked at the October 5, 2026
+# audit and unchanged: still Fairwind-only, with no API model id and no model
+# card, and Google saying only that it will reach developers, enterprises and
+# consumers "as soon as possible". Same reasoning as
 # gemini-3.8-flash-cyber above and gpt-5.6-cyber in the OpenAI catalog — but
 # note the reason is ACCESS alone, not missing prices: unlike gpt-6-astra-law,
 # Argon's pricing is published, so access is the only thing being waited on.
@@ -73,13 +76,22 @@ _NO_SAMPLING_PARAMS = {
 # under-stated its cost by half. If a "price cut" is only ever half the previous
 # figure, check the batch column before believing it.
 #
-# Cached-input rates are wired for gemini-3.5-flash only. The rest of the catalog
-# leaves cache_read_cost_hint at 0.0, which bills cached tokens at the full input
-# rate — an over-statement, so safe, but still wrong. Google's own pricing pages
-# (ai.google.dev, cloud.google.com) were unreachable from the audit environment
-# and the third-party figures for the 3.6/3.7/3.8 Flash and Flash-Lite tiers
-# disagreed with each other, so they were left unset rather than guessed. Fill
-# them in from the official pricing table when it is reachable.
+# Cached-input rates are now wired for every model here (the October 5, 2026
+# audit; previously only gemini-3.5-flash carried one, which billed every other
+# model's cached tokens at the full input rate). Google's pricing pages
+# (ai.google.dev, cloud.google.com) are still unreachable from the audit
+# environment, so these come from quotations of the official Gemini Developer API
+# pricing table, cross-checked against the one ratio the catalog already knew:
+# every Gemini model reads cached input at 0.1x its base input rate, and each
+# quoted figure matched that ratio exactly ($0.075 on the $0.75 Flash tier,
+# $0.03 on $0.30 Flash-Lite, $0.20 on $2.00 Pro, $0.025 on $0.25 3.1 Flash-Lite).
+# Two caveats a flat hint cannot express: the three Flash models' $0.075 is the
+# same INTRODUCTORY rate their input price is, and doubles to $0.15 on January 1,
+# 2027 alongside it; and gemini-3.1-pro's $0.20 is the under-200K tier, $0.40
+# above it, mirroring its tiered input price. Google also bills cache STORAGE per
+# token-hour ($0.50/1M/hour on the Flash tier through December 31, 2026, $1.00
+# after; $4.50 on 3.1 Pro), which has no field in ModelConfig at all and is
+# therefore not captured here — explicit caching costs more than these rates say.
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.8-flash": ModelConfig(
         model_identifier="models/gemini-3.8-flash",
@@ -98,6 +110,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=0.75,
         output_cost_hint=3.75,
+        cache_read_cost_hint=0.075,  # 0.1x input; $0.15 from January 1, 2027
     ),
     "gemini-3.7-flash": ModelConfig(
         model_identifier="models/gemini-3.7-flash",
@@ -116,6 +129,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=0.75,
         output_cost_hint=3.75,
+        cache_read_cost_hint=0.075,  # 0.1x input; $0.15 from January 1, 2027
     ),
     "gemini-3.6-flash": ModelConfig(
         model_identifier="models/gemini-3.6-flash",
@@ -134,6 +148,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=0.75,
         output_cost_hint=3.75,
+        cache_read_cost_hint=0.075,  # 0.1x input; $0.15 from January 1, 2027
     ),
     "gemini-3.5-flash-lite": ModelConfig(
         model_identifier="models/gemini-3.5-flash-lite",
@@ -152,6 +167,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=False,
         input_cost_hint=0.30,
         output_cost_hint=2.50,
+        cache_read_cost_hint=0.03,  # 0.1x input
     ),
     "gemini-3.5-flash": ModelConfig(
         model_identifier="models/gemini-3.5-flash",
@@ -189,6 +205,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=True,
         input_cost_hint=2.0,
         output_cost_hint=12.0,
+        cache_read_cost_hint=0.20,  # 0.1x input below 200K; $0.40 above it
     ),
     "gemini-3.1-flash-lite": ModelConfig(
         model_identifier="models/gemini-3.1-flash-lite",
@@ -207,6 +224,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         supports_temperature=True,
         input_cost_hint=0.25,
         output_cost_hint=1.50,
+        cache_read_cost_hint=0.025,  # 0.1x input (text/image/video; audio $0.05)
     ),
 }
 

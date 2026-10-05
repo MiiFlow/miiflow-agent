@@ -77,10 +77,17 @@ class ModelConfig:
     # request TTL (1.25x input for the 5-minute default, 2x for 1h).
     # STOPGAP (2026-08): system agents now request ttl="1h" on the
     # tools/system tiers (AnthropicClient.cache_ttl), so this schema
-    # undercharges those writes by 0.75x-input per written token. Accepted
-    # for now because FINANCE_CACHE_AWARE_LLM_COST is still a shadow flag
-    # (writes bill at 1x input either way while it is off) and the fix is a
+    # undercharges those writes by 0.75x-input per written token. The fix is a
     # per-request TTL dimension on the usage record — tracked as a finance
     # follow-up, not fixable from a per-model rate.
+    #
+    # It is no longer only a shadow-flag concern: FINANCE_CACHE_AWARE_LLM_COST
+    # defaulted OFF when this note was written and has defaulted ON since
+    # 2026-08-24, so these rates are what finance actually bills cache tokens
+    # at rather than a value computed and discarded. A rate that is wrong, or
+    # left at 0.0, is a real mispricing in production — 0.0 bills cache reads at
+    # the full input rate (roughly 10x on most models), and a rate declared too
+    # low undercharges by the same arithmetic. Audits that fill one of these in
+    # should treat it as a billing change, not a catalog annotation.
     cache_read_cost_hint: float = 0.0
     cache_write_cost_hint: float = 0.0

@@ -46,6 +46,18 @@ def test_fires_on_same_tool_with_varying_args():
     assert RepeatedActionsCondition(max_repeats=3).should_stop(steps, current_step=8) is False
 
 
+def test_description_names_the_tool_that_tripped_the_cap():
+    """The halt must name the over-cap tool, not just "one tool" — the server
+    otherwise labels it with the run's last FAILING tool, which can be any
+    unrelated call (2026-10-05: log_decision tripped, label said
+    get_growth_evidence)."""
+    cond = ExcessiveSameToolCondition(max_same_tool=4)
+    steps = [_step("get_growth_evidence", start_date="x")]
+    steps += [_step("log_decision", candidate=f"sissue_{i}") for i in range(4)]
+    assert cond.should_stop(steps, current_step=len(steps)) is True
+    assert cond.get_description() == "Called log_decision 4+ times in a single turn"
+
+
 def test_under_cap_does_not_fire():
     cond = ExcessiveSameToolCondition(max_same_tool=8)
     steps = [_step("search_memory", q=f"query {i}") for i in range(5)]

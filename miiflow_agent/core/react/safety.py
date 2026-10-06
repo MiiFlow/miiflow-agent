@@ -3,7 +3,7 @@
 import re
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from .enums import StopReason
@@ -245,6 +245,11 @@ class ExcessiveSameToolCondition(StopCondition):
     """
 
     max_same_tool: int = 20
+    # The tool that tripped the cap, set by ``should_stop`` so the description
+    # names it. Without it the halt was labelled only by the run's last FAILING
+    # tool — on 2026-10-05 a run halted on its 20th ``log_decision`` read as
+    # "(last tool: get_growth_evidence)", and the digest chased the wrong tool.
+    tripped_tool: Optional[str] = field(default=None, compare=False)
 
     def should_stop(self, steps: List[ReActStep], current_step: int) -> bool:
         counts: Dict[str, int] = {}
@@ -256,6 +261,7 @@ class ExcessiveSameToolCondition(StopCondition):
                     continue
                 counts[name] = counts.get(name, 0) + 1
                 if counts[name] >= self.max_same_tool:
+                    self.tripped_tool = name
                     return True
         return False
 
@@ -263,6 +269,8 @@ class ExcessiveSameToolCondition(StopCondition):
         return StopReason.REPEATED_ACTIONS
 
     def get_description(self) -> str:
+        if self.tripped_tool:
+            return f"Called {self.tripped_tool} {self.max_same_tool}+ times in a single turn"
         return f"Called one tool {self.max_same_tool}+ times in a single turn"
 
 

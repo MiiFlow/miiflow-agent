@@ -13,9 +13,8 @@ Thanks for your interest in miiflow-agent. We welcome contributions.
 
 3. Install dependencies:
    ```bash
-   pip install -e ".[all]"
-   # dev tooling (black, isort, flake8, mypy) is a poetry group, not an extra:
-   poetry install --with dev
+   # Installs from poetry.lock, the same versions CI and the release use.
+   poetry install --with dev --all-extras
    ```
 
 4. Create a branch:
@@ -28,7 +27,7 @@ Thanks for your interest in miiflow-agent. We welcome contributions.
 ### Run Tests
 
 ```bash
-pytest tests/
+poetry run pytest tests/
 ```
 
 ### Code Style
@@ -107,7 +106,7 @@ miiflow_agent/
 
 5. Make sure tests pass:
    ```bash
-   pytest tests/
+   poetry run pytest tests/
    ```
 
 ## Adding a Provider
@@ -141,22 +140,22 @@ miiflow_agent/
 
 ### Unit Tests
 ```bash
-pytest tests/core/
+poetry run pytest tests/core/
 ```
 
 ### Provider Tests
 ```bash
-pytest tests/providers/
+poetry run pytest tests/providers/
 ```
 
 ### Integration Tests
 ```bash
-pytest tests/test_llm_client.py
+poetry run pytest tests/test_llm_client.py
 ```
 
 ### With Coverage
 ```bash
-pytest --cov=miiflow_agent tests/
+poetry run pytest --cov=miiflow_agent tests/
 ```
 
 ## Documentation

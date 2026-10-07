@@ -30,6 +30,13 @@ def _executor(slow_tool):
     return AgentToolExecutor(agent)
 
 
+def _pending_cancels() -> int:
+    # Task.cancelling() is 3.11+; a 3.10 task has no counter to leak into, so
+    # the sleep before each call is the whole check there (same guard as the
+    # SDK). Never call it directly: some pytest-asyncio versions hide that.
+    return getattr(asyncio.current_task(), "cancelling", lambda: 0)()
+
+
 @pytest.mark.asyncio
 async def test_stop_cancels_a_call_in_flight_and_reports_it_failed():
     started, finished = asyncio.Event(), []
@@ -80,7 +87,7 @@ async def test_a_call_that_finishes_is_unaffected_and_leaves_no_cancel_behind():
     await asyncio.sleep(0.01)
 
     assert result.success is True and result.output == "ok"
-    assert asyncio.current_task().cancelling() == 0
+    assert _pending_cancels() == 0
 
 
 @pytest.mark.asyncio
@@ -187,8 +194,6 @@ async def test_a_tool_that_turns_our_cancel_into_an_error_leaves_no_cancel_behin
         with pytest.raises(RuntimeError):
             await call
         await asyncio.sleep(0)  # a leaked cancel would fire here
-        # Task.cancelling() is 3.11+; a 3.10 task has no counter to leak into,
-        # so the sleep above is the whole check there (same guard as the SDK).
-        return getattr(asyncio.current_task(), "cancelling", lambda: 0)()
+        return _pending_cancels()
 
     assert await asyncio.wait_for(asyncio.create_task(run()), timeout=2) == 0

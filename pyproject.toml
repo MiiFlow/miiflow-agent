@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "miiflow-agent"
-version = "1.21.0"
-description = "A lightweight Python SDK for building AI agents with unified LLM providers, ReAct orchestration, and tool calling"
+version = "1.21.1"
+description = "A model-agnostic agent harness for Python: agent loop, tools, sub-agents, human-in-the-loop, MCP and context management on any LLM provider"
 authors = [ "Yaozhong Kang <yaozhong@miiflow.ai>" , "Debjyoti Ray <dev@miiflow.ai>" ]
 maintainers = [ "Yaozhong Kang <yaozhong@miiflow.ai>" ]
 readme = "README.md"
@@ -9,7 +9,7 @@ license = "MIT"
 homepage = "https://github.com/Miiflow/miiflow-agent"
 repository = "https://github.com/Miiflow/miiflow-agent"
 documentation = "https://github.com/Miiflow/miiflow-agent#readme"
-keywords = ["agent", "llm", "openai", "anthropic", "react", "orchestration", "tools"]
+keywords = ["agent", "agent-harness", "agent-sdk", "llm", "openai", "anthropic", "gemini", "orchestration", "tools", "mcp"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",

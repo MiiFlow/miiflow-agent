@@ -2,9 +2,21 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## [1.21.1] - 2026-10-06
+
+**First PyPI release since 1.17.0.** The `v1.21.0` tag was pushed but its publish job never ran (the Python 3.10 test job failed), so 1.21.0 is not on PyPI and everything in it ships here. If you are upgrading from PyPI, read the 1.18.0 through 1.21.0 entries below as well.
+
+### Fixed
+- **The stop-cancellation tests no longer call `Task.cancelling()` directly (`tests/core/test_tool_stop_cancellation.py`)**: the method only exists on Python 3.11+, so `test_a_call_that_finishes_is_unaffected_and_leaves_no_cancel_behind` failed with `AttributeError` on 3.10 and blocked the 1.21.0 release. Both checks now go through one `_pending_cancels()` helper using the same `getattr` guard as the SDK's `_unless_run_stopped`. Python 3.10 has no cancellation counter, so a leaked cancel would surface at the `sleep` before each check instead. The SDK itself was already 3.10-safe; only the tests were affected.
+- **The test workflows install from `poetry.lock`, as the publish workflow does (`.github/workflows/test.yml`, monorepo `miiflow-agent-tests.yml`)**: they had installed `pytest-asyncio` unpinned and so resolved 1.x. On 3.10, its runner wraps each test body in a backported `Task` that *does* have `cancelling()`, which hid the direct call. The publish workflow runs the locked 0.25.3, where the task is a plain 3.10 `Task`. So "Tests" passed the commit that the release then failed.
+
+### Changed
+- **README and package description lead with the agent harness, not the provider layer**: miiflow-agent is now described as a model-agnostic agent harness, filling the role of the Claude Agent SDK on any provider. A concept table maps the Claude Agent SDK's loop, tools, sub-agents, hooks, permissions, sessions, MCP and compaction to their equivalents here, and states the real differences: no built-in filesystem, shell or web tools, and it runs in-process. The unified `LLMClient` is now documented under "Models and Providers", after the harness sections.
+- **README claims corrected to match the code**: `require_approval=True` does not pause a run by itself. It declares the need and keeps the tool out of parallel batches, and a host `PRE_TOOL_USE` hook that sets `event.blocked` is what pauses it, which the hero example now shows. Read-only calls overlap only with `MIIFLOW_READONLY_PARALLEL=1`, `POST_TOOL_USE` fires only with `MIIFLOW_EMIT_POST_TOOL_USE=1`, and a stopped run lets only `writes=True` calls finish. The previous README stated all four more broadly.
+
 ## [1.21.0] - 2026-10-06
 
-**First PyPI release since 1.17.0.** The 1.18.0 publish was blocked by a failing test and 1.18.1, 1.19.0 and 1.20.0 were never tagged, so their entries below ship in this release; read them alongside this one if you are upgrading from PyPI.
+**Tagged but never published; ships in 1.21.1.** The 1.18.0 publish was blocked by a failing test and 1.18.1, 1.19.0 and 1.20.0 were never tagged, so their entries below ship with it.
 
 ### Added
 - **Cached-input rates for every Gemini model (`models/google.py`)**: `cache_read_cost_hint` had been wired for `gemini-3.5-flash` alone, so the other six models billed cached tokens at the **full input rate** — safe, because it over-states, but wrong, and it hid the single largest cost lever on a long-prompt Gemini workload. Now declared throughout: **$0.075** on the three current Flash models (3.8 / 3.7 / 3.6), **$0.03** on Gemini 3.5 Flash-Lite, **$0.20** on Gemini 3.1 Pro and **$0.025** on Gemini 3.1 Flash-Lite. Google's own pricing pages are still unreachable from the audit environment, so each figure comes from a quotation of the official Gemini Developer API pricing table and was cross-checked against the one ratio the catalog already knew from Gemini 3.5 Flash — **every Gemini model reads cached input at 0.1x its base input rate** — which all four figures match exactly. Two caveats a flat hint cannot carry are recorded in the module comment instead: the Flash trio's $0.075 is the same **introductory** rate their input price is and doubles to $0.15 on January 1, 2027 alongside it, and Gemini 3.1 Pro's $0.20 is the under-200K tier ($0.40 above it). Google's cache **storage** charge ($0.50/1M/hour on the Flash tier, $4.50 on 3.1 Pro) has no field in `ModelConfig` at all and is still not captured, so explicit caching costs more than these rates say.

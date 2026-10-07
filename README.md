@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">miiflow-agent</h1>
   <p align="center">
-    <strong>A lightweight, unified Python SDK for LLM providers with a production ReAct agent loop</strong>
+    <strong>A model-agnostic agent harness for Python — think Claude Agent SDK, for any LLM</strong>
   </p>
 </p>
 
@@ -13,17 +13,38 @@
 
 ---
 
-**miiflow-agent** gives you one API across nine LLM providers, plus the agent runtime that sits on top of it: a ReAct loop with tool calling, sub-agent hand-off, human-in-the-loop pauses, MCP, context management and tracing. It runs Miiflow's production agent traffic.
+A model call is easy. The hard part of an agent is the **harness** around it: the loop that decides when to call tools and when to answer, running those tools safely and in parallel, handing work to sub-agents, pausing for a human and resuming later, keeping a long run inside the context window, recovering when a provider errors, and streaming all of it to a UI.
+
+**miiflow-agent is that harness, as a Python library.** It plays the same role as the Claude Agent SDK, but it is not tied to one model family: the same agent runs on Claude, GPT, Gemini or six other providers, and you can switch with one line. It runs Miiflow's production agent traffic.
 
 ```python
-from miiflow_agent import LLMClient, Message
+from miiflow_agent import Agent, AgentType, CallbackEventType, LLMClient, scoped_callbacks, tool
 
-# Same interface for any provider
-client = LLMClient.create("openai", model="gpt-6-luna")
-response = client.chat([Message.user("Hello!")])
+@tool("get_weather", "Current weather for a city", writes=False)
+def get_weather(city: str) -> str:
+    return f"18°C and clear in {city}"
 
-# Switch providers with one line
-client = LLMClient.create("anthropic", model="claude-sonnet-5-5")
+@tool("book_table", "Reserve a restaurant table", writes=True)
+def book_table(restaurant: str, time: str) -> str:
+    return f"Booked {restaurant} at {time}"
+
+agent = Agent(
+    LLMClient.create("anthropic", model="claude-sonnet-5-5"),  # or "openai", "gemini", ...
+    agent_type=AgentType.REACT,
+    tools=[get_weather, book_table],
+)
+
+# A PRE_TOOL_USE hook is the permission gate: blocking a call pauses the run.
+async def ask_before_booking(event):
+    if event.tool_name == "book_table":
+        event.blocked = True
+        event.block_reason = "Bookings need a person's OK"
+
+with scoped_callbacks() as hooks:
+    hooks.register(CallbackEventType.PRE_TOOL_USE, ask_before_booking)
+    # The loop checks the weather first. Before book_table runs, the agent emits
+    # TOOL_APPROVAL_NEEDED and pauses (see Human in the loop).
+    result = await agent.run("If it's nice out in Lisbon tonight, book Taberna at 8pm")
 ```
 
 **Demo of an Agentic Run**
@@ -32,23 +53,31 @@ client = LLMClient.create("anthropic", model="claude-sonnet-5-5")
 https://github.com/user-attachments/assets/0b5c870a-f9b2-4d55-a829-9d7c000be907
 
 
-## Why miiflow-agent?
+## The harness, piece by piece
 
-| | miiflow-agent | LangChain | LiteLLM |
-|---|:---:|:---:|:---:|
-| **Codebase size** | ~45K lines | ~500K lines | ~50K lines |
-| **Core dependencies** | 9 | 50+ | 20+ |
-| **Built-in agents** | ReAct + sub-agent hand-off | Requires setup | None |
-| **Tool system** | `@tool` decorator, MCP, HTTP | Chains | None |
-| **Human-in-the-loop** | Approvals, clarifications, plan mode | LangGraph | None |
-| **Type safety** | Full generics | Partial | Basic |
+If you have used the Claude Agent SDK, the concepts carry over:
 
-- **Unified provider interface** — swap OpenAI → Claude → Gemini with one line
-- **One agent loop** — planning and multi-agent work are emergent behaviour inside a single ReAct loop, not separate orchestrators to choose between
-- **Simple tools** — decorate any function with `@tool`; schemas are generated from type hints
-- **Real streaming** — typed events for thinking, tool calls, observations and answer tokens
-- **Built for long runs** — context compaction, tool search over large catalogs, bounded parallel tool execution, recovery from provider errors
-- **Observable** — OpenInference tracing for Phoenix and Arize AX, plus usage and latency callbacks
+| Harness concern | Claude Agent SDK | miiflow-agent |
+|---|---|---|
+| Agent loop | Claude Code's loop | One ReAct loop (`AgentType.REACT`): think → call tools → observe → answer |
+| Custom tools | `@tool` + in-process MCP server | `@tool` on any function; the schema comes from type hints |
+| Sub-agents | `agents={...}` | `sub_agents=[...]`, with depth, cycle and budget limits |
+| Hooks | `PreToolUse`, `PostToolUse`, ... | `PRE_TOOL_USE` (block or rewrite), `POST_TOOL_USE` (transform, opt-in), `POST_CALL`, ... |
+| Permissions and plan mode | Permission modes, `plan` | A `PRE_TOOL_USE` hook that blocks a call pauses the run for approval; `enable_plan_mode=True` keeps a run read-only until the plan is approved |
+| Pause and resume | Sessions | A JSON-serializable `Checkpoint` resumed with a `ResumeCommand`, plus multiple-choice clarification questions |
+| MCP | MCP servers | Client-side servers (stdio, HTTP, SSE) or provider-native MCP on Anthropic and OpenAI |
+| Long runs | Automatic compaction | A context engine that sizes the whole request and compacts older history; tool search over large catalogs |
+| Streaming | Typed messages | Typed events for thinking, tool calls, observations, answer tokens and pauses, or AG-UI |
+| **Models** | **Claude** | **OpenAI, Anthropic, Gemini, Bedrock, OpenRouter, Groq, Mistral, Ollama, xAI** |
+
+There are also real differences. The Claude Agent SDK drives the Claude Code runtime and ships its filesystem, shell and web tools. miiflow-agent runs in your process and ships no tools that act outside the process (its only built-ins are control tools such as plan mode, clarification and tool search): your agent can only do what the tools you give it do. That fits product agents serving many users, where every capability should be one you chose.
+
+What else the harness takes care of:
+
+- **Safe parallel tool execution** — calls declared `parallelizable=True` overlap; writes and approval-gated calls run one at a time, in order
+- **Stop means stop** — a cancelled run abandons the calls it has in flight, except those declared `writes=True`: it lets them finish, so the transcript never calls a change that happened "cancelled"
+- **Recovery** — context overflow, truncated output and malformed history go through a recovery ladder before the run fails, and a run halted by a safety limit still answers from the work it completed
+- **Observability** — OpenInference tracing for Phoenix and Arize AX, plus token-usage and latency callbacks
 
 ## Installation
 
@@ -81,31 +110,7 @@ API keys are read from `<PROVIDER>_API_KEY` (e.g. `OPENAI_API_KEY`, `ANTHROPIC_A
 
 ## Quick Start
 
-### Basic Chat
-
-```python
-from miiflow_agent import LLMClient, Message
-
-client = LLMClient.create("openai", model="gpt-6-luna")
-response = client.chat([
-    Message.system("You are a helpful assistant."),
-    Message.user("What is Python?"),
-])
-print(response.message.content)
-```
-
-> `client.chat()` is a sync convenience that calls `asyncio.run()` internally — inside an already-running event loop (Jupyter, an async app), use `await client.achat(...)` instead.
-
-### Streaming
-
-```python
-async for chunk in client.astream_chat([Message.user("Tell me a story")]):
-    print(chunk.delta, end="", flush=True)
-```
-
-Streams retry transparently until the first chunk arrives (`MIIFLOW_STREAM_RETRY_ATTEMPTS`, default 3) and fail on a stalled connection after `MIIFLOW_STREAM_INACTIVITY_TIMEOUT` seconds (default 300).
-
-### ReAct Agent with Tools
+### Agent with Tools
 
 ```python
 from miiflow_agent import Agent, AgentType, LLMClient, tool
@@ -184,25 +189,7 @@ result = await agent.run(
 └──────────────────┘   └────────────────────┘   └──────────────────┘
 ```
 
-## Supported Providers
-
-| Provider | `LLMClient.create` key | Streaming | Tool Calling | Vision | Status |
-|----------|------------------------|:---------:|:------------:|:------:|:------:|
-| **OpenAI** | `openai` | ✅ | ✅ | ✅ | **Stable** |
-| **Anthropic** | `anthropic` | ✅ | ✅ | ✅ | **Stable** |
-| **Google Gemini** | `gemini` | ✅ | ✅ | ✅ | **Stable** |
-| Amazon Bedrock | `bedrock` | ✅ | ✅ | ✅ | Beta |
-| OpenRouter | `openrouter` | ✅ | ✅ | ✅ | Beta |
-| Groq | `groq` | ✅ | ✅ | - | Beta |
-| Mistral | `mistral` | ✅ | ✅ | - | Beta |
-| Ollama | `ollama` | ✅ | ✅ | - | Beta |
-| xAI | `xai` | ✅ | ✅ | - | Beta |
-
-> Keys are lowercase and exact — `gemini`, not `google` (that is only the pip extra's name). Bedrock takes `aws_access_key_id`, `aws_secret_access_key` and `region_name` as keyword arguments instead of an API key.
-
-The model catalog in `miiflow_agent/models/` records each model's context window, output cap, prices (including cache-read and cache-write rates), supported parameters and reasoning-effort levels. It is re-audited against the providers' docs regularly; see [CHANGELOG.md](CHANGELOG.md) for what is current, legacy or deprecated.
-
-## Agentic Patterns
+## How the Loop Works
 
 miiflow-agent runs a **single, unified ReAct loop**. Each turn the model emits either tool calls (the loop continues) or a text answer (the loop exits). Planning and multi-agent execution happen *inside* this loop — the model plans over several turns and hands work to sub-agents as ordinary tool calls. `AgentType.SINGLE_HOP` (the default: one call, used for chat-only or `json_schema` output) and `AgentType.REACT` are the only modes.
 
@@ -213,8 +200,8 @@ miiflow-agent runs a **single, unified ReAct loop**. Each turn the model emits e
 | Flag | Effect |
 |---|---|
 | `writes=True/False` | Declares whether the tool changes outside state. Read-only tools stay callable in plan mode. Leaving it `None` means "unclassified", so a host can enforce coverage. |
-| `parallelizable=True` | May run concurrently with other calls from the same turn. A mixed batch runs in order, in stages: consecutive parallelizable or read-only calls overlap, while writes, approval-gated and control-flow calls run one at a time in their original position. |
-| `require_approval=True` | Pauses the run for a human decision before the tool executes (see below). |
+| `parallelizable=True` | May run concurrently with other calls from the same turn. A mixed batch runs in order, in stages: consecutive parallelizable calls overlap, while writes, approval-gated and control-flow calls run one at a time in their original position. Set `MIIFLOW_READONLY_PARALLEL=1` to let `writes=False` calls overlap too. |
+| `require_approval=True` | Declares that the tool needs a human decision and keeps it out of parallel batches. The flag does not pause the run by itself: a `PRE_TOOL_USE` hook enforces it (see below). |
 | `always_load=True`, `search_keywords=[...]` | Keep the tool visible, or make it findable, when tool search hides the rest of a large catalog. |
 | `strict=True` | Provider-side strict schemas. Opt-in and for small read tools only — strict grammars have per-request size caps. |
 
@@ -265,7 +252,7 @@ result = await lead.run("Compare the three most popular Python web frameworks")
 
 A run can stop and wait for a person without losing its place:
 
-- **Tool approval** — a `require_approval=True` tool emits `TOOL_APPROVAL_NEEDED` and the run pauses.
+- **Tool approval** — when a `PRE_TOOL_USE` hook sets `event.blocked = True`, the call does not run: the stream emits `TOOL_APPROVAL_NEEDED` and the run pauses. A hook can also approve with edits by setting `event.inputs_override`.
 - **Clarification** — the agent can ask the user one or more (multiple-choice) questions; the stream emits `CLARIFICATION_NEEDED`.
 - **Plan mode** — with `enable_plan_mode=True` the model can call `enter_plan_mode`, after which only read-only tools run until the user approves the plan it submits via `exit_plan_mode` (`PLAN_APPROVAL_NEEDED`).
 
@@ -333,7 +320,7 @@ Other events cover tool execution (`ACTION_EXECUTING`), sub-agent progress (`SUB
 
 Pass `event_format="agui"` (with `thread_id` and `message_id`, and the `agui` extra) to receive [AG-UI](https://docs.ag-ui.com) protocol events instead.
 
-## Callbacks
+## Hooks and Callbacks
 
 Hook LLM calls and tool execution — for billing, approvals, auditing or output enrichment:
 
@@ -359,7 +346,7 @@ with scoped_callbacks() as cbs:
     await agent.run(prompt)
 ```
 
-Event types: `POST_CALL`, `ON_ERROR`, `AGENT_RUN_START`, `AGENT_RUN_END`, `PRE_TOOL_USE` (can block or rewrite inputs), `POST_TOOL_USE` (can transform output) and `TOOL_EXECUTED` (the final outcome). Inside async generators use `callback_context_stream` / `scoped_callbacks_stream`, which stay correct when the stream is advanced from another task.
+Event types: `POST_CALL`, `ON_ERROR`, `AGENT_RUN_START`, `AGENT_RUN_END`, `PRE_TOOL_USE` (can block or rewrite inputs), `POST_TOOL_USE` (can transform output; opt-in with `MIIFLOW_EMIT_POST_TOOL_USE=1`) and `TOOL_EXECUTED` (the final outcome). Inside async generators use `callback_context_stream` / `scoped_callbacks_stream`, which stay correct when the stream is advanced from another task.
 
 ## Observability
 
@@ -408,6 +395,52 @@ except ProviderError as e:
 ```
 
 `RateLimitError.retry_after` is populated from the provider's `Retry-After` header. `ModelError` and `ParsingError` are also exported. Inside an agent run, recoverable provider errors (context overflow, truncated output, malformed history) go through a recovery ladder before the run fails, and a run halted by a safety limit still answers from the work it completed.
+
+## Models and Providers
+
+The harness talks to models through `LLMClient`, which gives every provider the same interface. You can also use it directly, without an agent.
+
+### Chat
+
+```python
+from miiflow_agent import LLMClient, Message
+
+client = LLMClient.create("openai", model="gpt-6-luna")
+response = client.chat([
+    Message.system("You are a helpful assistant."),
+    Message.user("What is Python?"),
+])
+print(response.message.content)
+```
+
+> `client.chat()` is a sync convenience that calls `asyncio.run()` internally — inside an already-running event loop (Jupyter, an async app), use `await client.achat(...)` instead.
+
+### Streaming tokens
+
+```python
+async for chunk in client.astream_chat([Message.user("Tell me a story")]):
+    print(chunk.delta, end="", flush=True)
+```
+
+Streams retry transparently until the first chunk arrives (`MIIFLOW_STREAM_RETRY_ATTEMPTS`, default 3) and fail on a stalled connection after `MIIFLOW_STREAM_INACTIVITY_TIMEOUT` seconds (default 300).
+
+### Supported Providers
+
+| Provider | `LLMClient.create` key | Streaming | Tool Calling | Vision | Status |
+|----------|------------------------|:---------:|:------------:|:------:|:------:|
+| **OpenAI** | `openai` | ✅ | ✅ | ✅ | **Stable** |
+| **Anthropic** | `anthropic` | ✅ | ✅ | ✅ | **Stable** |
+| **Google Gemini** | `gemini` | ✅ | ✅ | ✅ | **Stable** |
+| Amazon Bedrock | `bedrock` | ✅ | ✅ | ✅ | Beta |
+| OpenRouter | `openrouter` | ✅ | ✅ | ✅ | Beta |
+| Groq | `groq` | ✅ | ✅ | - | Beta |
+| Mistral | `mistral` | ✅ | ✅ | - | Beta |
+| Ollama | `ollama` | ✅ | ✅ | - | Beta |
+| xAI | `xai` | ✅ | ✅ | - | Beta |
+
+> Keys are lowercase and exact — `gemini`, not `google` (that is only the pip extra's name). Bedrock takes `aws_access_key_id`, `aws_secret_access_key` and `region_name` as keyword arguments instead of an API key.
+
+The model catalog in `miiflow_agent/models/` records each model's context window, output cap, prices (including cache-read and cache-write rates), supported parameters and reasoning-effort levels. It is re-audited against the providers' docs regularly; see [CHANGELOG.md](CHANGELOG.md) for what is current, legacy or deprecated.
 
 ## Documentation
 

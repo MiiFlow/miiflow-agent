@@ -19,6 +19,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from miiflow_agent.core.observability.spans import (
     DEFAULT_ATTRIBUTE_VALUE_LIMIT,
     agent_span,
+    attribute_count_limit,
     attribute_value_limit,
     set_span_output,
     span_limits,
@@ -145,7 +146,12 @@ class TestOversizedAttributesAreBoundedNotDropped:
         monkeypatch.setenv("MIIFLOW_SPAN_ATTRIBUTE_LIMIT", "0")
         monkeypatch.delenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", raising=False)
         assert attribute_value_limit() is None
-        assert span_limits() is None
+        # The value cap is off, but limits are still returned: the attribute
+        # COUNT cap must be lifted regardless, or the SDK's default of 128
+        # truncates every large LLM span.
+        limits = span_limits()
+        assert limits.max_attribute_length is None
+        assert limits.max_attributes == attribute_count_limit()
 
         exporter = InMemorySpanExporter()
         provider = trace_sdk.TracerProvider(span_limits=span_limits())

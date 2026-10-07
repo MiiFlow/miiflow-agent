@@ -9,7 +9,7 @@ import pytest
 
 from miiflow_agent.core.callbacks import CallbackEvent, CallbackEventType
 from miiflow_agent.core.react.tool_executor import AgentToolExecutor
-from miiflow_agent.core.tools import FunctionTool, ToolFailure, ToolResult
+from miiflow_agent.core.tools import FunctionTool, ToolFailure, ToolRegistry, ToolResult
 
 
 @pytest.mark.parametrize(
@@ -83,8 +83,10 @@ async def test_host_can_opt_into_a_legacy_result_adapter():
 async def test_post_tool_failure_is_finalized_before_tool_executed(monkeypatch):
     """Bookkeeping callbacks must see the outcome returned to the caller."""
 
-    class Registry:
-        async def execute_safe(self, _tool_name, **_kwargs):
+    # Subclass the real registry so the executor's lookups (`tools`,
+    # `http_tools`, `mcp_tools`, ...) see the real shape; only execution is stubbed.
+    class Registry(ToolRegistry):
+        async def execute_safe(self, _tool_name, /, **_kwargs):
             return ToolResult(name="read", input={}, output={"data": []})
 
     class Agent:

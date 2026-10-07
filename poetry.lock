@@ -3102,7 +3102,7 @@ description = "Python Imaging Library (Fork)"
 optional = true
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "extra == \"multimedia\" or extra == \"images\""
+markers = "extra == \"multimedia\" or extra == \"images\" or extra == \"all\""
 files = [
     {file = "pillow-10.4.0-cp310-cp310-macosx_10_10_x86_64.whl", hash = "sha256:4d9667937cfa347525b319ae34375c37b9ee6b525440f3ef48542fcf66f2731e"},
     {file = "pillow-10.4.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:543f3dc61c18dafb755773efc89aae60d06b6596a63914107f75459cf984164d"},
@@ -5383,7 +5383,7 @@ type = ["pytest-mypy"]
 
 [extras]
 agui = ["ag-ui-protocol"]
-all = ["PyMuPDF", "ag-ui-protocol", "arize-phoenix", "google-genai", "groq", "mcp", "mistralai", "openinference-instrumentation-anthropic", "openinference-instrumentation-google-genai", "openinference-instrumentation-openai", "opentelemetry-api", "opentelemetry-exporter-otlp", "opentelemetry-sdk", "prometheus-client", "yfinance"]
+all = ["Pillow", "PyMuPDF", "ag-ui-protocol", "arize-phoenix", "google-genai", "groq", "mcp", "mistralai", "openinference-instrumentation-anthropic", "openinference-instrumentation-google-genai", "openinference-instrumentation-openai", "opentelemetry-api", "opentelemetry-exporter-otlp", "opentelemetry-sdk", "prometheus-client", "yfinance"]
 examples = ["yfinance"]
 google = ["google-genai"]
 groq = ["groq"]
@@ -5397,4 +5397,4 @@ pdf = ["PyMuPDF"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.13"
-content-hash = "f8c2a6fc25ff90c67ea238643512a545100fc983b0f5609e43f1d92148280ba2"
+content-hash = "78967d18f796b73c82529d89acb71be38fa7aca811111cd6c60f2c9dae4817ad"

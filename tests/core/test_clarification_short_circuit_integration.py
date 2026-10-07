@@ -11,7 +11,10 @@ import asyncio
 from types import SimpleNamespace
 
 from miiflow_agent.core.react.enums import ReActEventType
+from miiflow_agent.core.react.execution import ExecutionState
+from miiflow_agent.core.react.models import ReActStep
 from miiflow_agent.core.react.orchestrator import ReActOrchestrator
+from miiflow_agent.core.tools import ToolResult
 from miiflow_agent.core.tools.clarification import CLARIFICATION_MARKER
 
 
@@ -43,12 +46,13 @@ def _standin_orch(execute_tool):
 
 
 def _clarification_result(questions):
-    return SimpleNamespace(
+    # A real ToolResult, not a stand-in: the orchestrator reads derived
+    # properties such as `is_success`, which a hand-built namespace drifts from.
+    return ToolResult(
         name="ask_user_clarification",
-        success=True,
+        input={"questions": questions},
         output={"marker": CLARIFICATION_MARKER, "questions": questions, "context": "need info"},
-        cost=0.0,
-        execution_time=0.0,
+        success=True,
     )
 
 
@@ -62,20 +66,14 @@ def _drive(established_facts, questions, clarification_round=0):
             return result
 
         orch = _standin_orch(_execute_tool)
-        step = SimpleNamespace(
+        step = ReActStep(
+            step_number=1,
+            thought="",
             action="ask_user_clarification",
             action_input={"questions": questions},
             observation="",
-            cost=0.0,
-            execution_time=0.0,
         )
-        state = SimpleNamespace(
-            current_step=1,
-            needs_clarification=False,
-            clarification_data=None,
-            pending_llm_blocks=[],
-            media_store={},
-        )
+        state = ExecutionState(current_step=1)
         context = SimpleNamespace(
             deps={
                 "established_facts": established_facts,
@@ -156,8 +154,8 @@ def test_legacy_path_unchanged_when_no_facts_in_deps():
             return result
 
         orch = _standin_orch(_execute_tool)
-        step = SimpleNamespace(action="ask_user_clarification", action_input={}, observation="", cost=0.0, execution_time=0.0)
-        state = SimpleNamespace(current_step=1, needs_clarification=False, clarification_data=None, pending_llm_blocks=[], media_store={})
+        step = ReActStep(step_number=1, thought="", action="ask_user_clarification", action_input={}, observation="")
+        state = ExecutionState(current_step=1)
         context = SimpleNamespace(deps={}, messages=[])  # no established_facts key
         await ReActOrchestrator._handle_tool_action(orch, step, context, state, tool_call_id="tc_1")
         return state, orch.event_bus

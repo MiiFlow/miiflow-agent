@@ -60,10 +60,12 @@ def tool(
             with other parallelizable tools the model emits in the same
             assistant turn (asyncio.gather). Default False — serial is the safe
             default for any tool with observable side effects, hidden ordering
-            dependencies, or shared mutable state. Approval-required tools
-            also force serial regardless of this flag — a batch containing any
-            require_approval=True or parallelizable=False tool runs fully
-            serially (all-or-nothing rule, in the order the model emitted them).
+            dependencies, or shared mutable state. A batch where every call is
+            parallelizable (and none needs approval) runs fully concurrently;
+            a mixed batch runs in ordered stages — consecutive gather-safe calls
+            (parallelizable, or read-only) overlap, while writers, approval-
+            required and control-flow tools run serially at their original
+            positions (see ``AgentToolExecutor.execute_many``).
             Mark True only on idempotent reads, pure renderers, and lifecycle-
             isolated dispatchers.
         writes: Does this tool change state outside the agent's own context?

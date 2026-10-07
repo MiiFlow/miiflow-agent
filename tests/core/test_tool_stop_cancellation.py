@@ -187,6 +187,8 @@ async def test_a_tool_that_turns_our_cancel_into_an_error_leaves_no_cancel_behin
         with pytest.raises(RuntimeError):
             await call
         await asyncio.sleep(0)  # a leaked cancel would fire here
-        return asyncio.current_task().cancelling()
+        # Task.cancelling() is 3.11+; a 3.10 task has no counter to leak into,
+        # so the sleep above is the whole check there (same guard as the SDK).
+        return getattr(asyncio.current_task(), "cancelling", lambda: 0)()
 
     assert await asyncio.wait_for(asyncio.create_task(run()), timeout=2) == 0

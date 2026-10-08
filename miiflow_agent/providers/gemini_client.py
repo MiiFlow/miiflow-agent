@@ -40,8 +40,9 @@ def _sanitize_tool_name_for_gemini(name: str) -> str:
 
 GEMINI_AVAILABLE = True
 
+
 from ..core.client import ModelClient
-from ..core.exceptions import AuthenticationError, ProviderError
+from ..core.exceptions import AuthenticationError, MiiflowLLMError, ProviderError
 from ..core.message import DocumentBlock, ImageBlock, Message, MessageRole, TextBlock, VideoBlock
 from ..core.metrics import TokenCount
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
@@ -49,6 +50,22 @@ from ..utils.document_text import document_to_text
 from ..core.stream_normalizer import GeminiStreamNormalizer
 from ..core.streaming import StreamChunk
 from ..utils.image import image_url_to_bytes
+
+
+def _http_error(status_code: int, body: str) -> MiiflowLLMError:
+    """The typed error for a non-200 Gemini REST response.
+
+    A credential failure is ``AuthenticationError``, not a generic
+    ``ProviderError``: it fails every call made with that key, so callers
+    looping over work (sweeps, batch jobs) must be able to stop on it rather
+    than retry the dead key once per item. Gemini reports a rejected key as
+    401/403, and an unrecognised one as 400 with reason ``API_KEY_INVALID``.
+    """
+    message = f"Gemini API error ({status_code}): {body}"
+    if status_code in (401, 403) or "API_KEY_INVALID" in body:
+        return AuthenticationError(message, "gemini")
+    return ProviderError(message, provider="gemini")
+
 
 # Base URL for Gemini REST API
 _GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -677,10 +694,7 @@ class GeminiClient(ModelClient):
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(url, json=body, headers=self._auth_headers())
                 if resp.status_code != 200:
-                    raise ProviderError(
-                        f"Gemini API error ({resp.status_code}): {resp.text}",
-                        provider="gemini",
-                    )
+                    raise _http_error(resp.status_code, resp.text)
                 data = resp.json()
 
             content, tool_calls, usage, finish_reason = _parse_rest_response(
@@ -703,7 +717,7 @@ class GeminiClient(ModelClient):
                 finish_reason=self._get_finish_reason_name(finish_reason),
             )
 
-        except ProviderError:
+        except MiiflowLLMError:
             raise
         except Exception as e:
             raise ProviderError(f"Gemini API error: {e}", provider="gemini")
@@ -755,10 +769,7 @@ class GeminiClient(ModelClient):
                 ) as resp:
                     if resp.status_code != 200:
                         error_body = await resp.aread()
-                        raise ProviderError(
-                            f"Gemini API error ({resp.status_code}): {error_body.decode()}",
-                            provider="gemini",
-                        )
+                        raise _http_error(resp.status_code, error_body.decode())
 
                     async for chunk_dict in self._parse_sse_stream(resp):
                         # Feed dict chunks to normalizer
@@ -776,7 +787,7 @@ class GeminiClient(ModelClient):
 
                             yield normalized_chunk
 
-        except ProviderError:
+        except MiiflowLLMError:
             raise
         except Exception as e:
             raise ProviderError(f"Gemini streaming error: {e}", provider="gemini")

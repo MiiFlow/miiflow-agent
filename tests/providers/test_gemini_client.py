@@ -399,6 +399,37 @@ class TestGeminiClient:
                 await client.achat(sample_messages)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status_code,body",
+        [
+            (401, "The bound service account is deleted or disabled."),
+            (403, "PERMISSION_DENIED"),
+            (400, '{"error": {"details": [{"reason": "API_KEY_INVALID"}]}}'),
+        ],
+    )
+    async def test_rejected_credential_raises_authentication_error(
+        self, client, sample_messages, status_code, body
+    ):
+        """A rejected key fails every call alike; it must be distinguishable
+        from a per-request ProviderError so loops can stop on it."""
+        from miiflow_agent.core.exceptions import AuthenticationError
+
+        mock_resp = _mock_httpx_response({}, status_code=status_code)
+        mock_resp.text = body
+
+        async def mock_post(url, json=None, headers=None):
+            return mock_resp
+
+        mock_http = AsyncMock()
+        mock_http.post = mock_post
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
+            with pytest.raises(AuthenticationError):
+                await client.achat(sample_messages)
+
+    @pytest.mark.asyncio
     async def test_stream_error_handling(self, client, sample_messages):
         """Test error handling in streaming."""
         from miiflow_agent.core.exceptions import ProviderError

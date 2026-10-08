@@ -115,6 +115,9 @@ class VisualizationResult:
     description: Optional[str] = None
     config: Optional[VisualizationConfig] = None
     id: str = ""
+    # Protocol payloads may contain opaque IDs/URLs whose bytes are meaningful.
+    # Hosts opt out explicitly rather than teaching the SDK their component types.
+    normalize_data: bool = True
 
     def __post_init__(self) -> None:
         self._normalize_display_text()
@@ -141,7 +144,7 @@ class VisualizationResult:
             self.description = normalize_text(self.description)
         # `code_preview` / `form` carry a verbatim payload — source code and
         # user-entered values must survive byte-for-byte.
-        if self.type not in RAW_DATA_TYPES and isinstance(self.data, dict):
+        if self.normalize_data and self.type not in RAW_DATA_TYPES and isinstance(self.data, dict):
             self.data = normalize_payload(self.data)
 
     def _content_id(self) -> str:

@@ -12,6 +12,14 @@ from .anthropic_client import AnthropicClient
 # later). That endpoint does not offer structured outputs, unlike the legacy
 # ARN-versioned integration that serves Opus 4.6 and earlier. Spelled as API
 # identifiers so a match works against any Bedrock ID shape.
+# Matched by SUBSTRING against the Bedrock model id, so each entry also covers
+# the newer point releases of its line ("claude-opus-5" covers
+# "claude-opus-5-5", "claude-sonnet-5" covers "claude-sonnet-5-5"). The Haiku
+# entry cannot be written that way: "claude-haiku-5" must not capture
+# "claude-haiku-4-5", and more importantly the two Haikus sit on OPPOSITE sides
+# of this gate — Bedrock serves Haiku 5.5 on the Messages-API endpoint (no
+# structured outputs) and Haiku 4.5 on the legacy ARN-versioned one (structured
+# outputs supported) — so it is spelled out in full.
 _NO_STRUCTURED_OUTPUTS_ON_BEDROCK = (
     "claude-fable-5",
     "claude-mythos",
@@ -19,6 +27,7 @@ _NO_STRUCTURED_OUTPUTS_ON_BEDROCK = (
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-5",
+    "claude-haiku-5-5",
 )
 
 
@@ -85,9 +94,13 @@ class BedrockClient(AnthropicClient):
         ARN-versioned integration (Opus 4.6 and earlier: Opus 4.6, Sonnet 4.6,
         Sonnet 4.5, Opus 4.5, Haiku 4.5) supports structured outputs; the newer
         Messages-API endpoint that serves Opus 4.7 and later — Fable 5, Opus 5,
-        Opus 4.8, Opus 4.7, Sonnet 5 — does not, and a request carrying the
-        format is rejected there even though the same model accepts it on the
-        Claude API. So a model must clear BOTH gates.
+        Opus 5.5, Opus 4.8, Opus 4.7, Sonnet 5, Sonnet 5.5, Haiku 5.5 — does
+        not, and a request carrying the format is rejected there even though the
+        same model accepts it on the Claude API. So a model must clear BOTH
+        gates. Note that the Haiku line now straddles the split: Haiku 4.5
+        passes this gate and its successor Haiku 5.5 does not, so an upgrade
+        within the tier silently loses strict schemas on Bedrock (not on the
+        Claude API, where Haiku 5.5 supports them).
 
         Bedrock model IDs are matched by substring because they carry a
         provider prefix and, on the legacy path, a regional inference-profile

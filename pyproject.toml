@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "miiflow-agent"
-version = "1.21.1"
+version = "1.22.0"
 description = "A model-agnostic agent harness for Python: agent loop, tools, sub-agents, human-in-the-loop, MCP and context management on any LLM provider"
 authors = [ "Yaozhong Kang <yaozhong@miiflow.ai>" , "Debjyoti Ray <dev@miiflow.ai>" ]
 maintainers = [ "Yaozhong Kang <yaozhong@miiflow.ai>" ]

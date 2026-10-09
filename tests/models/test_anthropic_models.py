@@ -13,6 +13,7 @@ from miiflow_agent.models.anthropic import (
     ANTHROPIC_MODELS,
     _resolve_model_name,
     effort_levels,
+    prompt_length_multiplier,
     supports_structured_outputs,
     supports_temperature,
     supports_thinking,
@@ -242,4 +243,127 @@ class TestSonnet55Contract:
             "high",
             "xhigh",
             "max",
+        )
+
+
+class TestHaiku55Contract:
+    """Haiku 5.5 is the first Haiku on the modern contract, and almost nothing
+    Haiku 4.5 code does carries over. Every assertion here is a 400 or a
+    mispriced request if it regresses.
+    """
+
+    def test_prompt_prices_are_the_under_100k_tier(self):
+        # The hints are the UNDER-threshold tier on the only prompt-length
+        # tiered model in the catalog. Pinned so an audit that "simplifies"
+        # them to the over-100K figures (or splits the difference) fails here
+        # rather than over-charging every short request fivefold.
+        config = ANTHROPIC_MODELS["claude-haiku-5.5"]
+        assert config.input_cost_hint == 0.10
+        assert config.output_cost_hint == 0.50
+        assert config.cache_read_cost_hint == 0.01
+        assert config.cache_write_cost_hint == 0.125
+
+    def test_a_long_prompt_bills_five_times_the_hints(self):
+        # The tier the flat hints cannot express. Without this multiplier a
+        # long-prompt Haiku 5.5 workload is under-charged by 5x, and
+        # FINANCE_CACHE_AWARE_LLM_COST has defaulted ON since 2026-08-24, so
+        # that is real money rather than a discarded computation.
+        assert prompt_length_multiplier("claude-haiku-5-5", 100_000) == 1.0
+        assert prompt_length_multiplier("claude-haiku-5-5", 100_001) == 5.0
+        assert prompt_length_multiplier("claude-haiku-5-5", 1_000_000) == 5.0
+
+    def test_an_unknown_prompt_size_bills_the_cheaper_tier(self):
+        # Not a guess upward: the hints already ARE the under-threshold tier,
+        # so None must leave billing exactly as it was before the tier existed.
+        assert prompt_length_multiplier("claude-haiku-5-5", None) == 1.0
+        assert prompt_length_multiplier("claude-haiku-5-5", 0) == 1.0
+
+    def test_no_other_model_is_prompt_length_tiered(self):
+        # The multiplier must never leak onto a flat-priced model: applying 5x
+        # to Fable 5.1 would bill $50/MTok input. Haiku 5.5 is deliberately the
+        # only member, so a new entry has to opt in explicitly.
+        for name in ANTHROPIC_MODELS:
+            if name == "claude-haiku-5.5":
+                continue
+            assert prompt_length_multiplier(name, 1_000_000) == 1.0
+
+    def test_it_is_a_1m_context_model_not_a_200k_one(self):
+        # The jump that changes compaction behaviour: `context_window_ceiling`
+        # in the server returns None for a 200K model and a real ceiling for a
+        # 1M one, so getting this wrong moves when a Haiku run compacts.
+        config = ANTHROPIC_MODELS["claude-haiku-5.5"]
+        assert config.maximum_context_tokens == 1_000_000
+        assert config.maximum_output_tokens == 128_000
+
+    def test_thinking_is_on_by_default_unlike_haiku_45(self):
+        # Haiku 4.5 did not think unless asked; this does. A caller that still
+        # assumes the 4.5 default budgets `max_tokens` for text alone and gets
+        # `stop_reason=max_tokens` with no text at all.
+        assert thinks_by_default("claude-haiku-5-5")
+        assert not thinks_by_default("claude-haiku-4-5-20251001")
+
+    def test_thinking_is_disabled_the_opus_5_way_not_the_sonnet_55_way(self):
+        # Three different off switches now exist in this catalog. Haiku 5.5
+        # takes plain "disabled" at effort <= high and rejects it above, which
+        # is Opus 5's gate and NOT Sonnet 5.5's `between_tools`.
+        for effort in (None, "low", "medium", "high"):
+            assert thinking_disable_param("claude-haiku-5-5", effort) == {
+                "type": "disabled"
+            }
+        for effort in ("xhigh", "max"):
+            assert thinking_disable_param("claude-haiku-5-5", effort) is None
+
+    def test_manual_thinking_budgets_are_refused(self):
+        # `budget_tokens` was the ONLY way to think on Haiku 4.5 and is a 400
+        # here, so the tier now straddles the extended-thinking parameter.
+        assert not supports_thinking("claude-haiku-5-5")
+        assert supports_thinking("claude-haiku-4-5-20251001")
+
+    def test_effort_is_accepted_where_haiku_45_rejected_it(self):
+        # Haiku 4.5 is now the only model in the catalog that 400s on effort,
+        # so "the Haiku tier cannot take effort" must not be derived from the
+        # tier name.
+        assert effort_levels("claude-haiku-5-5") == (
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        )
+        assert effort_levels("claude-haiku-4-5-20251001") == ()
+
+    def test_sampling_parameters_are_refused(self):
+        # Non-default temperature/top_p/top_k are a 400 here and accepted on
+        # 4.5, so the exclusion list must split the tier.
+        assert not supports_temperature("claude-haiku-5-5")
+        assert supports_temperature("claude-haiku-4-5-20251001")
+
+    def test_structured_outputs_stay_native(self):
+        # True on the Claude API. Flipping it would route every schema request
+        # through the forced-`json_tool` fallback — which this model does
+        # accept, unlike Opus 5.5 and Sonnet 5.5, so the failure would be a
+        # silent quality regression rather than an error.
+        assert supports_structured_outputs("claude-haiku-5-5")
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "claude-haiku-5.5",
+            "claude-haiku-5-5",
+            "anthropic.claude-haiku-5-5",
+            "us.anthropic.claude-haiku-5-5",
+        ],
+    )
+    def test_every_spelling_resolves_to_haiku_55(self, spelling):
+        assert _resolve_model_name(spelling) == "claude-haiku-5.5"
+
+    def test_haiku_45_is_not_shadowed_by_its_successor(self):
+        # The reverse of the Fable/Opus/Sonnet trap: here the two identifiers
+        # share no substring ("claude-haiku-4-5-20251001" vs
+        # "claude-haiku-5-5"), so order does not matter — asserted so that a
+        # future audit shortening the 4.5 identifier to `claude-haiku-4-5`
+        # cannot quietly make "claude-haiku-5" ambiguous.
+        assert _resolve_model_name("claude-haiku-4-5-20251001") == "claude-haiku-4.5"
+        assert _resolve_model_name("us.anthropic.claude-haiku-4-5-20251001-v1:0") == (
+            "claude-haiku-4.5"
         )

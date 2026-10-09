@@ -36,6 +36,15 @@ _NO_SAMPLING_PARAMS = {
 # September 2026) is excluded for the same reason: it is a video generation and
 # editing model billed per second of video, not per token.
 #
+# Also deliberately absent: gemini-nano-banana-2.1, GA October 6, 2026, the
+# newest image generation and conversational editing model (it supersedes
+# gemini-nano-banana-2, now deprecated with no shutdown date announced). Billed
+# per generated IMAGE, not per token, and it is not a generateContent text
+# model, so ModelConfig cannot describe it — the same exclusion as the Live,
+# transcribe and video models above. Recorded here only so the next audit does
+# not re-research it: nothing in this catalog references either Nano Banana
+# model, so the 2.0 deprecation needs no reference updates.
+#
 # Also deliberately absent: gemini-4-argon, announced September 30, 2026.
 # Gemini 4 Argon is Google's new frontier model and it genuinely beats
 # everything in this catalog — Artificial Analysis puts it level with GPT-6
@@ -46,10 +55,12 @@ _NO_SAMPLING_PARAMS = {
 # pre-release evaluation; only after that do paid API customers and Google AI
 # Ultra subscribers get it, and developers and the public after them. Google has
 # published no date for any of those later phases and no API model id, so an
-# entry here would fail on every request. Re-checked at the October 5, 2026
-# audit and unchanged: still Fairwind-only, with no API model id and no model
-# card, and Google saying only that it will reach developers, enterprises and
-# consumers "as soon as possible". Same reasoning as
+# entry here would fail on every request. Re-checked at the October 9, 2026
+# audit and unchanged for a second time: still Fairwind-only (served to those
+# partners as a managed model through Gemini Enterprise rather than the Gemini
+# API), still absent from the public Gemini API model list, from Vertex AI, and
+# from the OpenRouter and models.dev catalogs, and still with no model card and
+# no introductory-period dates. Same reasoning as
 # gemini-3.8-flash-cyber above and gpt-5.6-cyber in the OpenAI catalog — but
 # note the reason is ACCESS alone, not missing prices: unlike gpt-6-astra-law,
 # Argon's pricing is published, so access is the only thing being waited on.

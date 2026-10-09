@@ -50,6 +50,58 @@ def test_detects_max_output_tokens():
     assert is_context_overflow_error(err) is True
 
 
+ANTHROPIC_REQUEST_TOO_LARGE = (
+    "Step execution failed: Anthropic streaming error: Error code: 413 - "
+    "{'error': {'type': 'request_too_large', "
+    "'message': 'Request exceeds the maximum size'}}"
+)
+
+
+def test_anthropic_413_compacts_before_first_retry():
+    """The production wrapper loses the SDK class; classify its wire code.
+
+    Byte-heavy image history can fit the token estimate but exceed the API's
+    request limit. Guidance alone resends that same oversized request.
+    """
+    engine = _make_engine(max_context_tokens=1_000_000)
+    rm = RecoveryManager(context_compressor=engine)
+    _make_orchestrator(engine, recovery_manager=rm)
+    messages = [Message.user("hello world " * 40) for _ in range(20)]
+    ctx = _FakeContext(list(messages))
+
+    action = asyncio.run(rm.attempt_recovery(
+        error=RuntimeError(ANTHROPIC_REQUEST_TOO_LARGE), context=ctx,
+    ))
+
+    assert action.strategy_used == RecoveryStrategy.COMPRESS_AND_RETRY
+    assert action.should_continue is True
+    assert action.attempt_number == 1
+    assert len(ctx.messages) < len(messages)
+    assert "refreshed" in action.guidance_message
+
+
+def test_anthropic_413_recovery_remains_bounded_when_compression_cannot_help():
+    calls = []
+
+    async def cannot_compress(context, *, overflow=False):
+        calls.append(overflow)
+        return False
+
+    rm = RecoveryManager(compress_fn=cannot_compress)
+    ctx = _FakeContext([Message.user("uncompressible")])
+    error = RuntimeError(ANTHROPIC_REQUEST_TOO_LARGE)
+
+    for _ in range(rm.max_overflow_attempts):
+        action = asyncio.run(rm.attempt_recovery(error=error, context=ctx))
+        assert action.strategy_used == RecoveryStrategy.COMPRESS_AND_RETRY
+        assert action.should_continue is True
+        assert "refreshed" not in action.guidance_message
+
+    action = asyncio.run(rm.attempt_recovery(error=error, context=ctx))
+    assert action.should_continue is False
+    assert calls == [True] * rm.max_overflow_attempts
+
+
 def test_does_not_match_unrelated_errors():
     assert is_context_overflow_error(ValueError("connection refused")) is False
     assert is_context_overflow_error(None) is False

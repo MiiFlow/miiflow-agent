@@ -34,6 +34,7 @@ _CONTEXT_OVERFLOW_HINTS = (
     "exceeded the context",
     "string too long",
     "request too large",
+    "request_too_large",  # Anthropic 413 wire code survives ProviderError wrapping.
 )
 
 

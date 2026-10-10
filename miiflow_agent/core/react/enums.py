@@ -56,6 +56,7 @@ class StopReason(Enum):
     MAX_STEPS = "max_steps"
     MAX_BUDGET = "max_budget"
     MAX_TIME = "max_time"
+    TOOL_VOLUME = "tool_volume"
     REPEATED_ACTIONS = "repeated_actions"
     ERROR_THRESHOLD = "error_threshold"
     REPEATED_TOOL_ERROR = "repeated_tool_error"

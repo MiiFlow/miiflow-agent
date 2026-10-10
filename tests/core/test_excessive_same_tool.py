@@ -145,3 +145,9 @@ def test_production_schema_exploration_is_not_halted():
         steps.append(_batch_step((Q, {"q": f"more {i}"}), (Q, {"q": f"and more {i}"})))
     fired = manager.should_stop(steps, len(steps) + 1)
     assert isinstance(fired, ExcessiveSameToolCondition)
+
+
+def test_volume_halt_is_distinct_from_identical_action_loop():
+    from miiflow_agent.core.react.enums import StopReason
+    assert ExcessiveSameToolCondition().get_stop_reason() == StopReason.TOOL_VOLUME
+    assert RepeatedActionsCondition().get_stop_reason() == StopReason.REPEATED_ACTIONS

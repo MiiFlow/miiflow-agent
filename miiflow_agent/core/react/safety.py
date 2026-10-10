@@ -266,7 +266,7 @@ class ExcessiveSameToolCondition(StopCondition):
         return False
 
     def get_stop_reason(self) -> StopReason:
-        return StopReason.REPEATED_ACTIONS
+        return StopReason.TOOL_VOLUME
 
     def get_description(self) -> str:
         if self.tripped_tool:

@@ -51,7 +51,11 @@ class MCPToolManager:
     @property
     def is_connected(self) -> bool:
         """Whether all servers are connected."""
-        return self._connected
+        # A connection ends on its own when its server drops or the event loop
+        # that opened it closes; the manager is connected only while all are.
+        return self._connected and all(
+            c.is_connected for c in self._connections.values()
+        )
 
     @property
     def server_names(self) -> List[str]:

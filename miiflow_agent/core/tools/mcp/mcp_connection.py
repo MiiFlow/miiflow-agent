@@ -17,6 +17,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Owner tasks of live and closing connections. The event loop holds tasks only
+# weakly, so a cancelled owner still tearing down must be referenced somewhere.
+_OWNER_TASKS: "set[asyncio.Task]" = set()
+
 
 @dataclass
 class MCPServerConfig:
@@ -213,13 +217,28 @@ class MCPServerConnection(ABC):
 
     Provides a common interface for connecting to MCP servers via different
     transport mechanisms (stdio, HTTP, SSE).
+
+    The transport and the `ClientSession` run inside one `async with` in a task
+    this connection owns, from `connect()` until `disconnect()`. Both are anyio
+    task groups: entered in the caller's task, a failure in one of their
+    background tasks (a refused port, a dropped stream) cancels the caller's
+    task with a bare `CancelledError` that `except Exception` misses (a chat
+    turn was cancelled instead of skipping a closed custom server), and
+    `disconnect()` from another task cannot exit the cancel scope at all.
+    Subclasses only say how to open their transport.
     """
+
+    #: Transport name used in log and error messages.
+    transport_label = "MCP"
 
     def __init__(self, config: MCPServerConfig):
         self.config = config
         self.session: Optional[ClientSession] = None
         self._connected = False
         self._tools_cache: Optional[List[Any]] = None
+        self._owner: Optional[asyncio.Task] = None
+        self._stop: Optional[asyncio.Event] = None
+        self._ready: Optional[asyncio.Future] = None
 
     @property
     def name(self) -> str:
@@ -232,14 +251,192 @@ class MCPServerConnection(ABC):
         return self._connected
 
     @abstractmethod
-    async def connect(self) -> None:
-        """Establish connection to the MCP server."""
-        pass
+    def _open_transport(self) -> Any:
+        """The transport's async context manager, yielding (read, write, ...).
 
-    @abstractmethod
+        Raises:
+            MCPConnectionError: If the MCP package is not installed
+        """
+
+    async def connect(self) -> None:
+        """Establish connection to the MCP server.
+
+        Raises:
+            MCPTimeoutError: If initialization times out
+            MCPConnectionError: If the connection fails for any other reason
+        """
+        if self._connected:
+            logger.warning(
+                f"Already connected to {self.transport_label} MCP server: {self.config.name}"
+            )
+            return
+        loop = asyncio.get_running_loop()
+        in_flight = self._ready
+        if in_flight is not None and not in_flight.done() and in_flight.get_loop() is loop:
+            # A concurrent connect() shares the attempt already running.
+            await self._await_attempt(self._owner, self._stop, in_flight)
+            return
+        try:
+            from mcp import ClientSession
+        except ImportError:
+            raise MCPConnectionError(
+                "MCP package not installed. Install with: pip install mcp"
+            )
+        transport = self._open_transport()
+
+        ready: asyncio.Future = loop.create_future()
+        # After a cancelled connect() nobody awaits the failure; read it here so
+        # asyncio does not log it as never retrieved.
+        ready.add_done_callback(lambda f: f.cancelled() or f.exception())
+        stop = asyncio.Event()
+
+        async def own_session() -> None:
+            failure: Optional[BaseException] = None
+            try:
+                async with transport as streams:
+                    async with ClientSession(streams[0], streams[1]) as session:
+                        await asyncio.wait_for(
+                            session.initialize(), timeout=self.config.timeout
+                        )
+                        ready.set_result(session)
+                        await stop.wait()
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as e:
+                # Includes the CancelledError of the transport's own cancel
+                # scope: it ends this task, never the caller's.
+                failure = e
+            finally:
+                if self._owner is asyncio.current_task():
+                    self._connected = False
+                if not ready.done():
+                    ready.set_exception(self._connect_error(failure))
+                elif (
+                    failure is not None
+                    and not stop.is_set()
+                    # A cancel is a deliberate close (the loop that opened the
+                    # connection ended), not a server failure.
+                    and not isinstance(failure, asyncio.CancelledError)
+                ):
+                    logger.warning(
+                        f"{self.transport_label} MCP server '{self.config.name}' "
+                        f"connection closed: {failure!r}"
+                    )
+
+        owner = asyncio.create_task(
+            own_session(), name=f"mcp-connection:{self.config.name}"
+        )
+        _OWNER_TASKS.add(owner)
+        owner.add_done_callback(_OWNER_TASKS.discard)
+        # A task cancelled before its first step never runs its `finally`.
+        owner.add_done_callback(
+            lambda _: ready.done() or ready.set_exception(self._connect_error(None))
+        )
+        self._owner, self._stop, self._ready = owner, stop, ready
+        try:
+            session = await self._await_attempt(owner, stop, ready)
+        except BaseException:
+            # A failed connect has already ended the owner task. A cancel of
+            # this caller abandons the attempt (a concurrent connect() sharing
+            # it is told it was disconnected), so nothing stays open.
+            if self._owner is owner:
+                self._owner = self._stop = self._ready = None
+            if not owner.done():
+                stop.set()
+                owner.cancel()
+            raise
+        self.session = session
+        self._connected = True
+        logger.info(
+            f"Connected to {self.transport_label} MCP server: {self.config.name}"
+        )
+
+    async def _await_attempt(
+        self,
+        owner: Optional[asyncio.Task],
+        stop: Optional[asyncio.Event],
+        ready: asyncio.Future,
+    ) -> Any:
+        """The session of a connect attempt.
+
+        The attempt's own error is raised as is; a disconnect() that ran
+        meanwhile (it sets `stop`) wins over both a session and an error.
+        """
+        try:
+            # Shielded so a cancel of one waiter does not cancel `ready` for
+            # the others.
+            session = await asyncio.shield(ready)
+        except Exception as e:
+            if stop is None or not stop.is_set():
+                raise
+            raise self._disconnected_while_connecting() from e
+        if owner is None or stop is None or stop.is_set():
+            raise self._disconnected_while_connecting()
+        if owner.done():
+            # The transport failed between handing over the session and now.
+            raise self._connect_error(None)
+        return session
+
+    def _disconnected_while_connecting(self) -> MCPConnectionError:
+        return MCPConnectionError(
+            f"Disconnected from {self.transport_label} MCP server "
+            f"'{self.config.name}' while connecting"
+        )
+
+    def _connect_error(self, failure: Optional[BaseException]) -> Exception:
+        leaves = _leaf_errors(failure) if failure else []
+        if any(isinstance(e, asyncio.TimeoutError) for e in leaves):
+            error: Exception = MCPTimeoutError(
+                f"Timeout connecting to {self.transport_label} MCP server: {self.config.name}"
+            )
+        elif len(leaves) == 1 and isinstance(leaves[0], MCPConnectionError):
+            return leaves[0]
+        else:
+            reason = _describe_failure(failure) if failure else "connection closed"
+            error = MCPConnectionError(
+                f"Failed to connect to {self.transport_label} MCP server "
+                f"'{self.config.name}': {reason}"
+            )
+        error.__cause__ = failure
+        return error
+
     async def disconnect(self) -> None:
         """Close connection to the MCP server."""
-        pass
+        await self._stop_owner()
+        logger.info(
+            f"Disconnected from {self.transport_label} MCP server: {self.config.name}"
+        )
+
+    async def _stop_owner(self) -> None:
+        owner, stop, ready = self._owner, self._stop, self._ready
+        self._owner = self._stop = self._ready = None
+        self._connected = False
+        self.session = None
+        if owner is None or owner.done():
+            return
+        owner_loop = owner.get_loop()
+        if owner_loop is not asyncio.get_running_loop():
+            # Opened on another event loop (async_to_sync starts one per call):
+            # its task cannot be awaited from here. Ask that loop to close it if
+            # it still runs; a closed loop already cancelled it.
+            if not owner_loop.is_closed():
+                owner_loop.call_soon_threadsafe(stop.set)
+            return
+        if not ready.done():
+            # Still connecting: there is no session to close gracefully, and
+            # waiting would last until initialize times out.
+            stop.set()
+            owner.cancel()
+            return
+        stop.set()
+        try:
+            # Closing the session and transport is bounded like any other call.
+            await asyncio.wait_for(asyncio.shield(owner), timeout=self.config.timeout)
+        except asyncio.TimeoutError:
+            owner.cancel()
+        except asyncio.CancelledError:
+            owner.cancel()
+            raise
 
     async def list_tools(self) -> List[Any]:
         """List available tools from the MCP server.
@@ -345,86 +542,51 @@ class MCPServerConnection(ABC):
             await self.disconnect()
 
 
+def _leaf_errors(exc: BaseException) -> List[BaseException]:
+    """The errors inside (possibly nested) exception groups.
+
+    A failure inside an anyio task group arrives as "unhandled errors in a
+    TaskGroup (1 sub-exception)", with the real error one level down.
+    """
+    inner = getattr(exc, "exceptions", None)
+    if inner:
+        return [leaf for e in inner for leaf in _leaf_errors(e)]
+    return [exc]
+
+
+def _describe_failure(exc: BaseException) -> str:
+    """A message naming the leaf errors, e.g. "ConnectError: ..."."""
+    described = []
+    for leaf in _leaf_errors(exc):
+        message = str(leaf).strip()
+        name = type(leaf).__name__
+        described.append(f"{name}: {message}" if message else name)
+    return "; ".join(described)
+
+
 class StdioMCPConnection(MCPServerConnection):
     """MCP connection via stdio transport.
 
     Spawns a subprocess and communicates via stdin/stdout.
     """
 
-    def __init__(self, config: MCPServerConfig):
-        super().__init__(config)
-        self._client_context = None
-        self._session_context = None
+    transport_label = "stdio"
 
-    async def connect(self) -> None:
-        """Connect to MCP server via stdio."""
+    def _open_transport(self) -> Any:
         try:
-            from mcp import ClientSession, StdioServerParameters
+            from mcp import StdioServerParameters
             from mcp.client.stdio import stdio_client
         except ImportError:
             raise MCPConnectionError(
                 "MCP package not installed. Install with: pip install mcp"
             )
-
-        if self._connected:
-            logger.warning(f"Already connected to stdio MCP server: {self.config.name}")
-            return
-
-        try:
-            server_params = StdioServerParameters(
+        return stdio_client(
+            StdioServerParameters(
                 command=self.config.command,
                 args=self.config.args or [],
                 env=self.config.env,
             )
-
-            # Store context managers for cleanup
-            self._client_context = stdio_client(server_params)
-            read, write = await self._client_context.__aenter__()
-
-            self._session_context = ClientSession(read, write)
-            self.session = await self._session_context.__aenter__()
-
-            await asyncio.wait_for(
-                self.session.initialize(),
-                timeout=self.config.timeout,
-            )
-
-            self._connected = True
-            logger.info(f"Connected to stdio MCP server: {self.config.name}")
-
-        except asyncio.TimeoutError:
-            await self._cleanup_contexts()
-            raise MCPTimeoutError(
-                f"Timeout connecting to stdio MCP server: {self.config.name}"
-            )
-        except Exception as e:
-            await self._cleanup_contexts()
-            raise MCPConnectionError(
-                f"Failed to connect to stdio MCP server '{self.config.name}': {e}"
-            )
-
-    async def disconnect(self) -> None:
-        """Disconnect from stdio MCP server."""
-        await self._cleanup_contexts()
-        self._connected = False
-        self.session = None
-        logger.info(f"Disconnected from stdio MCP server: {self.config.name}")
-
-    async def _cleanup_contexts(self) -> None:
-        """Clean up context managers."""
-        if self._session_context:
-            try:
-                await self._session_context.__aexit__(None, None, None)
-            except Exception as e:
-                logger.debug(f"Error closing session context: {e}")
-            self._session_context = None
-
-        if self._client_context:
-            try:
-                await self._client_context.__aexit__(None, None, None)
-            except Exception as e:
-                logger.debug(f"Error closing client context: {e}")
-            self._client_context = None
+        )
 
 
 class StreamableHTTPMCPConnection(MCPServerConnection):
@@ -434,83 +596,16 @@ class StreamableHTTPMCPConnection(MCPServerConnection):
     with streaming support.
     """
 
-    def __init__(self, config: MCPServerConfig):
-        super().__init__(config)
-        self._client_context = None
-        self._session_context = None
+    transport_label = "Streamable HTTP"
 
-    async def connect(self) -> None:
-        """Connect to MCP server via Streamable HTTP."""
+    def _open_transport(self) -> Any:
         try:
-            from mcp import ClientSession
             from mcp.client.streamable_http import streamablehttp_client
         except ImportError:
             raise MCPConnectionError(
                 "MCP package not installed. Install with: pip install mcp"
             )
-
-        if self._connected:
-            logger.warning(
-                f"Already connected to Streamable HTTP MCP server: {self.config.name}"
-            )
-            return
-
-        try:
-            self._client_context = streamablehttp_client(
-                self.config.url,
-                headers=self.config.headers,
-            )
-            read_stream, write_stream, _ = await self._client_context.__aenter__()
-
-            self._session_context = ClientSession(read_stream, write_stream)
-            self.session = await self._session_context.__aenter__()
-
-            await asyncio.wait_for(
-                self.session.initialize(),
-                timeout=self.config.timeout,
-            )
-
-            self._connected = True
-            logger.info(
-                f"Connected to Streamable HTTP MCP server: {self.config.name}"
-            )
-
-        except asyncio.TimeoutError:
-            await self._cleanup_contexts()
-            raise MCPTimeoutError(
-                f"Timeout connecting to Streamable HTTP MCP server: {self.config.name}"
-            )
-        except Exception as e:
-            await self._cleanup_contexts()
-            raise MCPConnectionError(
-                f"Failed to connect to Streamable HTTP MCP server "
-                f"'{self.config.name}': {e}"
-            )
-
-    async def disconnect(self) -> None:
-        """Disconnect from Streamable HTTP MCP server."""
-        await self._cleanup_contexts()
-        self._connected = False
-        self.session = None
-        logger.info(
-            f"Disconnected from Streamable HTTP MCP server: {self.config.name}"
-        )
-
-    async def _cleanup_contexts(self) -> None:
-        """Clean up context managers."""
-        if self._session_context:
-            try:
-                await self._session_context.__aexit__(None, None, None)
-            except Exception as e:
-                logger.debug(f"Error closing session context: {e}")
-            self._session_context = None
-
-        if self._client_context:
-            try:
-                await self._client_context.__aexit__(None, None, None)
-            except Exception as e:
-                logger.debug(f"Error closing client context: {e}")
-            self._client_context = None
+        return streamablehttp_client(self.config.url, headers=self.config.headers)
 
 
 class SSEMCPConnection(MCPServerConnection):
@@ -520,79 +615,22 @@ class SSEMCPConnection(MCPServerConnection):
     This is provided for backward compatibility.
     """
 
+    transport_label = "SSE"
+
     def __init__(self, config: MCPServerConfig):
         super().__init__(config)
-        self._client_context = None
-        self._session_context = None
         logger.warning(
             "SSE transport is deprecated. Consider using streamable_http instead."
         )
 
-    async def connect(self) -> None:
-        """Connect to MCP server via SSE."""
+    def _open_transport(self) -> Any:
         try:
-            from mcp import ClientSession
             from mcp.client.sse import sse_client
         except ImportError:
             raise MCPConnectionError(
                 "MCP package not installed. Install with: pip install mcp"
             )
-
-        if self._connected:
-            logger.warning(f"Already connected to SSE MCP server: {self.config.name}")
-            return
-
-        try:
-            self._client_context = sse_client(
-                self.config.url,
-                headers=self.config.headers,
-            )
-            read_stream, write_stream = await self._client_context.__aenter__()
-
-            self._session_context = ClientSession(read_stream, write_stream)
-            self.session = await self._session_context.__aenter__()
-
-            await asyncio.wait_for(
-                self.session.initialize(),
-                timeout=self.config.timeout,
-            )
-
-            self._connected = True
-            logger.info(f"Connected to SSE MCP server: {self.config.name}")
-
-        except asyncio.TimeoutError:
-            await self._cleanup_contexts()
-            raise MCPTimeoutError(
-                f"Timeout connecting to SSE MCP server: {self.config.name}"
-            )
-        except Exception as e:
-            await self._cleanup_contexts()
-            raise MCPConnectionError(
-                f"Failed to connect to SSE MCP server '{self.config.name}': {e}"
-            )
-
-    async def disconnect(self) -> None:
-        """Disconnect from SSE MCP server."""
-        await self._cleanup_contexts()
-        self._connected = False
-        self.session = None
-        logger.info(f"Disconnected from SSE MCP server: {self.config.name}")
-
-    async def _cleanup_contexts(self) -> None:
-        """Clean up context managers."""
-        if self._session_context:
-            try:
-                await self._session_context.__aexit__(None, None, None)
-            except Exception as e:
-                logger.debug(f"Error closing session context: {e}")
-            self._session_context = None
-
-        if self._client_context:
-            try:
-                await self._client_context.__aexit__(None, None, None)
-            except Exception as e:
-                logger.debug(f"Error closing client context: {e}")
-            self._client_context = None
+        return sse_client(self.config.url, headers=self.config.headers)
 
 
 def create_connection(config: MCPServerConfig) -> MCPServerConnection:

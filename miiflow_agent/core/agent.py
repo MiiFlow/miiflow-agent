@@ -738,6 +738,9 @@ class Agent(Generic[Deps, Result]):
             is_visualization_result, extract_visualization_data,
         )
         from miiflow_agent.artifacts import is_artifact_result, extract_artifact_data
+        from miiflow_agent.core.tools.argument_normalization import (
+            normalize_label_arguments,
+        )
 
         special_results = []
         logger.debug(f"About to execute {len(tool_calls)} tool calls")
@@ -772,6 +775,9 @@ class Agent(Generic[Deps, Result]):
                     f"Invalid tool_args type: {type(tool_args)}, converting to empty dict"
                 )
                 tool_args = {}
+            # Same repair as ToolExecutor.execute_tool: a name or title the
+            # model left HTML-escaped is stored as plain text.
+            tool_args = normalize_label_arguments(tool_args)
 
             logger.debug(f"Tool '{tool_name}' with args: {tool_args}")
 

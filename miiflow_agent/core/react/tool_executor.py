@@ -206,6 +206,14 @@ class AgentToolExecutor:
             tool_name, inputs = unwrapped
             logger.debug("[TOOL_BRIDGE] unwrapped tool_call -> %s", tool_name)
 
+        # Models sometimes hand a name or title over still HTML-escaped
+        # ("Monitor &amp; Optimizer"), and the tool stores it that way. Repair
+        # it here, after unwrapping, so the approval prompt, the span, the
+        # audit row and the tool itself all see the same plain text.
+        from ..tools.argument_normalization import normalize_label_arguments
+
+        inputs = normalize_label_arguments(inputs)
+
         # One TOOL span per execution, opened AFTER unwrapping so it is named
         # for the real tool. A plain coroutine (not an async generator), so
         # the sync context manager's attach/detach stay in one task — the

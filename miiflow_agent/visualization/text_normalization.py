@@ -18,6 +18,12 @@ display copy:
 
 Payloads whose data is not display text (source code, form values) get their
 chrome normalized and their body left exactly as authored.
+
+The same extra layer reaches ordinary tool arguments: a model named a workflow
+"Cross-Platform Paid Media Monitor &amp; Optimizer" and a report "Spend Trend
+&amp; CPA", with no escaped text anywhere in its context, and both were stored
+and shown with the entity. :func:`normalize_label` repairs one such label;
+``core.tools.argument_normalization`` decides which arguments are labels.
 """
 
 import html
@@ -54,6 +60,42 @@ def normalize_text(text: str) -> str:
         text = _decode_unicode_escapes(text)
     if "&" in text and ";" in text:
         text = html.unescape(text)
+    return text
+
+
+#: One complete character reference, semicolon included. html.unescape alone
+#: also decodes legacy semicolon-less forms, so "&copy2024" would become
+#: "©2024"; this shape keeps labels that merely contain "&" untouched.
+_CHAR_REF_RE = re.compile(
+    r"&(?:#\d{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});"
+)
+
+#: A label is escaped once or twice in practice; the bound only stops a
+#: pathological value from looping.
+_MAX_LABEL_PASSES = 4
+
+
+def normalize_label(text: str) -> str:
+    """Decode a plain-text label until no character reference is left.
+
+    Decoding to a fixed point, not one level, is what makes this idempotent
+    for any label escaped fewer than :data:`_MAX_LABEL_PASSES` times: a call
+    can pass through more than one entry point (an approval resume re-enters
+    the executor), and a second pass must not change the result.
+    The cost is that a label whose plain text really contains "&amp;" loses
+    it, which no entity name does.
+    """
+    if not text:
+        return text
+    if "\\u" in text or "\\U" in text:
+        text = _decode_unicode_escapes(text)
+    for _ in range(_MAX_LABEL_PASSES):
+        if "&" not in text:
+            break
+        decoded = _CHAR_REF_RE.sub(lambda match: html.unescape(match.group(0)), text)
+        if decoded == text:
+            break
+        text = decoded
     return text
 
 

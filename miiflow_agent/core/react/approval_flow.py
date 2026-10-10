@@ -560,6 +560,7 @@ class ApprovalResumeFlow:
 
         raw_output = None
         raw_error = None
+        result = None
         try:
             result = await self._orch.tool_executor.execute_tool(
                 tool_name, inputs, context=context
@@ -592,6 +593,16 @@ class ApprovalResumeFlow:
         )
         if failure_payload is not None:
             success = False
+
+        result_metadata = getattr(result, "metadata", None) or {}
+        handoff = result_metadata.get("background_handoff") if success else None
+        if isinstance(handoff, dict):
+            state.background_handoffs.append(handoff)
+        else:
+            handoff = None
+        background_wait = result_metadata.get("background_wait") if success else None
+        if isinstance(background_wait, dict):
+            state.background_wait = background_wait
 
         logger.info(
             "[ORCH] deterministic approval-resume executed '%s' (success=%s, id=%s)",
@@ -645,6 +656,7 @@ class ApprovalResumeFlow:
                     success,
                     tool_call_id=tool_call_id,
                     observation_ref=approved_observation_ref,
+                    background_task_id=handoff.get("id") if handoff else None,
                 )
             )
         except Exception as evt_err:  # noqa: BLE001

@@ -73,7 +73,7 @@ class AnswerSynthesis:
             state.final_answer = ""
         elif context is not None and context.is_cancelled:
             stop_reason = StopReason.USER_CANCELLED
-        elif state.final_answer:
+        elif state.final_answer or state.background_handoff_finished:
             stop_reason = StopReason.ANSWER_COMPLETE
         else:
             stop_reason = StopReason.FORCED_STOP

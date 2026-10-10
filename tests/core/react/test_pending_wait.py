@@ -92,3 +92,25 @@ def test_waits_still_obey_cost_and_time_limits():
         if isinstance(condition, MaxTimeCondition):
             condition.start_time = 0
     assert manager.should_stop(steps, 1) is not None
+
+
+async def test_handoff_requires_registered_successful_submission():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+    from miiflow_agent.core.tools.schemas import ToolResult
+
+    for registered, output, success in [
+        (False, {"id": "job", "status": "queued"}, True),
+        (True, {"error": "Disabled", "id": "job", "status": "queued"}, True),
+        (True, {"id": "job", "status": "queued"}, False),
+        (True, {"status": "queued"}, True),
+    ]:
+        executor = SimpleNamespace(
+            _get_tool_schema_obj=lambda name: SimpleNamespace(
+                metadata={"background_handoff": registered}, writes=True),
+            _execute_tool_gated=AsyncMock(return_value=ToolResult(
+                name="submit", input={}, output=output, success=success)),
+        )
+        result = await AgentToolExecutor.execute_tool(executor, "submit", {})
+        assert "background_handoff" not in result.metadata

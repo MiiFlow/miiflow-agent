@@ -37,6 +37,8 @@ class ExecutionState:
     # Clarification state - set when a tool requests user clarification
     needs_clarification: bool = False
     background_wait: Optional[Dict[str, Any]] = None
+    background_handoffs: List[Dict[str, Any]] = field(default_factory=list)
+    background_handoff_finished: bool = False
     clarification_data: Optional[Dict[str, Any]] = None
 
     # Uncorrected local token estimate for the request most recently sized by

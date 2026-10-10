@@ -305,6 +305,9 @@ class ToolActionHandler:
         self, step: ReActStep, error: Exception, state: "ExecutionState"
     ):
         """Handle step execution errors."""
+        error_type = getattr(getattr(error, "error_type", None), "value", None)
+        if error_type:
+            step.metadata["provider_error_type"] = error_type
         step.error = f"Step execution failed: {str(error)}"
         step.observation = f"An error occurred: {str(error)}"
         logger.error(f"Step {state.current_step} failed: {error}", exc_info=True)
@@ -391,6 +394,8 @@ class ToolActionHandler:
             # no new row, no ledger freshness refresh (TTL measures the
             # DATA's age, not the last time someone asked).
             _result_meta = getattr(result, "metadata", None) or {}
+            if result.is_success and isinstance(_result_meta.get("background_handoff"), dict):
+                state.background_handoffs.append(_result_meta["background_handoff"])
             if result.is_success and isinstance(_result_meta.get("background_wait"), dict):
                 state.background_wait = _result_meta["background_wait"]
             step.metadata["pending_wait"] = result.is_success and _result_meta.get("pending_wait") is True
@@ -433,6 +438,7 @@ class ToolActionHandler:
                     result.success,
                     tool_call_id=tool_call_id,
                     observation_ref=observation_ref,
+                    background_task_id=(_result_meta.get("background_handoff") or {}).get("id"),
                     served_from_ledger=_served,
                 )
             )
@@ -1087,6 +1093,8 @@ class ToolActionHandler:
             # Per-invocation canonical record + observation event. Served
             # results reuse their existing ref (no new row, no TTL refresh).
             _result_meta = getattr(result, "metadata", None) or {}
+            if result.is_success and isinstance(_result_meta.get("background_handoff"), dict):
+                state.background_handoffs.append(_result_meta["background_handoff"])
             if result.is_success and isinstance(_result_meta.get("background_wait"), dict):
                 state.background_wait = _result_meta["background_wait"]
             inv.pending_wait = result.is_success and _result_meta.get("pending_wait") is True
@@ -1127,6 +1135,7 @@ class ToolActionHandler:
                         inv.error is None,
                         tool_call_id=inv.tool_call_id,
                         observation_ref=observation_ref,
+                        background_task_id=(_result_meta.get("background_handoff") or {}).get("id"),
                         served_from_ledger=_served,
                     )
                 )

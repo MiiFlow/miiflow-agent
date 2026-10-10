@@ -174,6 +174,7 @@ class AgentToolExecutor:
         # flag's meaning under existing callers at upgrade time. Explicit
         # ``parallelizable=True`` members of a mixed batch still overlap
         # (that flag IS a declared concurrency contract).
+        self._background_handoff_ids = set()
         self._readonly_parallel = (
             os.getenv("MIIFLOW_READONLY_PARALLEL", "0") == "1"
         )
@@ -221,6 +222,9 @@ class AgentToolExecutor:
         # dispatched from inside the tool nest under this span.
         from ..observability.spans import record_tool_result, tool_span
 
+        schema = self._get_tool_schema_obj(tool_name)
+        if (getattr(schema, "metadata", None) or {}).get("background_status") is True and inputs.get("run_id") in self._background_handoff_ids:
+            return ToolResult(name=tool_name, input=inputs, output={"continues_independently": True, "instruction": "Do not poll this work. Complete any other requested actions, then finish your response."})
         with tool_span(tool_name, inputs) as span:
             result = await _unless_run_stopped(
                 self._execute_tool_gated(tool_name, inputs, context),
@@ -252,6 +256,22 @@ class AgentToolExecutor:
                 and not result.output.get("error")
             ):
                 result.metadata["background_wait"] = result.output["background_wait"]
+            # Only a registered submission tool can register admitted work. Never trust
+            # a marker supplied by arbitrary tool output or retrieved content.
+            if (
+                metadata.get("background_handoff") is True
+                and result.is_success
+                and isinstance(result.output, dict)
+                and not result.output.get("error")
+                and isinstance(result.output.get("id"), str)
+                and result.output["id"]
+                and isinstance(result.output.get("status"), str)
+            ):
+                self._background_handoff_ids.add(result.output["id"])
+                result.metadata["background_handoff"] = {
+                    "id": result.output["id"],
+                    "status": result.output["status"],
+                }
             record_tool_result(span, result)
             return result
 

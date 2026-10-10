@@ -410,7 +410,7 @@ class EventFactory:
         )
 
     @staticmethod
-    def observation(step_number: int, observation: str, action: str, success: bool = True, tool_call_id: str = None, observation_ref: str = None, served_from_ledger: bool = False, executor: str = None, server_name: str = None) -> ReActEvent:
+    def observation(step_number: int, observation: str, action: str, success: bool = True, tool_call_id: str = None, observation_ref: str = None, served_from_ledger: bool = False, executor: str = None, server_name: str = None, background_task_id: str = None) -> ReActEvent:
         """Create observation event.
 
         ``tool_call_id`` pairs the observation with the action_planned/executing
@@ -434,6 +434,7 @@ class EventFactory:
                 "success": success,
                 "tool_call_id": tool_call_id,
                 "observation_ref": observation_ref,
+                "background_task_id": background_task_id,
                 "served_from_ledger": served_from_ledger,
                 "executor": executor,
                 "server_name": server_name,

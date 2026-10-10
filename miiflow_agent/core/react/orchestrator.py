@@ -669,6 +669,10 @@ def _extract_failure_metadata(
         "stop_reason": stop_reason,
         "description": description,
     }
+    # Only the terminal step's provider failure is relevant; a recovered
+    # earlier error must not turn later successful work into a retry.
+    if steps and steps[-1].is_error_step and steps[-1].metadata.get("provider_error_type"):
+        payload["error_type"] = steps[-1].metadata["provider_error_type"]
     if last_failing is not None:
         observation = last_failing.observation or last_failing.error or ""
         payload["last_tool"] = last_failing.name
@@ -911,6 +915,17 @@ class ReActOrchestrator:
                 validated_resume, context, execution_state
             )
             await self._execute_pending_approved_action(context, execution_state)
+            # Approved submissions run before the model loop. Preserve waits,
+            # but allow the model to finish other requested work.
+            if execution_state.background_wait and not execution_state.needs_clarification:
+                await self.event_bus.publish(ReActEvent(
+                    event_type=ReActEventType.BACKGROUND_WAIT,
+                    step_number=execution_state.current_step,
+                    data=execution_state.background_wait,
+                ))
+                execution_state.is_running = False
+            elif await self._finish_background_handoff(execution_state):
+                execution_state.is_running = False
 
             if self.context_compressor and hasattr(
                 self.context_compressor, "on_session_start"
@@ -1077,6 +1092,9 @@ class ReActOrchestrator:
                     ))
                     break
 
+                if await self._finish_background_handoff(execution_state):
+                    break
+
                 # Trace: one line per step summarizing the outcome so the log
                 # reads like a ReAct transcript.
                 logger.info(
@@ -1174,6 +1192,10 @@ class ReActOrchestrator:
 
         except Exception as e:
             logger.error(f"ReAct execution failed: {e}", exc_info=True)
+            await self.event_bus.publish(EventFactory.error(
+                execution_state.current_step, str(e),
+                getattr(getattr(e, "error_type", None), "value", None) or type(e).__name__,
+            ))
             return self._build_error_result(execution_state, e)
 
     def _setup_context(self, query: str, context: RunContext):
@@ -1266,6 +1288,24 @@ class ReActOrchestrator:
 
         collab = getattr(self, "_context_coord", None) or ContextCoordinator(self)
         return await collab.maybe_compress(context, phase, state)
+
+    async def _finish_background_handoff(self, state: "ExecutionState") -> bool:
+        """Finalize admitted work only when the model has finished the whole request."""
+        if not state.background_handoffs or state.background_wait or state.needs_clarification:
+            return False
+        if not state.steps:
+            return False
+        last = state.steps[-1]
+        if not last.is_final_step:
+            return False
+        # Preserve the model's requested explanation or other final prose.
+        # Tool history cannot establish whether an answer is dispensable.
+        state.background_handoff_finished = True
+        state.final_answer = last.answer or ""
+        event = EventFactory.final_answer(state.current_step, state.final_answer)
+        event.data["background_handoff_finished"] = True
+        await self.event_bus.publish(event)
+        return True
 
     async def _should_stop(self, state: "ExecutionState") -> bool:
         """Check safety conditions."""

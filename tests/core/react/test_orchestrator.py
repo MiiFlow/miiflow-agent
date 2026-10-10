@@ -1569,3 +1569,197 @@ async def test_durable_background_wait_stops_before_another_model_call():
     events = list(orch.event_bus.event_buffer)
     assert any(e.event_type == ReActEventType.BACKGROUND_WAIT and e.data == descriptor for e in events)
     assert not any(e.event_type == ReActEventType.FINAL_ANSWER for e in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["queued", "running", "succeeded", "partial_failed"])
+async def test_background_submission_finishes_turn_without_polling(status):
+    helper = TestNativeToolCallingMode()
+    agent = helper._create_mock_agent_with_native_tools([{
+        "content": "", "finish_reason": "tool_calls",
+        "tool_calls": [{"id": "tc_submit", "type": "function", "function": {
+            "name": "calculator", "arguments": {"expression": "1+1"},
+        }}],
+    }, {"content": "Done", "finish_reason": "stop"}])
+    @tool()
+    def calculator(expression: str) -> str:
+        """Submit test work."""
+        return expression
+    agent.tool_registry.register(calculator)
+    orch = ReActFactory.create_orchestrator(agent=agent, max_steps=5)
+    # Exercise the registered contract through the real executor and loop.
+    schema = orch.tool_executor._get_tool_schema_obj("calculator")
+    schema.metadata["background_handoff"] = True
+    orch.tool_executor._execute_tool_gated = AsyncMock(return_value=ToolResult(
+        name="calculator", input={}, output={"id": "job_1", "status": status},
+    ))
+    result = await orch.execute("Submit work", RunContext(deps={}, messages=[]))
+    assert result.stop_reason == StopReason.ANSWER_COMPLETE
+    assert result.final_answer == "Done"
+    assert "job_1" not in result.final_answer
+    assert status not in result.final_answer
+    assert any(e.data.get("background_task_id") == "job_1" for e in orch.event_bus.event_buffer)
+    assert len(result.steps) == 2
+    orch.tool_executor._execute_tool_gated.assert_awaited_once()
+    assert any(e.event_type == ReActEventType.FINAL_ANSWER for e in orch.event_bus.event_buffer)
+
+
+@pytest.mark.asyncio
+async def test_approved_background_submission_allows_model_to_finish_request():
+    helper = TestNativeToolCallingMode()
+    agent = helper._create_mock_agent_with_native_tools([{"content": "Done", "finish_reason": "stop"}])
+
+    @tool()
+    def calculator(expression: str) -> str:
+        """Submit approved work."""
+        return expression
+
+    agent.tool_registry.register(calculator)
+    orch = ReActFactory.create_orchestrator(agent=agent, max_steps=5)
+    orch.tool_executor._get_tool_schema_obj("calculator").metadata["background_handoff"] = True
+    orch.tool_executor._execute_tool_gated = AsyncMock(return_value=ToolResult(
+        name="calculator", input={}, output={"id": "job_approved", "status": "queued"},
+    ))
+    context = RunContext(deps={"pending_approved_action": {
+        "tool_name": "calculator", "tool_call_id": "tc_approved",
+        "inputs": {"expression": "1+1"},
+    }}, messages=[])
+    result = await orch.execute("Approve", context)
+    assert result.stop_reason == StopReason.ANSWER_COMPLETE
+    assert result.final_answer == "Done"
+    assert "job_approved" not in result.final_answer
+    orch.tool_executor._execute_tool_gated.assert_awaited_once()
+    assert any(e.data.get("background_task_id") == "job_approved" for e in orch.event_bus.event_buffer)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sibling", ["failed", "waiting"])
+async def test_background_handoff_preserves_parallel_failure_and_wait(sibling):
+    helper = TestNativeToolCallingMode()
+    agent = helper._create_mock_agent_with_native_tools([{
+        "content": "", "finish_reason": "tool_calls",
+        "tool_calls": [{"id": f"tc_{name}", "type": "function", "function": {
+            "name": name, "arguments": {"expression": "1+1"},
+        }} for name in ["submit", "other"]],
+    }, {"content": "Done", "finish_reason": "stop"}])
+
+    @tool()
+    def submit(expression: str) -> str:
+        """Submit work."""
+        return expression
+
+    @tool()
+    def other(expression: str) -> str:
+        """Other work."""
+        return expression
+
+    agent.tool_registry.register(submit)
+    agent.tool_registry.register(other)
+    orch = ReActFactory.create_orchestrator(agent=agent, max_steps=5)
+    descriptor = {"run_ids": ["other_run"], "reason": "dependency"}
+
+    async def execute(name, inputs, **kwargs):
+        if name == "submit":
+            return ToolResult(name=name, input=inputs, output={"id": "job_parallel", "status": "queued"},
+                              metadata={"background_handoff": {"id": "job_parallel", "status": "queued"}})
+        return ToolResult(name=name, input=inputs, output={}, success=sibling != "failed",
+                          error="Other action failed" if sibling == "failed" else None,
+                          metadata={"background_wait": descriptor} if sibling == "waiting" else {})
+
+    orch.tool_executor.execute_tool = AsyncMock(side_effect=execute)
+    result = await orch.execute("Submit and do other work", RunContext(deps={}, messages=[]))
+    if sibling == "failed":
+        assert len(result.steps) == 2
+        assert result.stop_reason == StopReason.ANSWER_COMPLETE
+        assert result.final_answer
+    else:
+        assert result.stop_reason == StopReason.BACKGROUND_WAIT
+        assert not any(e.event_type == ReActEventType.FINAL_ANSWER for e in orch.event_bus.event_buffer)
+
+@pytest.mark.asyncio
+async def test_typed_provider_failure_survives_real_agent_stream():
+    from miiflow_agent.core.exceptions import MiiflowLLMError, ErrorType
+    agent = TestNativeToolCallingMode()._create_mock_agent_with_native_tools([])
+    agent._context_compressor = None
+
+    async def broken_provider(*args, **kwargs):
+        raise MiiflowLLMError("temporarily unavailable", ErrorType.SERVICE_UNAVAILABLE)
+        yield  # async generator, like the provider streaming API
+
+    agent.client.astream_chat = broken_provider
+    agent.client.client.astream_chat = broken_provider
+    events = [event async for event in Agent._stream_react(
+        agent, "Research one item", RunContext(deps={}, messages=[]), max_steps=2)]
+    failures = [event.data.get("failure", {}) for event in events if event.event_type == ReActEventType.STOP_CONDITION]
+    assert any(failure.get("error_type") == "service_unavailable" for failure in failures)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_crash_publishes_typed_error_to_stream(monkeypatch):
+    from miiflow_agent.core.exceptions import MiiflowLLMError, ErrorType
+    agent = TestNativeToolCallingMode()._create_mock_agent_with_native_tools([])
+    agent._context_compressor = None
+    async def crash(*args, **kwargs):
+        raise MiiflowLLMError("rate limited", ErrorType.RATE_LIMITED)
+    monkeypatch.setattr(ReActOrchestrator, "_execute_reasoning_step_native", crash)
+    events = [event async for event in Agent._stream_react(
+        agent, "Research one item", RunContext(deps={}, messages=[]), max_steps=2)]
+    assert any(event.event_type == ReActEventType.ERROR and event.data.get("error_type") == "rate_limited" for event in events)
+
+@pytest.mark.asyncio
+async def test_recovered_provider_error_does_not_contaminate_success():
+    from miiflow_agent.core.exceptions import MiiflowLLMError, ErrorType
+    agent = TestNativeToolCallingMode()._create_mock_agent_with_native_tools([{"content": "Recovered answer"}])
+    agent._context_compressor = None
+    good_stream = agent.client.astream_chat
+    calls = 0
+    async def provider(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise MiiflowLLMError("temporary outage", ErrorType.SERVICE_UNAVAILABLE)
+        async for chunk in good_stream(*args, **kwargs):
+            yield chunk
+    agent.client.astream_chat = provider
+    agent.client.client.astream_chat = provider
+    events = [event async for event in Agent._stream_react(
+        agent, "Research one item", RunContext(deps={}, messages=[]), max_steps=4)]
+    assert calls == 2
+    assert any(event.event_type == ReActEventType.FINAL_ANSWER for event in events)
+    assert not any(event.event_type in {ReActEventType.ERROR, ReActEventType.STOP_CONDITION} for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("next_tool", ["rename", "status"])
+async def test_handoff_allows_later_work_but_stops_status_polling(next_tool):
+    def call(name, arguments):
+        return {"content": "", "finish_reason": "tool_calls", "tool_calls": [{"id": name, "type": "function", "function": {"name": name, "arguments": arguments}}]}
+    agent = TestNativeToolCallingMode()._create_mock_agent_with_native_tools([
+        call("submit", {}), call("status", {"run_id": "job_1"}), call(next_tool, {"run_id": "job_1"}),
+        {"content": "Renamed the workflow.", "finish_reason": "stop"},
+    ])
+    @tool()
+    def submit() -> str:
+        """Submit work."""
+        return ""
+    @tool()
+    def rename(run_id: str) -> str:
+        """Rename workflow."""
+        return "renamed"
+    @tool()
+    def status(run_id: str) -> str:
+        """Read status."""
+        return "queued"
+    for fn in [submit, rename, status]:
+        agent.tool_registry.register(fn)
+    orch = ReActFactory.create_orchestrator(agent=agent, max_steps=6)
+    orch.tool_executor._get_tool_schema_obj("submit").metadata["background_handoff"] = True
+    orch.tool_executor._get_tool_schema_obj("status").metadata["background_status"] = True
+    async def execute(name, inputs, context):
+        return ToolResult(name=name, input=inputs, output={"id": "job_1", "status": "queued"} if name == "submit" else "renamed")
+    orch.tool_executor._execute_tool_gated = AsyncMock(side_effect=execute)
+    result = await orch.execute("Research, then rename workflow", RunContext(deps={}, messages=[]))
+    assert result.stop_reason == StopReason.ANSWER_COMPLETE
+    names = [call.args[0] for call in orch.tool_executor._execute_tool_gated.await_args_list]
+    assert names == (["submit", "rename"] if next_tool == "rename" else ["submit"])
+    assert result.final_answer == "Renamed the workflow."

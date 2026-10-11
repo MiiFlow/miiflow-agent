@@ -200,3 +200,140 @@ class TestAddition:
         result = TokenCount(prompt_tokens=1, completion_tokens=1) + Legacy()
         assert result.reasoning_tokens == 0
         assert result.prompt_tokens == 2
+
+    def test_addition_keeps_no_split_as_zero(self):
+        assert (TokenCount(prompt_tokens=1) + TokenCount(prompt_tokens=2)).request_prompt_tokens == 0
+        mixed = TokenCount(prompt_tokens=600, request_prompt_tokens=150) + TokenCount(prompt_tokens=200)
+        assert mixed.sent_prompt_tokens == 350
+        unknown = TokenCount(prompt_tokens=900, sampling_iterations=3)
+        split = TokenCount(prompt_tokens=600, request_prompt_tokens=150, sampling_iterations=2)
+        assert (unknown + split).sent_size_unknown
+
+
+class TestAnthropicIterations:
+    """Server-side tools (tool search, web search, the MCP connector) run as
+    extra sampling passes inside ONE Anthropic call, and the top-level usage
+    is summed across them. The first `message` pass is the request we sent."""
+
+    @staticmethod
+    def _pass(input_tokens, cache_read=0, cache_write=0, kind="message"):
+        return SimpleNamespace(
+            type=kind,
+            input_tokens=input_tokens,
+            cache_read_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_write,
+        )
+
+    @staticmethod
+    def _delta(passes, input_tokens=0, cache_read=0, output_tokens=0):
+        return SimpleNamespace(
+            type="message_delta",
+            usage=SimpleNamespace(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=0,
+                iterations=passes,
+            ),
+        )
+
+    def test_first_message_pass_is_the_request(self):
+        usage = SimpleNamespace(
+            iterations=[self._pass(10, 140_000, 50), self._pass(900, 140_050)]
+        )
+        assert TokenCount.anthropic_iteration_split(usage) == (140_060, 2)
+
+    def test_dict_shape_and_non_message_passes(self):
+        usage = {
+            "iterations": [
+                {"type": "compaction", "input_tokens": 999_999},
+                {"type": "message", "input_tokens": 7, "cache_read_input_tokens": 3},
+            ]
+        }
+        assert TokenCount.anthropic_iteration_split(usage) == (10, 1)
+
+    def test_absent_iterations(self):
+        assert TokenCount.anthropic_iteration_split(SimpleNamespace(input_tokens=5)) == (0, 0)
+        assert TokenCount.anthropic_iteration_split(SimpleNamespace(iterations=None)) == (0, 0)
+
+    def test_sent_prompt_falls_back_to_billed(self):
+        assert TokenCount(prompt_tokens=500).sent_prompt_tokens == 500
+        split = TokenCount(prompt_tokens=611_398, request_prompt_tokens=150_000)
+        assert split.sent_prompt_tokens == 150_000
+        assert split.billed_prompt_tokens == 611_398
+
+    def test_stream_delta_carries_the_request_size(self):
+        from miiflow_agent.core.stream_normalizer import AnthropicStreamNormalizer
+
+        delta = self._delta(
+            [self._pass(4, 150_000), self._pass(4, 150_500), self._pass(4, 151_000)],
+            input_tokens=12,
+            cache_read=451_500,
+            output_tokens=40,
+        )
+        usage = AnthropicStreamNormalizer()._extract_usage(delta)
+        assert usage.billed_prompt_tokens == 451_512
+        assert usage.sent_prompt_tokens == 150_004
+        assert usage.sampling_iterations == 3
+
+    def test_tool_search_split_comes_from_message_start(self):
+        """What the API actually sends for tool search (probe, 2026-10-10):
+        `iterations` is None, message_start carries the request as sent (765)
+        and message_delta the sum over both passes (1,697)."""
+        from miiflow_agent.core.stream_normalizer import AnthropicStreamNormalizer
+
+        normalizer = AnthropicStreamNormalizer()
+        start = SimpleNamespace(
+            type="message_start",
+            message=SimpleNamespace(usage=SimpleNamespace(
+                input_tokens=765, cache_read_input_tokens=0, cache_creation_input_tokens=0, iterations=None,
+            )),
+        )
+        normalizer._extract_usage(start)
+        normalizer._handle_content_block_start(SimpleNamespace(
+            type="content_block_start", index=1,
+            content_block=SimpleNamespace(type="server_tool_use", id="srvtoolu_1", name="tool_search_tool_regex", input={}),
+        ))
+        usage = normalizer._extract_usage(self._delta(None, input_tokens=1_697, output_tokens=176))
+        assert usage.billed_prompt_tokens == 1_697
+        assert usage.sent_prompt_tokens == 765
+        assert usage.sampling_iterations == 2
+
+    def test_growth_without_a_server_tool_is_not_called_a_split(self):
+        from miiflow_agent.core.stream_normalizer import AnthropicStreamNormalizer
+
+        normalizer = AnthropicStreamNormalizer()
+        normalizer._extract_usage(SimpleNamespace(
+            type="message_start",
+            message=SimpleNamespace(usage=SimpleNamespace(
+                input_tokens=765, cache_read_input_tokens=0, cache_creation_input_tokens=0,
+            )),
+        ))
+        usage = normalizer._extract_usage(self._delta(None, input_tokens=900, output_tokens=5))
+        assert usage.request_prompt_tokens == 0
+        assert usage.sent_prompt_tokens == 900
+
+    def test_plain_call_has_no_split(self):
+        from miiflow_agent.core.stream_normalizer import AnthropicStreamNormalizer
+
+        normalizer = AnthropicStreamNormalizer()
+        normalizer._extract_usage(SimpleNamespace(
+            type="message_start",
+            message=SimpleNamespace(usage=SimpleNamespace(
+                input_tokens=4, cache_read_input_tokens=20_000, cache_creation_input_tokens=1_000,
+            )),
+        ))
+        delta = SimpleNamespace(type="message_delta", usage=SimpleNamespace(
+            input_tokens=4, cache_read_input_tokens=20_000, cache_creation_input_tokens=1_000, output_tokens=9,
+        ))
+        usage = normalizer._extract_usage(delta)
+        assert usage.request_prompt_tokens == 0
+        assert usage.sent_prompt_tokens == 21_004
+
+    def test_single_pass_reports_no_split(self):
+        from miiflow_agent.core.stream_normalizer import AnthropicStreamNormalizer
+
+        delta = self._delta([self._pass(100)], input_tokens=100, output_tokens=5)
+        usage = AnthropicStreamNormalizer()._extract_usage(delta)
+        assert usage.request_prompt_tokens == 0
+        assert usage.sent_prompt_tokens == 100

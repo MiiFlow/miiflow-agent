@@ -33,6 +33,64 @@ class TokenCount:
     # `completion_tokens` — carried separately so cost attribution can tell
     # "the answer was long" from "the model thought hard".
     reasoning_tokens: int = 0
+    # The prompt of the request as WE sent it, when the provider sampled more
+    # than once inside one call. Anthropic runs server-side tools (tool
+    # search, web search, the MCP connector) as extra sampling iterations of
+    # the same request and reports `usage` SUMMED across them: a 150K-token
+    # request that searched for tools three times bills ~611K. Zero when the
+    # provider reported no per-iteration split, in which case the billed
+    # prompt IS the request. `sampling_iterations` is how many there were
+    # (0 = not reported).
+    request_prompt_tokens: int = 0
+    sampling_iterations: int = 0
+
+    @property
+    def sent_prompt_tokens(self) -> int:
+        """Size of the request this call sent — the number a context window,
+        a compaction threshold or a local estimate is about. Billing reads
+        ``billed_prompt_tokens``; sizing reads this. Zero when the call took
+        several passes and the provider did not say how big the first was
+        (see ``sent_size_unknown``): a sum over passes is not a size."""
+        if self.sent_size_unknown:
+            return 0
+        return self.request_prompt_tokens or self.billed_prompt_tokens
+
+    @property
+    def sent_size_unknown(self) -> bool:
+        return self.sampling_iterations > 1 and not self.request_prompt_tokens
+
+    @staticmethod
+    def anthropic_iteration_split(usage_obj: Any) -> "tuple[int, int]":
+        """``(first iteration's prompt, message iteration count)`` from an
+        Anthropic ``usage.iterations`` list, or ``(0, 0)`` when absent.
+
+        Only ``message`` entries are model sampling passes; the first one is
+        the request as sent (input + cache read + cache write, the same
+        inclusive total as the top-level fields).
+        """
+        iterations = getattr(usage_obj, "iterations", None)
+        if iterations is None and isinstance(usage_obj, dict):
+            iterations = usage_obj.get("iterations")
+        if not isinstance(iterations, (list, tuple)):
+            return 0, 0
+
+        def field(entry, name):
+            value = entry.get(name) if isinstance(entry, dict) else getattr(entry, name, None)
+            return value if isinstance(value, int) else 0
+
+        def kind(entry):
+            return entry.get("type") if isinstance(entry, dict) else getattr(entry, "type", None)
+
+        passes = [entry for entry in iterations if kind(entry) == "message"]
+        if not passes:
+            return 0, 0
+        first = passes[0]
+        prompt = (
+            field(first, "input_tokens")
+            + field(first, "cache_read_input_tokens")
+            + field(first, "cache_creation_input_tokens")
+        )
+        return prompt, len(passes)
 
     @property
     def billed_prompt_tokens(self) -> int:
@@ -83,6 +141,17 @@ class TokenCount:
             + getattr(other, "cache_write_tokens", 0),
             reasoning_tokens=self.reasoning_tokens
             + getattr(other, "reasoning_tokens", 0),
+            # Stays 0 (= "same as billed") unless a side carried a split, and
+            # stays 0 (= unknown, with the iterations kept) if either side's
+            # sent size is unknown: a partial sum is not a size.
+            request_prompt_tokens=(
+                self.sent_prompt_tokens + getattr(other, "sent_prompt_tokens", 0)
+                if (self.request_prompt_tokens or getattr(other, "request_prompt_tokens", 0))
+                and not (self.sent_size_unknown or getattr(other, "sent_size_unknown", False))
+                else 0
+            ),
+            sampling_iterations=self.sampling_iterations
+            + getattr(other, "sampling_iterations", 0),
         )
 
     # -- provider wire-format adapters -----------------------------------

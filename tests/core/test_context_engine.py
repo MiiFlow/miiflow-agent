@@ -295,6 +295,54 @@ class TestReconciliation:
         )
         assert calibrator.factor_for("anthropic", "claude-opus-5") == pytest.approx(1.0)
 
+    def test_server_tool_iterations_do_not_poison_calibration(self):
+        """Anthropic bills every server-side sampling pass of one call (tool
+        search, web search, MCP connector) as one summed `usage`. Production
+        2026-10-09: a 150K request that searched for tools three times
+        reported 611K. That sum is not the size of the request we sent."""
+        engine = get_engine("compressor")
+        shape = RequestShape(messages=[], provider="anthropic", model="claude-opus-5")
+        engine.should_compress(shape)
+        engine.update_from_response(
+            TokenCount(
+                prompt_tokens=611_398,
+                cache_read_tokens=441_837,
+                request_prompt_tokens=150_000,
+                sampling_iterations=4,
+            ),
+            estimated_prompt_tokens=150_000,
+        )
+        assert calibrator.factor_for("anthropic", "claude-opus-5") == pytest.approx(1.0)
+
+    def test_unknown_request_size_is_not_learned_from(self):
+        """Non-streaming calls that ran server tools carry no message_start
+        and no `usage.iterations`: the passes are known, the sent size is not,
+        and a sum over passes must not be read as one."""
+        engine = get_engine("compressor")
+        shape = RequestShape(messages=[], provider="anthropic", model="claude-opus-5")
+        engine.should_compress(shape)
+        usage = TokenCount(prompt_tokens=611_398, sampling_iterations=4)
+        assert usage.sent_size_unknown and usage.sent_prompt_tokens == 0
+        engine.update_from_response(usage, estimated_prompt_tokens=150_000)
+        assert calibrator.factor_for("anthropic", "claude-opus-5") == pytest.approx(1.0)
+
+    @pytest.mark.asyncio
+    async def test_server_tool_iterations_do_not_count_as_ineffective(self):
+        engine = get_engine("compressor", max_context_tokens=20_000)
+        shape = RequestShape(
+            messages=[Message.user("q")] + [_tool_result(400) for _ in range(20)],
+            provider="anthropic",
+            model="claude-opus-5",
+        )
+        for _ in range(2):
+            await engine.compress(shape)
+            engine.update_from_response(
+                TokenCount(
+                    prompt_tokens=60_000, request_prompt_tokens=12_000, sampling_iterations=5
+                )
+            )
+        assert engine.should_compress(shape).verdict is not CompressionVerdict.INEFFECTIVE
+
     def test_none_usage_is_ignored(self):
         engine = get_engine("compressor")
         engine.update_from_response(None)  # must not raise

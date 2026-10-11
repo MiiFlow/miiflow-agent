@@ -1771,12 +1771,28 @@ class AnthropicClient(ModelClient):
                 response.usage.input_tokens + cache_creation_tokens + cache_read_tokens
             )
 
+            request_prompt, iterations = TokenCount.anthropic_iteration_split(response.usage)
+            if iterations <= 1:
+                # No `usage.iterations` (tool search, the MCP connector) and no
+                # message_start on this path: the passes are visible only as
+                # server-executed blocks, and the request-as-sent size is not
+                # recoverable. Report the passes with request_prompt_tokens=0
+                # so sizing consumers know the billed sum is not a size.
+                server_blocks = sum(
+                    1
+                    for block in (response.content or [])
+                    if getattr(block, "type", None) in ("server_tool_use", "mcp_tool_use")
+                )
+                if server_blocks:
+                    request_prompt, iterations = 0, 1 + server_blocks
             usage = TokenCount(
                 prompt_tokens=input_tokens_total,
                 completion_tokens=response.usage.output_tokens,
                 total_tokens=input_tokens_total + response.usage.output_tokens,
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_creation_tokens,
+                request_prompt_tokens=request_prompt if iterations > 1 else 0,
+                sampling_iterations=iterations,
             )
 
             if cache_creation_tokens or cache_read_tokens:

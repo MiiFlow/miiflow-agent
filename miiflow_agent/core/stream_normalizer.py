@@ -119,6 +119,15 @@ class StreamState:
     # Prompt-cache split captured alongside, for cache-hit observability.
     cache_read_tokens_total: int = 0
     cache_write_tokens_total: int = 0
+    # Anthropic: the FIRST message_start input total — the request as sent.
+    # Server-executed tools (tool search, the MCP connector) sample again
+    # inside the same call, and message_delta then reports usage summed over
+    # every pass (765 sent, 1,697 reported in a probe on 2026-10-10). The API
+    # leaves `usage.iterations` unset for these, so this is the only record.
+    request_input_total: int = 0
+    # Server-executed tool blocks seen in this call; each one is another
+    # sampling pass over the growing prompt.
+    server_tool_blocks: int = 0
 
 
 class BaseStreamNormalizer(ABC):
@@ -367,6 +376,8 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         if hasattr(chunk, "content_block") and hasattr(chunk.content_block, "type"):
             block_type = chunk.content_block.type
             self._state.current_block_type = block_type
+            if block_type in ("server_tool_use", "mcp_tool_use"):
+                self._state.server_tool_blocks += 1
 
             logger.debug(
                 f"content_block_start: index={self._state.current_block_index}, "
@@ -711,6 +722,8 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
         message = getattr(chunk, "message", None)
         start_usage = getattr(message, "usage", None) if message is not None else None
         if start_usage is not None:
+            if not self._state.request_input_total:
+                self._state.request_input_total = _input_total(start_usage)
             self._state.input_tokens_total = max(
                 self._state.input_tokens_total, _input_total(start_usage)
             )
@@ -734,12 +747,27 @@ class AnthropicStreamNormalizer(BaseStreamNormalizer):
                 _as_int(getattr(chunk.usage, "cache_creation_input_tokens", None)),
                 self._state.cache_write_tokens_total,
             )
+            # Server-side tool iterations: the totals above are summed across
+            # them; the first pass is the request we sent (TokenCount docs).
+            # `usage.iterations` says so directly when the API fills it; for
+            # tool search and the MCP connector it does not, and the
+            # message_start total is the request as sent.
+            request_prompt, iterations = TokenCount.anthropic_iteration_split(chunk.usage)
+            if (
+                iterations <= 1
+                and self._state.server_tool_blocks
+                and 0 < self._state.request_input_total < input_tokens
+            ):
+                request_prompt = self._state.request_input_total
+                iterations = 1 + self._state.server_tool_blocks
             return TokenCount(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
                 total_tokens=input_tokens + output_tokens,
                 cache_read_tokens=cache_read,
                 cache_write_tokens=cache_write,
+                request_prompt_tokens=request_prompt if iterations > 1 else 0,
+                sampling_iterations=iterations,
             )
         return None
 

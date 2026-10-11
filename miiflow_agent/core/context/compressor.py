@@ -299,10 +299,14 @@ class DefaultContextEngine(ContextEngine):
 
         self._stats.calls += 1
 
-        # NOT `usage.prompt_tokens` unconditionally — on Anthropic that field
-        # is the uncached remainder, which on a cache hit is near-zero. See
-        # TokenCount.billed_prompt_tokens.
-        actual = usage.billed_prompt_tokens
+        # The request as SENT (`sent_prompt_tokens`), not as billed: on
+        # Anthropic a call that ran server-side tool search bills every
+        # sampling pass, and that sum is not the size of anything we sent.
+        # Fed to calibration it read as a 4x under-estimate (the factor is
+        # clamped at 2x, so one such call inflated every later estimate for
+        # the model by ~75%); fed to the verdict below it called a 150K
+        # request "still over a 500K threshold". See TokenCount.
+        actual = usage.sent_prompt_tokens
         if actual <= 0:
             return
 

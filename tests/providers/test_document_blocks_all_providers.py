@@ -107,6 +107,24 @@ def test_hosted_text_attachment_content_reaches_the_model(name):
 
 
 @pytest.mark.parametrize("name", sorted(CONVERTERS))
+def test_binary_file_is_reported_never_decoded_into_the_prompt(name):
+    """A .docx is a zip. Decoded as text it was up to 400,000 characters of
+    noise per file, re-sent every turn (614K tokens a request in production,
+    2026-10-09). The model gets a one-line notice instead."""
+    response = MagicMock()
+    response.content = b"PK\x03\x04\x14\x00\x06\x00" + bytes(range(256)) * 400
+    response.raise_for_status = MagicMock()
+
+    with patch("httpx.get", return_value=response):
+        payload = CONVERTERS[name](_txt_block())
+
+    text = _all_text(payload)
+    assert "binary file" in text and "notes.txt" in text
+    assert "�" not in text, f"{name} decoded binary bytes into the prompt"
+    assert len(text) < 1_000
+
+
+@pytest.mark.parametrize("name", sorted(CONVERTERS))
 def test_unreachable_attachment_is_reported_not_dropped(name):
     """A fetch failure must be visible to the model, never silence."""
     with patch("httpx.get", side_effect=RuntimeError("connection refused")):

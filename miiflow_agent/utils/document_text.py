@@ -44,11 +44,29 @@ def fetch_document_text(
 
         response = httpx.get(document_url, timeout=timeout, follow_redirects=True)
         response.raise_for_status()
-        text = response.content.decode("utf-8", errors="replace")
+        content = response.content
+        if looks_binary(content):
+            return (
+                f"[Document{label} is a binary file, not text, and was not read. "
+                "Do not describe or quote it.]"
+            )
+        text = content.decode("utf-8", errors="replace")
     except Exception as exc:  # noqa: BLE001 - reported to the model, never raised
         return f"[Error processing document{' ' + filename if filename else ''}: {exc}]"
 
     return f"[Document{label}]\n\n{_capped(text)}"
+
+
+def looks_binary(content: bytes, *, sample: int = 8192) -> bool:
+    """True when ``content`` is not text: a NUL byte in its head.
+
+    A text decode of a binary container (a .docx is a zip) is not a degraded
+    reading, it is noise the model is billed for — 400,000 characters of it,
+    tokenizing at well over one token per character, re-sent on every turn.
+    NUL never occurs in UTF-8 text; every zip, OLE, image and PDF has one in
+    its first few KB.
+    """
+    return b"\x00" in content[:sample]
 
 
 def document_to_text(

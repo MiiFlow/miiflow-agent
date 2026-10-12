@@ -187,15 +187,24 @@ class TestSonnet55ResolutionIsNotShadowedByItsPredecessor:
 
 
 class TestSonnet55Contract:
-    def test_prices_match_sonnet_5(self):
-        # Sonnet 5.5 is the rare successor that changes nothing about price:
-        # the gain is speed and fewer tool calls, not a cheaper rate card. A
-        # "newer must cost more" assumption here would overbill every request.
+    def test_base_rates_match_sonnet_5_but_cache_reads_are_half(self):
+        # Sonnet 5.5 launched matching Sonnet 5 on every rate — the gain was
+        # speed and fewer tool calls, not a cheaper rate card — and a "newer
+        # must cost more" assumption here would overbill every request. The
+        # base rates still match. Cache reads no longer do: Anthropic cut them
+        # from $0.20 to $0.10 per 1M on October 7, 2026 (0.05x input, the tier
+        # Opus 5.5 is on), leaving writes and the base rates untouched. Pinning
+        # the old $0.20 here is what kept the catalog overbilling cache reads at
+        # twice the published rate, so assert BOTH halves of the comparison.
         config = ANTHROPIC_MODELS["claude-sonnet-5.5"]
-        assert config.input_cost_hint == 2.0
-        assert config.output_cost_hint == 10.0
-        assert config.cache_read_cost_hint == 0.2
-        assert config.cache_write_cost_hint == 2.5
+        sonnet_5 = ANTHROPIC_MODELS["claude-sonnet-5"]
+        assert config.input_cost_hint == sonnet_5.input_cost_hint == 2.0
+        assert config.output_cost_hint == sonnet_5.output_cost_hint == 10.0
+        assert config.cache_write_cost_hint == sonnet_5.cache_write_cost_hint == 2.5
+        assert config.cache_read_cost_hint == 0.1
+        assert sonnet_5.cache_read_cost_hint == 0.2
+        # 0.05x input, not the 0.1x the rest of the line outside Fable pays.
+        assert config.cache_read_cost_hint == config.input_cost_hint * 0.05
 
     def test_thinking_is_off_via_between_tools_not_disabled(self):
         # The breaking change from Sonnet 5, and the one that 400s: "disabled"

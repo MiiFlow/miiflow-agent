@@ -56,11 +56,16 @@ _NO_SAMPLING_PARAMS = {
 # Ultra subscribers get it, and developers and the public after them. Google has
 # published no date for any of those later phases and no API model id, so an
 # entry here would fail on every request. Re-checked at the October 9, 2026
-# audit and unchanged for a second time: still Fairwind-only (served to those
+# audit, and again on October 12: still Fairwind-only (served to those
 # partners as a managed model through Gemini Enterprise rather than the Gemini
 # API), still absent from the public Gemini API model list, from Vertex AI, and
 # from the OpenRouter and models.dev catalogs, and still with no model card and
-# no introductory-period dates. Same reasoning as
+# no introductory-period dates. Re-checked a third time at the October 12,
+# 2026 audit, this time against the primary source rather than quotations of
+# it: cloud.google.com IS reachable from this environment, and Vertex AI's
+# published pricing table lists every Gemini model through 3.8 Flash — the
+# Fairwind-only 3.8 Flash Cyber and the per-image Nano Banana models included —
+# with NO Argon row at all. Same reasoning as
 # gemini-3.8-flash-cyber above and gpt-5.6-cyber in the OpenAI catalog — but
 # note the reason is ACCESS alone, not missing prices: unlike gpt-6-astra-law,
 # Argon's pricing is published, so access is the only thing being waited on.
@@ -89,13 +94,18 @@ _NO_SAMPLING_PARAMS = {
 #
 # Cached-input rates are now wired for every model here (the October 5, 2026
 # audit; previously only gemini-3.5-flash carried one, which billed every other
-# model's cached tokens at the full input rate). Google's pricing pages
-# (ai.google.dev, cloud.google.com) are still unreachable from the audit
-# environment, so these come from quotations of the official Gemini Developer API
-# pricing table, cross-checked against the one ratio the catalog already knew:
-# every Gemini model reads cached input at 0.1x its base input rate, and each
-# quoted figure matched that ratio exactly ($0.075 on the $0.75 Flash tier,
-# $0.03 on $0.30 Flash-Lite, $0.20 on $2.00 Pro, $0.025 on $0.25 3.1 Flash-Lite).
+# model's cached tokens at the full input rate). They were second-hand when
+# written — quotations of the pricing table, cross-checked against the 0.1x
+# ratio the catalog already knew — and the October 12, 2026 audit CONFIRMED
+# every one of them against the primary source: cloud.google.com is reachable
+# from this environment (ai.google.dev is not), and Vertex AI's global
+# standard-tier column matches this file exactly on all seven models, input,
+# output and cached input alike — $0.75/$3.75/$0.075 on the three newer Flash
+# models, $1.50/$9.00/$0.15 on 3.5 Flash, $0.30/$2.50/$0.03 on 3.5 Flash-Lite,
+# $2/$12/$0.20 under 200K and $4/$18/$0.40 above it on 3.1 Pro, and
+# $0.25/$1.50/$0.025 on 3.1 Flash-Lite. Read the GLOBAL column: Vertex adds 10%
+# for non-global endpoints and Batch halves everything again, so one page shows
+# three plausible-looking rate sets per model.
 # Two caveats a flat hint cannot express: the three Flash models' $0.075 is the
 # same INTRODUCTORY rate their input price is, and doubles to $0.15 on January 1,
 # 2027 alongside it; and gemini-3.1-pro's $0.20 is the under-200K tier, $0.40

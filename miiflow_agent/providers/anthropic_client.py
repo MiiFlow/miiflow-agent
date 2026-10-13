@@ -56,14 +56,6 @@ def _without_cache_control(value: Any) -> Any:
     return value
 
 
-def _wire_digest(value: Any) -> str:
-    """Short digest of a JSON-able value, stable across processes."""
-    import hashlib
-
-    raw = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
-
-
 class AnthropicClient(ModelClient):
     """Anthropic provider client."""
 
@@ -235,27 +227,11 @@ class AnthropicClient(ModelClient):
         lands before it. A message whose metadata carries ``cache_anchor`` is
         tagged for a breakpoint of its own (see ``_apply_prompt_caching``).
         """
-        from dataclasses import replace
+        from ..core.message import split_volatile
 
-        from ..core.message import TextBlock
-
-        content = message.content
-        volatile = (
-            [b for b in content if isinstance(b, TextBlock) and b.volatile]
-            if isinstance(content, list)
-            else []
-        )
+        stable_message, volatile = split_volatile(message)
         if volatile:
-            stable = [b for b in content if not (isinstance(b, TextBlock) and b.volatile)]
-            if not stable:
-                stable_content: Any = ""
-            elif len(stable) == 1 and isinstance(stable[0], TextBlock):
-                # A lone text block converts through the string path, which is
-                # how the stored message replays (the string path also strips).
-                stable_content = stable[0].text
-            else:
-                stable_content = stable
-            converted = self._convert_message_body(replace(message, content=stable_content))
+            converted = self._convert_message_body(stable_message)
             blocks = converted["content"]
             if isinstance(blocks, str):
                 blocks = [{"type": "text", "text": blocks}]
@@ -1359,7 +1335,7 @@ class AnthropicClient(ModelClient):
                             blocks[kind] = blocks.get(kind, 0) + 1
                         elif kind == "mcp_tool_result":
                             mcp_result_chars += len(json.dumps(block.get("content"), default=str))
-                msg_hashes.append(_wire_digest(_without_cache_control(msg)))
+                msg_hashes.append(wire_shape.digest(_without_cache_control(msg)))
             wire_shape.record(
                 tools_loaded=len(tools) - deferred - len(toolsets),
                 tools_deferred=deferred,
@@ -1375,7 +1351,7 @@ class AnthropicClient(ModelClient):
                 ],
                 blocks=blocks,
                 mcp_result_chars=mcp_result_chars,
-                sys_hash=_wire_digest(_without_cache_control(request_params.get("system"))),
+                sys_hash=wire_shape.digest(_without_cache_control(request_params.get("system"))),
                 msg_hashes=msg_hashes,
             )
         except Exception:  # diagnostics must never fail a request

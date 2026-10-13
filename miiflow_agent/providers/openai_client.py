@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
 import openai
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from ..core import wire_shape
 from ..core.client import ChatResponse, ModelClient
 from ..core.exceptions import (
     AuthenticationError,
@@ -28,6 +29,7 @@ from ..core.message import (
     MessageRole,
     TextBlock,
     VideoBlock,
+    split_volatile,
 )
 from ..core.metrics import TokenCount, UsageData
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
@@ -38,6 +40,7 @@ from ..models.openai import (
     get_token_param_name,
     normalize_model_name,
     requires_responses_api,
+    supports_explicit_cache_breakpoints,
     supports_native_mcp,
     supports_reasoning_effort,
     supports_json_mode,
@@ -142,6 +145,10 @@ class OpenAIClient(ModelClient):
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
         self.fine_tuned_model = kwargs.pop("fine_tuned_model", None) or None
+        # Sent on every request unless the call passes its own. It routes the
+        # requests that share it to the same cache, and keeps one tenant's
+        # cached prefixes from serving (or being probed by) another's.
+        self.prompt_cache_key = kwargs.pop("prompt_cache_key", None) or None
         super().__init__(model=model, api_key=api_key, **kwargs)
         from .sdk_client_cache import get_or_create_sdk_client
 
@@ -208,6 +215,8 @@ class OpenAIClient(ModelClient):
         # Responses API still takes them for other models). Dropping here — the
         # one funnel every request shape passes through — is what keeps a
         # caller's kwarg from becoming a 400 the caller cannot see.
+        if self.prompt_cache_key and kwargs.get("prompt_cache_key") is None:
+            kwargs = {**kwargs, "prompt_cache_key": self.prompt_cache_key}
         rejected = unsupported_request_params(self.model)
         for key in allowed:
             if key in kwargs and kwargs[key] is not None:
@@ -333,6 +342,7 @@ class OpenAIClient(ModelClient):
             request_params["text"] = text_config
 
         self._copy_allowed_kwargs(request_params, kwargs, _RESPONSES_PASSTHROUGH)
+        self._record_wire_shape(request_params["input"], request_params.get("tools"))
         for unsupported in ("frequency_penalty", "presence_penalty"):
             if unsupported in kwargs and kwargs[unsupported] not in (None, 0, 0.0):
                 logger.warning(
@@ -425,6 +435,7 @@ class OpenAIClient(ModelClient):
         the request before doing any work, so it is safe to retry once with
         the optional effort override removed.
         """
+        self._record_wire_shape(request_params.get("messages") or [], request_params.get("tools"))
         try:
             return await asyncio.wait_for(
                 self.client.chat.completions.create(**request_params),
@@ -480,10 +491,11 @@ class OpenAIClient(ModelClient):
         """Convert universal Message to OpenAI format (static for reuse by compatible providers)."""
         openai_message = {"role": message.role.value}
 
-        # OpenAI's Chat Completions API requires tool-role messages to have
-        # string content — it rejects an array of blocks. When a tool returns
-        # multimodal content (e.g. LlmBlockInjection), collapse to a text
-        # summary that references the media URLs. OpenAI users miss the visual
+        # OpenAI's Chat Completions API accepts only TEXT parts in tool-role
+        # messages — no images or video. When a tool returns multimodal
+        # content (e.g. LlmBlockInjection), collapse to a text summary that
+        # references the media URLs. (An array of text parts is accepted; the
+        # breakpoint path in `_convert_chat_messages` sends one.) OpenAI users miss the visual
         # analysis but get a coherent response instead of a 400 error.
         if (
             message.role == MessageRole.TOOL
@@ -579,6 +591,174 @@ class OpenAIClient(ModelClient):
 
         return openai_message
 
+    # ------------------------------------------------------------------
+    # Prompt-cache breakpoints (GPT-5.6 and later)
+    # ------------------------------------------------------------------
+    #
+    # On these models a request reads the cache only at a position an earlier
+    # request wrote a breakpoint at. OpenAI places one implicit breakpoint per
+    # request; it serves the rounds of one agent loop (each round re-sends the
+    # previous one and appends), but not the next user turn: that turn
+    # replays the conversation WITHOUT the previous turn's volatile context
+    # block (``TextBlock.volatile``, see the server's turn_context_blocks), so
+    # the previous request's implicit breakpoint — after that block — never
+    # matches, and the whole history is re-billed at the input rate (live,
+    # 2026-10-12: a follow-up read only the system prompt from cache).
+    #
+    # Two explicit breakpoints fix it, the same two AnthropicClient places:
+    # - on the last stable part of the message carrying the volatile block,
+    #   so the entry this turn writes ends at what the next turn replays;
+    # - on the ``cache_anchor`` message (the previous turn's user message),
+    #   so this turn reads the entry the previous turn wrote, at its exact
+    #   position.
+    # The implicit breakpoint stays on (2 explicit + 1 implicit, of the 4 a
+    # request may write).
+
+    _CACHE_BREAKPOINT = {"mode": "explicit"}
+    #: Roles whose content becomes a part list on breakpoint models.
+    _PART_ROLES = (MessageRole.USER, MessageRole.TOOL)
+
+    def _cache_breakpoint_targets(self, messages: List[Message]) -> set[int]:
+        """Indexes of the messages that get an explicit breakpoint."""
+        if not supports_explicit_cache_breakpoints(self.model):
+            return set()
+        anchor: Optional[int] = None
+        last_volatile: Optional[int] = None
+        for i, msg in enumerate(messages):
+            if msg.role not in self._PART_ROLES:
+                continue
+            if (msg.metadata or {}).get("cache_anchor"):
+                anchor = i
+            if self._volatile_texts(msg):
+                last_volatile = i
+        return {i for i in (anchor, last_volatile) if i is not None}
+
+    def _cache_split(self, message: Message) -> tuple[Message, Optional[List[str]]]:
+        """The message to convert, and its volatile texts.
+
+        ``None`` for the texts means "leave this message's shape alone":
+        models without explicit breakpoints, and roles that carry no parts.
+        """
+        if message.role not in self._PART_ROLES or not supports_explicit_cache_breakpoints(
+            self.model
+        ):
+            return message, None
+        return split_volatile(message)[0], self._volatile_texts(message)
+
+    @staticmethod
+    def _volatile_texts(message: Message) -> List[str]:
+        """The non-blank volatile texts — the one test both the breakpoint
+        targeting and the conversion use, so they cannot disagree."""
+        return [b.text for b in split_volatile(message)[1] if b.text and b.text.strip()]
+
+    @classmethod
+    def _as_parts(
+        cls,
+        content: Any,
+        volatile: List[str],
+        *,
+        text_type: str,
+        breakpoint: bool,
+    ) -> Any:
+        """Content as a part list: the stable parts (the last marked) then the
+        volatile ones.
+
+        Every user and tool message on a breakpoint model goes as parts, not
+        only the marked ones. A breakpoint can only sit on a part, so a marked
+        message is a part list on the turn it is marked and would be a plain
+        string on the next turn, when it is no longer marked — and the cached
+        prefix would then match only if OpenAI tokenized the two spellings
+        identically. One spelling for every turn removes that dependency.
+        Empty content with nothing to append is returned unchanged.
+        """
+        if isinstance(content, str):
+            parts = [{"type": text_type, "text": content}] if content else []
+        else:
+            parts = [dict(p) for p in content or []]
+        if not parts and not volatile:
+            return content
+        if breakpoint and parts:
+            parts[-1]["prompt_cache_breakpoint"] = dict(cls._CACHE_BREAKPOINT)
+        parts.extend({"type": text_type, "text": text} for text in volatile)
+        return parts
+
+    def _convert_chat_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
+        """Chat Completions messages, with cache breakpoints where they apply."""
+        targets = self._cache_breakpoint_targets(messages)
+        converted: List[Dict[str, Any]] = []
+        for i, msg in enumerate(messages):
+            stable, volatile = self._cache_split(msg)
+            wire = self.convert_message_to_provider_format(stable)
+            trailing: List[Dict[str, Any]] = []
+            if volatile and msg.role == MessageRole.TOOL:
+                # Chat Completions honors a breakpoint in a tool message only on
+                # its LAST part: with a volatile part after it the entry is never
+                # matched (live, gpt-6.1-sol, 2026-10-12: 2.7K of 10.3K cached
+                # vs 10.3K with the breakpoint last). So the volatile text rides
+                # in a user message of its own right after the result. Safe
+                # because the volatile carrier is the request's final
+                # user/tool message — only an assistant turn can follow it.
+                context = self._as_parts("", volatile, text_type="text", breakpoint=False)
+                trailing = [{"role": "user", "content": context}]
+                volatile = []
+            if volatile is not None:
+                wire["content"] = self._as_parts(
+                    wire.get("content"), volatile, text_type="text", breakpoint=i in targets
+                )
+            converted.append(wire)
+            converted.extend(trailing)
+        return converted
+
+    @staticmethod
+    def _without_breakpoints(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                k: OpenAIClient._without_breakpoints(v)
+                for k, v in value.items()
+                if k != "prompt_cache_breakpoint"
+            }
+        if isinstance(value, list):
+            return [OpenAIClient._without_breakpoints(v) for v in value]
+        return value
+
+    @staticmethod
+    def _count_breakpoints(value: Any) -> int:
+        if isinstance(value, dict):
+            return int("prompt_cache_breakpoint" in value) + sum(
+                OpenAIClient._count_breakpoints(v) for v in value.values()
+            )
+        if isinstance(value, list):
+            return sum(OpenAIClient._count_breakpoints(v) for v in value)
+        return 0
+
+    @staticmethod
+    def _is_system_item(item: Any) -> bool:
+        return isinstance(item, dict) and item.get("role") in ("system", "developer")
+
+    @classmethod
+    def _record_wire_shape(cls, items: List[Any], tools: Any) -> None:
+        """Record per-message digests for the call's POST_CALL event.
+
+        The same fields AnthropicClient records (see ``core.wire_shape``):
+        diffing two turns' first-call ``msg_hashes`` names the first message
+        whose bytes changed, i.e. where the cache stopped matching.
+        Breakpoint markers are excluded so they never read as a change.
+        """
+        try:
+            system = [i for i in items if cls._is_system_item(i)]
+            wire_shape.record(
+                tools_loaded=len(tools or []),
+                cache_breakpoints=cls._count_breakpoints(items),
+                sys_hash=wire_shape.digest(cls._without_breakpoints(system)),
+                msg_hashes=[
+                    wire_shape.digest(cls._without_breakpoints(i))
+                    for i in items
+                    if not cls._is_system_item(i)
+                ],
+            )
+        except Exception:  # diagnostics must never fail a request
+            logger.debug("wire shape not recorded", exc_info=True)
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -629,7 +809,7 @@ class OpenAIClient(ModelClient):
             # DocumentBlocks (httpx.get, PDF extraction) — offload to a worker
             # thread so the event loop stays free under ASGI servers.
             openai_messages = await asyncio.to_thread(
-                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
+                lambda: self._convert_chat_messages(messages)
             )
 
             request_params: Dict[str, Any] = {
@@ -846,8 +1026,11 @@ class OpenAIClient(ModelClient):
         It expects an array of input items rather than messages.
         """
         input_items: List[Dict[str, Any]] = []
+        targets = self._cache_breakpoint_targets(messages)
 
-        for msg in messages:
+        for index, msg in enumerate(messages):
+            msg, volatile = self._cache_split(msg)
+            breakpoint = index in targets
             if msg.role == MessageRole.SYSTEM:
                 # System messages become system items
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
@@ -861,22 +1044,22 @@ class OpenAIClient(ModelClient):
             elif msg.role == MessageRole.USER:
                 # User messages
                 if isinstance(msg.content, str):
-                    input_items.append(
-                        {
-                            "type": "message",
-                            "role": "user",
-                            "content": msg.content,
-                        }
-                    )
+                    content: Any = msg.content
                 else:
-                    content_parts = self._convert_blocks_to_responses_content(msg.content)
-                    input_items.append(
-                        {
-                            "type": "message",
-                            "role": "user",
-                            "content": content_parts,
-                        }
-                    )
+                    content = self._convert_blocks_to_responses_content(msg.content)
+                input_items.append(
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": (
+                            content
+                            if volatile is None
+                            else self._as_parts(
+                                content, volatile, text_type="input_text", breakpoint=breakpoint
+                            )
+                        ),
+                    }
+                )
             elif msg.role == MessageRole.ASSISTANT:
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
                 if content:
@@ -917,6 +1100,10 @@ class OpenAIClient(ModelClient):
                     output = msg.content
                 else:
                     output = self._convert_blocks_to_responses_content(msg.content)
+                if volatile is not None:
+                    output = self._as_parts(
+                        output, volatile, text_type="input_text", breakpoint=breakpoint
+                    )
                 input_items.append(
                     {
                         "type": "function_call_output",
@@ -1094,7 +1281,7 @@ class OpenAIClient(ModelClient):
         try:
             # Offload sync DocumentBlock I/O / PDF extraction off the event loop.
             openai_messages = await asyncio.to_thread(
-                lambda: [self.convert_message_to_provider_format(msg) for msg in messages]
+                lambda: self._convert_chat_messages(messages)
             )
 
             request_params: Dict[str, Any] = {

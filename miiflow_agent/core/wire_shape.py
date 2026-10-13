@@ -17,6 +17,8 @@ re-setting the variable — is what stays visible to the caller either way.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from contextvars import ContextVar
 from typing import Any, Dict, Optional
 
@@ -35,3 +37,9 @@ def record(**fields: Any) -> None:
     slot = _SLOT.get()
     if slot is not None:
         slot.update(fields)
+
+
+def digest(value: Any) -> str:
+    """Short digest of a JSON-able value, stable across processes."""
+    raw = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]

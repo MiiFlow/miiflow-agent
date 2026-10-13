@@ -759,6 +759,18 @@ def tools_require_responses_api(model: str) -> bool:
     return is_gpt56_model(model) or is_gpt6_model(model)
 
 
+def supports_explicit_cache_breakpoints(model: str) -> bool:
+    """Return whether ``model`` accepts ``prompt_cache_breakpoint`` on content parts.
+
+    Explicit breakpoints arrived with GPT-5.6 and carry into GPT-6; earlier
+    models keep automatic prefix caching only. The breakpoints matter because
+    on these models a later request reads the cache only at a position some
+    earlier request wrote a breakpoint at — and the one implicit breakpoint
+    OpenAI places per request does not land where the next turn diverges.
+    """
+    return is_gpt56_model(model) or is_gpt6_model(model)
+
+
 def unsupported_request_params(model: str) -> frozenset[str]:
     """Request parameters ``model`` rejects, so the client can drop them.
 

@@ -831,7 +831,13 @@ class TestOpenAIRequestMapping:
                 "name": "lookup",
                 "arguments": '{"q":"x"}',
             },
-            {"type": "function_call_output", "call_id": "call_1", "output": "result"},
+            # Parts, not a string: on breakpoint models every tool output has
+            # one spelling on every turn (see OpenAIClient._as_parts).
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [{"type": "input_text", "text": "result"}],
+            },
         ]
 
     def test_responses_preserves_files_video_references_and_dict_arguments(self):
@@ -1142,3 +1148,202 @@ class TestUnsupportedParamsAreDroppedPerModel:
         assert params["top_p"] == 0.9
         assert params["top_logprobs"] == 3
         assert params["prompt_cache_retention"] == "24h"
+
+
+class TestPromptCacheBreakpoints:
+    """Explicit breakpoints so the next turn reads this turn's cache entry.
+
+    The server appends per-turn context as a volatile block on the final
+    message and replays history WITHOUT it, and marks the previous turn's
+    user message ``cache_anchor``. On GPT-5.6+ the cache is read only at a
+    breakpoint position, so turn N must write one where turn N+1's replay
+    stops matching, and turn N+1 must place one at that same position.
+    """
+
+    BP = {"mode": "explicit"}
+
+    @staticmethod
+    def _strip(value):
+        return OpenAIClient._without_breakpoints(value)
+
+    @staticmethod
+    def _turns():
+        system = Message.system("You are Adlyse AI.")
+        turn_n = [
+            system,
+            Message.user(
+                [TextBlock(text="Which day had most clicks?"), TextBlock(text="[PAGE A]", volatile=True)]
+            ),
+        ]
+        anchor = Message.user("Which day had most clicks?")
+        anchor.metadata["cache_anchor"] = True
+        turn_next = [
+            system,
+            anchor,
+            Message.assistant("Day 3."),
+            Message.user(
+                [TextBlock(text="And spend?"), TextBlock(text="[PAGE B]", volatile=True)]
+            ),
+        ]
+        return turn_n, turn_next
+
+    def test_responses_next_turn_reads_the_entry_this_turn_writes(self):
+        client = OpenAIClient(model="gpt-6-luna", api_key="test-key")
+        turn_n, turn_next = self._turns()
+        sent_n = client._convert_messages_to_responses_input(turn_n)
+        sent_next = client._convert_messages_to_responses_input(turn_next)
+
+        # Turn N: breakpoint on the user's own text, the volatile block after it.
+        assert sent_n[1]["content"] == [
+            {"type": "input_text", "text": "Which day had most clicks?", "prompt_cache_breakpoint": self.BP},
+            {"type": "input_text", "text": "[PAGE A]"},
+        ]
+        # Turn N+1: breakpoint on the anchor at the same position, and the
+        # bytes up to it equal what turn N cached.
+        assert sent_next[1]["content"][-1]["prompt_cache_breakpoint"] == self.BP
+        assert self._strip(sent_next[:2]) == self._strip(
+            [sent_n[0], {**sent_n[1], "content": sent_n[1]["content"][:1]}]
+        )
+        assert OpenAIClient._count_breakpoints(sent_next) == 2
+        assert sent_next[3]["content"][-1] == {"type": "input_text", "text": "[PAGE B]"}
+
+    def test_chat_completions_places_the_same_breakpoints(self):
+        client = OpenAIClient(model="gpt-6-luna", api_key="test-key")
+        turn_n, turn_next = self._turns()
+        sent_n = client._convert_chat_messages(turn_n)
+        sent_next = client._convert_chat_messages(turn_next)
+
+        assert sent_n[1]["content"] == [
+            {"type": "text", "text": "Which day had most clicks?", "prompt_cache_breakpoint": self.BP},
+            {"type": "text", "text": "[PAGE A]"},
+        ]
+        assert self._strip(sent_next[:2]) == self._strip(
+            [sent_n[0], {**sent_n[1], "content": sent_n[1]["content"][:1]}]
+        )
+        assert OpenAIClient._count_breakpoints(sent_next) == 2
+
+    def test_resume_turn_marks_the_tool_result_before_its_volatile_block(self):
+        client = OpenAIClient(model="gpt-6.1-sol", api_key="test-key")
+        messages = [
+            Message.system("s"),
+            Message.user("go"),
+            Message.assistant("", tool_calls=[{"id": "c1", "function": {"name": "ask", "arguments": "{}"}}]),
+            Message(
+                role=MessageRole.TOOL,
+                tool_call_id="c1",
+                content=[TextBlock(text="answer: yes"), TextBlock(text="[CTX]", volatile=True)],
+            ),
+        ]
+        responses_output = client._convert_messages_to_responses_input(messages)[-1]["output"]
+        assert responses_output == [
+            {"type": "input_text", "text": "answer: yes", "prompt_cache_breakpoint": self.BP},
+            {"type": "input_text", "text": "[CTX]"},
+        ]
+        # Chat Completions ignores a tool-message breakpoint that is not on the
+        # message's last part, so the volatile text follows as its own message.
+        chat_tool, chat_ctx = client._convert_chat_messages(messages)[-2:]
+        assert chat_tool["tool_call_id"] == "c1"
+        assert chat_tool["content"] == [
+            {"type": "text", "text": "answer: yes", "prompt_cache_breakpoint": self.BP},
+        ]
+        assert chat_ctx == {"role": "user", "content": [{"type": "text", "text": "[CTX]"}]}
+
+    @pytest.mark.parametrize("model", ["gpt-4.1", "gpt-5.4", "gpt-5.5"])
+    def test_models_without_explicit_breakpoints_keep_their_request_shape(self, model):
+        client = OpenAIClient(model=model, api_key="test-key")
+        _, turn_next = self._turns()
+        assert OpenAIClient._count_breakpoints(client._convert_chat_messages(turn_next)) == 0
+        assert OpenAIClient._count_breakpoints(
+            client._convert_messages_to_responses_input(turn_next)
+        ) == 0
+        assert client._convert_chat_messages(turn_next) == [
+            OpenAIClient.convert_message_to_openai_format(m) for m in turn_next
+        ]
+
+    def test_user_and_tool_content_is_always_parts_on_breakpoint_models(self):
+        """One spelling on every turn: a message marked as the anchor on turn
+        N is unmarked on turn N+1, and must not flip back to a string there."""
+        client = OpenAIClient(model="gpt-6-luna", api_key="test-key")
+        messages = [
+            Message.system("s"),
+            Message.user("hi"),
+            Message(role=MessageRole.TOOL, tool_call_id="c1", content="ok"),
+        ]
+        sent = client._convert_messages_to_responses_input(messages)
+        assert sent[0]["content"] == "s"
+        assert sent[1]["content"] == [{"type": "input_text", "text": "hi"}]
+        assert sent[2]["output"] == [{"type": "input_text", "text": "ok"}]
+        chat = client._convert_chat_messages(messages)
+        assert chat[0]["content"] == "s"
+        assert chat[1]["content"] == [{"type": "text", "text": "hi"}]
+        assert chat[2]["content"] == [{"type": "text", "text": "ok"}]
+
+    def test_breakpoint_lands_on_a_trailing_pdf_part(self):
+        """A PDF attached last has no text label after it, so the marker goes
+        on the input_file part — accepted and read back live (2026-10-12)."""
+        client = OpenAIClient(model="gpt-6.1-sol", api_key="test-key")
+        msg = Message.user(
+            [
+                TextBlock(text="See attached."),
+                DocumentBlock(document_url="data:application/pdf;base64,JVBERi0=", document_type="pdf", filename="r.pdf"),
+                TextBlock(text="[PAGE]", volatile=True),
+            ]
+        )
+        parts = client._convert_messages_to_responses_input([msg])[0]["content"]
+        assert [p["type"] for p in parts] == ["input_text", "input_file", "input_text"]
+        assert parts[1]["prompt_cache_breakpoint"] == self.BP
+        assert "prompt_cache_breakpoint" not in parts[2]
+
+    def test_a_blank_volatile_block_is_not_a_breakpoint_target(self):
+        client = OpenAIClient(model="gpt-6-luna", api_key="test-key")
+        msg = Message.user([TextBlock(text="hi"), TextBlock(text="  ", volatile=True)])
+        assert client._cache_breakpoint_targets([msg]) == set()
+        assert client._convert_messages_to_responses_input([msg])[0]["content"] == [
+            {"type": "input_text", "text": "hi"}
+        ]
+
+    def test_empty_content_is_left_as_is(self):
+        client = OpenAIClient(model="gpt-6-luna", api_key="test-key")
+        anchor = Message.user("")
+        anchor.metadata["cache_anchor"] = True
+        sent = client._convert_messages_to_responses_input([anchor])
+        assert sent[0]["content"] == ""
+        assert client._convert_chat_messages([anchor])[0]["content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_constructor_prompt_cache_key_is_sent_and_a_call_value_wins(self):
+        client = OpenAIClient(model="gpt-6-luna", api_key="test-key", prompt_cache_key="assistant_1")
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _responses_response()
+            await client.achat([Message.user("hi")], use_responses_api=True)
+            assert mock_create.call_args.kwargs["prompt_cache_key"] == "assistant_1"
+            await client.achat([Message.user("hi")], use_responses_api=True, prompt_cache_key="x")
+            assert mock_create.call_args.kwargs["prompt_cache_key"] == "x"
+
+    @pytest.mark.asyncio
+    async def test_constructor_prompt_cache_key_goes_through_the_model_filter(self):
+        client = OpenAIClient(model="gpt-6-luna", api_key="test-key", prompt_cache_key="assistant_1")
+        with patch(
+            "miiflow_agent.providers.openai_client.unsupported_request_params",
+            return_value=frozenset({"prompt_cache_key"}),
+        ), patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _responses_response()
+            await client.achat([Message.user("hi")], use_responses_api=True)
+        assert "prompt_cache_key" not in mock_create.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_wire_shape_records_digests_without_breakpoint_markers(self):
+        from miiflow_agent.core import wire_shape
+
+        client = OpenAIClient(model="gpt-6-luna", api_key="test-key")
+        _, turn_next = self._turns()
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _responses_response()
+            slot = wire_shape.open_slot()
+            await client.achat(turn_next, use_responses_api=True)
+        sent = mock_create.call_args.kwargs["input"]
+        assert slot["cache_breakpoints"] == 2
+        assert slot["sys_hash"] == wire_shape.digest([OpenAIClient._without_breakpoints(sent[0])])
+        assert slot["msg_hashes"] == [
+            wire_shape.digest(OpenAIClient._without_breakpoints(i)) for i in sent[1:]
+        ]

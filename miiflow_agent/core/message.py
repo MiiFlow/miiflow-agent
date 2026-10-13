@@ -228,3 +228,30 @@ class Message:
             timestamp=datetime.fromisoformat(data.get("timestamp", datetime.now().isoformat())),
             metadata=data.get("metadata", {}),
         )
+
+
+def split_volatile(message: Message) -> tuple[Message, List[TextBlock]]:
+    """``message`` without its volatile blocks, and those blocks.
+
+    The stable remainder is shaped exactly as the stored message is when it is
+    replayed on a later turn — a lone text block goes back to plain string
+    content — so a provider converting it produces the bytes the next turn
+    will send. Providers append the volatile blocks after their cache
+    breakpoint. Returns ``(message, [])`` unchanged when there are none.
+    """
+    from dataclasses import replace
+
+    content = message.content
+    if not isinstance(content, list):
+        return message, []
+    volatile = [b for b in content if isinstance(b, TextBlock) and b.volatile]
+    if not volatile:
+        return message, []
+    stable = [b for b in content if not (isinstance(b, TextBlock) and b.volatile)]
+    if not stable:
+        stable_content: Any = ""
+    elif len(stable) == 1 and isinstance(stable[0], TextBlock):
+        stable_content = stable[0].text
+    else:
+        stable_content = stable
+    return replace(message, content=stable_content), volatile

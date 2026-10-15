@@ -153,12 +153,21 @@ class ApprovalResumeFlow:
         transcript outweighs any steering text — observed 12× consecutively in
         the reject harness). Any follow-up arrives as a fresh user message with
         full tool freedom, so nothing is lost by not invoking the model here.
+
+        A reply TYPED over the approval card is not a decline and is not
+        acknowledged here: the host marks it with ``value["user_message"]``.
+        The call still does not run, but the person said something — often a
+        question about the proposal — that only the model can answer, in their
+        language. A canned "Noted: <their question>" left it unanswered
+        (thread_6b5kCfWxgSHY8X99j0EZ4kYR).
         """
         if (
             resume is None
             or getattr(resume, "kind", None) != "tool_approval"
             or getattr(resume, "decision", None) != "rejected"
         ):
+            return False
+        if str((getattr(resume, "value", None) or {}).get("user_message") or "").strip():
             return False
 
         reason = str((getattr(resume, "value", None) or {}).get("reason") or "").strip()

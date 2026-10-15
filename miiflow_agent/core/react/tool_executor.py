@@ -1395,6 +1395,24 @@ class AgentToolExecutor:
                 return bridge_tool
         return None
 
+    def is_unknown_tool(self, tool_name: str) -> bool:
+        """True only when ``tool_name`` resolves to nothing the registry could
+        dispatch: not a registered tool under its own or its provider-sanitized
+        name, not an off-registry meta/bridge tool, and not a tool a native-MCP
+        server serves (the registry answers that misroute itself). Anything
+        else keeps going through the gates."""
+        if self.has_tool(tool_name):
+            return False
+        reg = self._tool_registry
+        resolve = getattr(reg, "_resolve_name", None)
+        resolved = resolve(tool_name) if callable(resolve) else tool_name
+        if self._lookup_any_tool(resolved) is not None:
+            return False
+        native_server = getattr(reg, "native_mcp_server_for_tool", None)
+        if callable(native_server) and native_server(resolved):
+            return False
+        return True
+
     def has_tool(self, tool_name: str) -> bool:
         # The tool_search meta-tool and the bridge tools live off-registry;
         # recognize them when the orchestrator validates an LLM-issued tool

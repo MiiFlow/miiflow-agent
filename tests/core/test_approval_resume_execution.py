@@ -784,3 +784,38 @@ def test_resume_with_the_pass_executes_the_approved_call():
     ]
     assert "1234" in messages[1].content
     assert "requires user approval" not in messages[1].content
+
+
+def test_a_reply_typed_over_the_card_goes_to_the_model():
+    """A typed reply is no decline: the person said something only the model
+    can answer, in their language (thread_6b5kCfWxgSHY8X99j0EZ4kYR)."""
+    async def go():
+        orch = SimpleNamespace(event_bus=_FakeBus())
+        orch._acknowledge_rejected_approval = (
+            ReActOrchestrator._acknowledge_rejected_approval.__get__(
+                orch, SimpleNamespace
+            )
+        )
+        resume = ResumeCommand(
+            interrupt_id="int_tool_tc_1",
+            kind="tool_approval",
+            decision="rejected",
+            value={
+                "reason": "proc to mas vse ve frazove?",
+                "user_message": "proc to mas vse ve frazove?",
+            },
+        )
+        state = SimpleNamespace(
+            current_step=0, is_running=True, final_answer="", failure_metadata=None
+        )
+
+        handled = await orch._acknowledge_rejected_approval(
+            resume, SimpleNamespace(deps={}, messages=[]), state
+        )
+
+        assert handled is False
+        assert state.is_running is True
+        assert state.final_answer == ""
+        assert orch.event_bus.events == []
+
+    asyncio.run(go())

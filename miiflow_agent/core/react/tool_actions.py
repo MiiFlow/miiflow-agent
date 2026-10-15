@@ -802,6 +802,17 @@ class ToolActionHandler:
                 pre_exec_errors[tool_call_id] = (
                     "Malformed tool call: function name is missing."
                 )
+            elif tool_call_id not in pre_exec_errors and self._orch.tool_executor.is_unknown_tool(name):
+                # Mirror the single-tool path (`execute_tool`): an unknown name
+                # is answered as unknown before any gate sees it. Gates decide
+                # on a tool's declared facts, and a name with no tool has none
+                # — a host permission gate failing closed answered a made-up
+                # `load_skill` in a batch with "Permission denied. Ask a Member
+                # or Admin…", sending the model after a role.
+                pre_exec_errors[tool_call_id] = (
+                    f"Tool '{name}' not found. "
+                    f"Available: {self._orch.tool_executor.list_tools()}"
+                )
 
             # Schema validation — required-params check (mirrors single-tool path)
             if name and tool_call_id not in pre_exec_errors and inputs is not None:

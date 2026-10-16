@@ -42,4 +42,4 @@ def record(**fields: Any) -> None:
 def digest(value: Any) -> str:
     """Short digest of a JSON-able value, stable across processes."""
     raw = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+    return hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]

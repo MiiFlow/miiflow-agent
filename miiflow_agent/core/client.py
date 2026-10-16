@@ -101,7 +101,9 @@ def _tools_fingerprint_and_names(
                 continue
             desc = tool.get("description") or fn.get("description") or ""
             parts.append(f"{name}:{len(str(desc))}:{','.join(sorted(tool.keys()))}")
-        digest = hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha1(
+            "|".join(parts).encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:12]
         return digest, names
     except Exception:  # noqa: BLE001
         return None, None

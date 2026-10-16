@@ -816,7 +816,6 @@ class TestImageInput:
             api_key=api_key
         )
 
-        from miiflow_agent.core.message import Message
 
         # Create message with image
         message = Message.from_image(
@@ -847,7 +846,6 @@ class TestImageInput:
             api_key=api_key
         )
 
-        from miiflow_agent.core.message import Message
 
         schema = {
             "type": "object",
@@ -898,7 +896,7 @@ class TestImageInput:
             api_key=api_key
         )
 
-        from miiflow_agent.core.message import Message, TextBlock, ImageBlock
+        from miiflow_agent.core.message import TextBlock, ImageBlock
 
         # Create message with multiple images
         message = Message(

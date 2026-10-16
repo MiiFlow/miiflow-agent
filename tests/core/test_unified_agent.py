@@ -354,7 +354,7 @@ class TestImportPatterns:
     
     def test_core_imports(self):
         """Test that applications can import everything they need."""
-        from miiflow_agent.core import Agent, RunContext, RunResult, AgentType
+        from miiflow_agent.core import Agent, RunContext, RunResult, AgentType  # noqa: F811 — the import is the test
         
         assert Agent is not None
         assert RunContext is not None

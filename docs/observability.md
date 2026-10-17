@@ -18,7 +18,7 @@ from miiflow_agent import LLMClient, Message
 client = LLMClient.create("openai", model="gpt-5.6-luna")
 response = await client.achat([Message.user("Hello")])
 
-# View traces at http://localhost:6006
+# View traces at http://localhost:6006 (Phoenix runs separately — see Troubleshooting)
 ```
 
 ## Configuration
@@ -122,10 +122,12 @@ asyncio.run(main())
 
 ### Phoenix Not Starting
 
-**Check installation:**
+The `observability` extra installs the tracing side only (OpenTelemetry,
+OTLP exporter, OpenInference instrumentors). The Phoenix server is a separate
+install, so `launch_local=True` needs it:
+
 ```bash
-pip install "miiflow-agent[observability]"
-# Verify Phoenix installed
+pip install arize-phoenix            # or: docker run -p 6006:6006 arizephoenix/phoenix
 python -c "import phoenix; print('Phoenix OK')"
 ```
 

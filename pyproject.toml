@@ -53,7 +53,10 @@ mistralai = { version = "^1.0.0", optional = true }
 
 # Optional multimedia dependencies
 PyMuPDF = { version = "^1.23.0", optional = true }
-Pillow = { version = "^10.0.0", optional = true }
+# Range spans 10-12: the package uses only long-stable Image APIs (open, size,
+# thumbnail/resize, save), and 12.3.0 is the first release without the
+# 2026 decoder/heap advisories, so the lock resolves there.
+Pillow = { version = ">=10.0.0,<13.0.0", optional = true }
 
 # Optional example dependencies
 yfinance = { version = "^0.2.40", optional = true }
@@ -69,7 +72,15 @@ opentelemetry-api = { version = "^1.27.0", optional = true }
 opentelemetry-sdk = { version = "^1.27.0", optional = true }
 opentelemetry-exporter-otlp = { version = "^1.27.0", optional = true }
 prometheus-client = { version = "^0.21.0", optional = true }
-arize-phoenix = { version = "^4.29.0", optional = true }
+# arize-phoenix (the Phoenix *server*) is deliberately not an extra. The only
+# code that touches it is launch_local_phoenix(), a dev convenience that
+# imports it lazily and degrades to a warning. Tracing itself exports over
+# OTLP and never imports phoenix. Bundling the server pinned users to its
+# whole stack (exact strawberry-graphql, pyarrow, protobuf<6, numpy<2,
+# scikit-learn/umap), and every Phoenix release with a patched
+# strawberry-graphql also requires anthropic>=1, which conflicts with the
+# anthropic pin above. Install it yourself to launch a local UI, or run
+# Phoenix as a service (`docker run arizephoenix/phoenix`).
 
 # OpenInference auto-instrumentation
 openinference-instrumentation-openai = { version = "^0.1.12", optional = true }
@@ -77,14 +88,14 @@ openinference-instrumentation-anthropic = { version = "^0.1.5", optional = true 
 openinference-instrumentation-google-genai = { version = "^0.1.0", optional = true }
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.0.0"
-pytest-asyncio = "^0.25.0"
+pytest = "^9.0.3"
+# 1.3 is the first pytest-asyncio that accepts pytest 9 (1.0-1.2 cap <9).
+pytest-asyncio = "^1.3.0"
 pytest-cov = "^6.0.0"
-black = "^24.0.0"
+black = "^26.3.1"
 isort = "^5.13.0"
 flake8 = "^7.0.0"
 mypy = "^1.11.0"
-pre-commit = "^4.0.0"
 python-dotenv = "^1.2.1"
 
 [tool.poetry.extras]
@@ -97,8 +108,8 @@ images = ["Pillow"]
 examples = ["yfinance"]
 mcp = ["mcp"]
 agui = ["ag-ui-protocol"]
-observability = ["opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client", "arize-phoenix", "openinference-instrumentation-openai", "openinference-instrumentation-anthropic", "openinference-instrumentation-google-genai"]
-all = ["groq", "google-genai", "mistralai", "PyMuPDF", "Pillow", "yfinance", "mcp", "ag-ui-protocol", "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client", "arize-phoenix", "openinference-instrumentation-openai", "openinference-instrumentation-anthropic", "openinference-instrumentation-google-genai"]
+observability = ["opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client", "openinference-instrumentation-openai", "openinference-instrumentation-anthropic", "openinference-instrumentation-google-genai"]
+all = ["groq", "google-genai", "mistralai", "PyMuPDF", "Pillow", "yfinance", "mcp", "ag-ui-protocol", "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "prometheus-client", "openinference-instrumentation-openai", "openinference-instrumentation-anthropic", "openinference-instrumentation-google-genai"]
 
 [build-system]
 requires = ["poetry-core"]

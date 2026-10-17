@@ -166,7 +166,7 @@ def setup_phoenix_dashboard():
 
     except ImportError:
         print("✗ Phoenix not installed. Install with:")
-        print("  pip install 'miiflow-agent[observability]'")
+        print("  pip install arize-phoenix")
     except Exception as e:
         print(f"✗ Failed to start Phoenix: {e}")
 
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     except ImportError as e:
         print(f"Missing dependencies: {e}")
         print("\nInstall observability dependencies with:")
-        print("pip install 'miiflow-agent[observability]'")
+        print("pip install 'miiflow-agent[observability]' arize-phoenix")
         print("\nOr install individual packages:")
         print("pip install arize-phoenix opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp")
     except KeyboardInterrupt:

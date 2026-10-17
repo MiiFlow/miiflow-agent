@@ -104,7 +104,7 @@ Requires **Python 3.10–3.12**.
 | `images` | Pillow — **install this if you send images**; they are validated before upload |
 | `pdf`, `multimedia` | PDF text extraction (PyMuPDF), plus Pillow |
 | `agui` | AG-UI protocol event output |
-| `observability` | OpenTelemetry, Phoenix, OpenInference instrumentors |
+| `observability` | OpenTelemetry (OTLP export to Phoenix or Arize AX), OpenInference instrumentors. The Phoenix server itself is separate: `pip install arize-phoenix` or run its Docker image |
 
 API keys are read from `<PROVIDER>_API_KEY` (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`) or passed as `api_key=`.
 

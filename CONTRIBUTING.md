@@ -46,11 +46,6 @@ flake8 miiflow_agent/
 mypy miiflow_agent/
 ```
 
-Or setup pre-commit:
-```bash
-pre-commit install
-```
-
 ### Project Structure
 
 ```

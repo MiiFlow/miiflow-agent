@@ -334,7 +334,13 @@ def launch_local_phoenix(port: int = 6006) -> Optional[Any]:
         return session
 
     except ImportError as e:
-        logger.warning(f"Phoenix dependencies not available: {e}")
+        # The Phoenix server is not part of the `observability` extra (it pins
+        # its own strawberry-graphql/pyarrow/protobuf stack); install it
+        # separately when a local UI is wanted.
+        logger.warning(
+            f"Phoenix server not installed ({e}); `pip install arize-phoenix` "
+            "or run Phoenix as a service (docker run -p 6006:6006 arizephoenix/phoenix)"
+        )
         return None
     except Exception as e:
         logger.exception(f"Failed to launch local Phoenix: {e}")

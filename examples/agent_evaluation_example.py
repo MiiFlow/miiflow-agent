@@ -326,7 +326,7 @@ def setup_phoenix_for_evaluation():
 
     except ImportError:
         print("✗ Phoenix not installed. Install with:")
-        print("  pip install 'miiflow-agent[observability]'")
+        print("  pip install arize-phoenix")
     except Exception as e:
         print(f"✗ Failed to start Phoenix: {e}")
 
@@ -373,7 +373,7 @@ if __name__ == "__main__":
     except ImportError as e:
         print(f"Missing dependencies: {e}")
         print("\nInstall evaluation dependencies with:")
-        print("pip install 'miiflow-agent[observability]'")
+        print("pip install 'miiflow-agent[observability]' arize-phoenix")
     except KeyboardInterrupt:
         print("\nExamples interrupted by user")
     except Exception as e:

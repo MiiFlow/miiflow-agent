@@ -22,7 +22,15 @@ from miiflow_agent.models.google import (
 # records it here and keeps the true number in the catalog. Entering a wrong
 # figure to keep this test green is the one thing it must not cause.
 _CACHE_READ_RATIO = 0.1
-_CACHE_READ_RATIO_EXCEPTIONS: dict[str, float] = {}
+_CACHE_READ_RATIO_EXCEPTIONS: dict[str, float] = {
+    # Gemini 4 Argon is the first Google model here to break the 0.1x default,
+    # and it is a published figure, not a misread column: Vertex's global
+    # standard tier lists $2 input against $0.10 cached through November 30,
+    # 2026 and $4 against $0.20 from December 1 — 0.05x on both sides of the
+    # step-up, so the ratio survives the price change even though the rates do
+    # not. Google describes the same thing as "95% off" on the Gemini API.
+    "gemini-4-argon": 0.05,
+}
 
 
 @pytest.mark.parametrize("name", sorted(GOOGLE_MODELS))
@@ -73,7 +81,7 @@ def test_gemini_3_5_flash_is_not_carried_at_its_batch_rate():
 
 
 def test_sampling_params_are_dropped_from_gemini_3_6_onward():
-    for name in ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"):
+    for name in ("gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"):
         assert supports_temperature(name) is False, name
     for name in ("gemini-3.5-flash", "gemini-3.1-pro", "gemini-3.1-flash-lite"):
         assert supports_temperature(name) is True, name
@@ -85,6 +93,34 @@ def test_every_model_uses_max_output_tokens():
         assert get_token_param_name(name) == "max_output_tokens", name
 
 
-def test_gemini_4_argon_is_not_catalogued_while_it_is_fairwind_only():
-    assert not any("argon" in name for name in GOOGLE_MODELS)
+def test_gemini_4_argon_is_catalogued_at_its_introductory_rate():
+    # Argon went generally available on October 13, 2026 and is reachable with
+    # an ordinary paid API key, which is what three earlier audits were waiting
+    # for. The rates below are the INTRODUCTORY tier and expire: from
+    # December 1, 2026 Google charges $4 / $20 with cached input at $0.20, so
+    # the first audit after November 30 doubles all three or every Argon
+    # request bills at half cost.
+    config = GOOGLE_MODELS["gemini-4-argon"]
+    assert config.model_identifier == "models/gemini-4-argon"
+    assert (config.input_cost_hint, config.output_cost_hint) == (2.0, 10.0)
+    assert config.cache_read_cost_hint == 0.10
+
+
+def test_gemini_4_argon_caps_output_at_the_non_streaming_limit():
+    # Three numbers, and the catalog carries the smallest on purpose. A
+    # non-streaming direct-HTTP request returns at most 32,768 output tokens
+    # (Gemini 3.x allowed 65,536 there); streaming reaches 65,536; and
+    # 1,048,576 — which is also the shared context window — needs long decode
+    # and a `continuation_token` loop. GeminiClient's non-streaming path is a
+    # direct POST to `:generateContent`, so 65,536 here would advertise a
+    # ceiling that path cannot reach.
+    config = GOOGLE_MODELS["gemini-4-argon"]
+    assert config.maximum_context_tokens == 1048576
+    assert config.maximum_output_tokens == 32768
+
+
+def test_fairwind_gated_cyber_variants_stay_out_of_the_catalog():
+    # gemini-3.8-flash-cyber and gemini-4-argon-cyber-permissive are served
+    # only to Google's Fairwind programme, so they would fail for every key
+    # this catalog serves — Argon's own GA does not bring its cyber sibling in.
     assert not any("cyber" in name for name in GOOGLE_MODELS)

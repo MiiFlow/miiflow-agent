@@ -95,7 +95,7 @@ pytest-cov = "^7.1.0"
 black = "^26.3.1"
 isort = "^5.13.0"
 flake8 = "^7.0.0"
-mypy = "^1.11.0"
+mypy = "^2.4.0"
 python-dotenv = "^1.2.1"
 
 [tool.poetry.extras]

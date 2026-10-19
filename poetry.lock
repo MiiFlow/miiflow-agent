@@ -1298,15 +1298,15 @@ urllib3 = ["packaging", "urllib3"]
 
 [[package]]
 name = "google-genai"
-version = "1.75.0"
+version = "2.8.0"
 description = "GenAI Python SDK"
 optional = true
 python-versions = ">=3.10"
 groups = ["main"]
 markers = "extra == \"all\" or extra == \"google\""
 files = [
-    {file = "google_genai-1.75.0-py3-none-any.whl", hash = "sha256:8dc4c096e7d6288c3087f6893f582fe52468932464781edb8193bd92b9fefb2c"},
-    {file = "google_genai-1.75.0.tar.gz", hash = "sha256:56bac3991b311c93f980c0a2abcd287b672146905df1fbd71c92ed633d5a07cf"},
+    {file = "google_genai-2.8.0-py3-none-any.whl", hash = "sha256:4da0a223a100f4b37f609a68b835e3326ab0fa313314dc0fd9d34e76ee293844"},
+    {file = "google_genai-2.8.0.tar.gz", hash = "sha256:37a9b3cb127d763e7f4ca47452ae3562c87728773bd1b149f7b559c239da2bc1"},
 ]
 
 [package.dependencies]
@@ -4742,4 +4742,4 @@ pdf = ["PyMuPDF"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.13"
-content-hash = "9782ce5a9d30de798e282e02cb6710c04f1ed82630d7b59b47f07c6372b0bdad"
+content-hash = "3a527b6af3394cb59249b829f287c3f28eca658b54fcdf81fc9d7d993209e222"

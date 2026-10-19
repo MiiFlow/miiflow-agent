@@ -39,7 +39,7 @@ openai = "^2.52.0"
 # a pre-1.0 SDK, so widen only with a test run.
 anthropic = ">=0.120.2,<0.121.0"
 pydantic = "^2.0.0"
-tiktoken = "^0.8.0"
+tiktoken = "^0.14.0"
 tenacity = "^9.0.0"
 aiohttp = "^3.13.3"
 httpx = "^0.28.0"
@@ -65,13 +65,13 @@ yfinance = { version = "^0.2.40", optional = true }
 mcp = { version = "^1.23.0", optional = true, python = ">=3.10" }
 
 # Optional AG-UI (Agent-User Interaction Protocol) support
-ag-ui-protocol = { version = "^0.1.10", optional = true }
+ag-ui-protocol = { version = "^1.0.0", optional = true }
 
 # Optional observability dependencies
 opentelemetry-api = { version = "^1.27.0", optional = true }
 opentelemetry-sdk = { version = "^1.27.0", optional = true }
 opentelemetry-exporter-otlp = { version = "^1.27.0", optional = true }
-prometheus-client = { version = "^0.21.0", optional = true }
+prometheus-client = { version = "^0.26.0", optional = true }
 # arize-phoenix (the Phoenix *server*) is deliberately not an extra. The only
 # code that touches it is launch_local_phoenix(), a dev convenience that
 # imports it lazily and degrades to a warning. Tracing itself exports over

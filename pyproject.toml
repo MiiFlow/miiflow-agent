@@ -85,7 +85,7 @@ prometheus-client = { version = "^0.26.0", optional = true }
 # OpenInference auto-instrumentation
 openinference-instrumentation-openai = { version = "^0.1.12", optional = true }
 openinference-instrumentation-anthropic = { version = "^0.1.5", optional = true }
-openinference-instrumentation-google-genai = { version = "^0.1.0", optional = true }
+openinference-instrumentation-google-genai = { version = "^1.4.13", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.3"

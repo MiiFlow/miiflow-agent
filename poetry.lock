@@ -2458,28 +2458,28 @@ instruments = ["anthropic (>=0.41.0)"]
 
 [[package]]
 name = "openinference-instrumentation-google-genai"
-version = "0.1.8"
+version = "1.4.13"
 description = "OpenInference Google GenAI Instrumentation"
 optional = true
-python-versions = "<3.15,>=3.9"
+python-versions = "<3.15,>=3.10"
 groups = ["main"]
 markers = "extra == \"all\" or extra == \"observability\""
 files = [
-    {file = "openinference_instrumentation_google_genai-0.1.8-py3-none-any.whl", hash = "sha256:d9150c2b698da1b594c77149dcbb85dff896d9eec6e60d17b505fe7a4c7ad9db"},
-    {file = "openinference_instrumentation_google_genai-0.1.8.tar.gz", hash = "sha256:f619ed3b3cfddc6a7d50c4a08f0255d7a6dafdcbd802671077bd38ae6a80a78f"},
+    {file = "openinference_instrumentation_google_genai-1.4.13-py3-none-any.whl", hash = "sha256:f7a6d5b7a7e9af3c9468b5dde0ce1ddf4eb00104400777feaa08f3bc0838261b"},
+    {file = "openinference_instrumentation_google_genai-1.4.13.tar.gz", hash = "sha256:b7678dafb1e915a35ae90f1d235157d9b0d89fd5b1333897f85ca5b1496cf1c1"},
 ]
 
 [package.dependencies]
-openinference-instrumentation = ">=0.1.17"
-openinference-semantic-conventions = "*"
+openinference-instrumentation = ">=0.1.71"
+openinference-semantic-conventions = ">=0.1.41"
 opentelemetry-api = "*"
 opentelemetry-instrumentation = "*"
 opentelemetry-semantic-conventions = "*"
 wrapt = "*"
 
 [package.extras]
-instruments = ["google-genai (>=1.8.0)"]
-test = ["google-genai (>=1.8.0)", "opentelemetry-sdk"]
+instruments = ["google-genai (>=2.0.0)"]
+test = ["google-genai (>=2.0.0)", "opentelemetry-sdk"]
 
 [[package]]
 name = "openinference-instrumentation-openai"
@@ -4869,4 +4869,4 @@ pdf = ["PyMuPDF"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.13"
-content-hash = "0f5882175af988a2d56c73341b460a7d6eaafb9482b0177c2a0be168026fe57d"
+content-hash = "b5068a857e43db221926791c34d3e28e6d79ae200cc620185c97b51629e63e27"

@@ -185,14 +185,81 @@ class TestTraceContext:
         assert get_current_trace_context() == context
 
 
+def _attaching_instrumentor():
+    """A mock that behaves like BaseInstrumentor: instrument() attaches it."""
+    instrumentor = Mock()
+    instrumentor.is_instrumented_by_opentelemetry = False
+
+    def _instrument(**_kwargs):
+        instrumentor.is_instrumented_by_opentelemetry = True
+
+    instrumentor.instrument.side_effect = _instrument
+    return instrumentor
+
+
 class TestAutoInstrumentation:
     """Test auto-instrumentation functionality."""
+
+    def test_an_instrumentor_that_declines_to_attach_is_not_reported_enabled(self, caplog):
+        # BaseInstrumentor.instrument() returns without raising on a
+        # DependencyConflict and leaves the instrumentor unattached.
+        declining = Mock()
+        declining.is_instrumented_by_opentelemetry = False
+        mock_module = Mock()
+        mock_module.AnthropicInstrumentor.return_value = declining
+
+        with patch.dict('sys.modules', {'openinference.instrumentation.anthropic': mock_module}):
+            result = setup_openinference_instrumentation()
+
+        assert result["anthropic"] is False
+        assert "declined to attach" in caplog.text
+
+    def test_an_import_error_inside_instrument_is_a_failure_not_a_missing_package(self, caplog):
+        # anthropic 1.x vs instrumentor 0.1.20: instrument() itself imports
+        # anthropic.resources.completions and raises ModuleNotFoundError.
+        broken = Mock()
+        broken.is_instrumented_by_opentelemetry = False
+        broken.instrument.side_effect = ModuleNotFoundError(
+            "No module named 'anthropic.resources.completions'"
+        )
+        mock_module = Mock()
+        mock_module.AnthropicInstrumentor.return_value = broken
+
+        with patch.dict('sys.modules', {'openinference.instrumentation.anthropic': mock_module}):
+            with caplog.at_level("WARNING"):
+                result = setup_openinference_instrumentation()
+
+        assert result["anthropic"] is False
+        assert "Failed to setup Anthropic instrumentation" in caplog.text
+
+    @pytest.mark.parametrize(
+        "module_path, class_name, sdk",
+        [
+            ("openinference.instrumentation.openai", "OpenAIInstrumentor", "openai"),
+            ("openinference.instrumentation.anthropic", "AnthropicInstrumentor", "anthropic"),
+            ("openinference.instrumentation.google_genai", "GoogleGenAIInstrumentor", "google.genai"),
+        ],
+    )
+    def test_the_installed_instrumentor_attaches_to_the_installed_sdk(self, module_path, class_name, sdk):
+        """Unmocked: catches an SDK bump the locked instrumentor cannot wrap."""
+        pytest.importorskip(sdk)
+        module = pytest.importorskip(module_path)
+        from opentelemetry.sdk.trace import TracerProvider
+
+        instrumentor = getattr(module, class_name)()
+        if instrumentor.is_instrumented_by_opentelemetry:
+            instrumentor.uninstrument()
+        try:
+            instrumentor.instrument(tracer_provider=TracerProvider())
+            assert instrumentor.is_instrumented_by_opentelemetry
+        finally:
+            if instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.uninstrument()
 
     def test_setup_openinference_instrumentation_openai(self):
         """Test OpenAI instrumentation setup."""
         # Mock the OpenAI instrumentor module
-        mock_instrumentor = Mock()
-        mock_instrumentor.is_instrumented_by_opentelemetry = False
+        mock_instrumentor = _attaching_instrumentor()
 
         mock_module = Mock()
         mock_module.OpenAIInstrumentor.return_value = mock_instrumentor
@@ -206,8 +273,7 @@ class TestAutoInstrumentation:
     def test_setup_openinference_instrumentation_anthropic(self):
         """Test Anthropic instrumentation setup."""
         # Mock the Anthropic instrumentor module
-        mock_instrumentor = Mock()
-        mock_instrumentor.is_instrumented_by_opentelemetry = False
+        mock_instrumentor = _attaching_instrumentor()
 
         mock_module = Mock()
         mock_module.AnthropicInstrumentor.return_value = mock_instrumentor
@@ -221,8 +287,7 @@ class TestAutoInstrumentation:
     def test_setup_openinference_instrumentation_google_genai(self):
         """Test Google GenAI instrumentation setup."""
         # Mock the Google GenAI instrumentor module
-        mock_instrumentor = Mock()
-        mock_instrumentor.is_instrumented_by_opentelemetry = False
+        mock_instrumentor = _attaching_instrumentor()
 
         mock_module = Mock()
         mock_module.GoogleGenAIInstrumentor.return_value = mock_instrumentor

@@ -1,5 +1,6 @@
 """OpenInference auto-instrumentation setup for Phoenix compatibility."""
 
+import importlib
 import logging
 from typing import TYPE_CHECKING, Optional, Dict, Any
 
@@ -24,67 +25,54 @@ def setup_openinference_instrumentation() -> Dict[str, bool]:
     Returns:
         Dict indicating which instrumentations were successfully setup.
     """
-    instrumentation_status = {
-        "openai": False,
-        "anthropic": False,
-        "google_genai": False,
+    return {
+        "openai": _enable_instrumentor(
+            "OpenAI", "openinference.instrumentation.openai", "OpenAIInstrumentor"
+        ),
+        "anthropic": _enable_instrumentor(
+            "Anthropic", "openinference.instrumentation.anthropic", "AnthropicInstrumentor"
+        ),
+        "google_genai": _enable_instrumentor(
+            "Google GenAI",
+            "openinference.instrumentation.google_genai",
+            "GoogleGenAIInstrumentor",
+        ),
     }
 
-    # Setup OpenAI instrumentation
+
+def _enable_instrumentor(label: str, module_path: str, class_name: str) -> bool:
+    """Attach one OpenInference instrumentor; True only if it is actually attached.
+
+    Two failures used to read as something else. An ImportError raised INSIDE
+    `instrument()` (the instrumentor importing an SDK module that moved, e.g.
+    anthropic 1.x vs instrumentor 0.1.x) was caught as "not installed" and
+    logged at debug. And `BaseInstrumentor.instrument()` returns without
+    raising on a DependencyConflict, so the provider was reported as
+    instrumented while no LLM spans were captured. Only a missing instrumentor
+    package is quiet now; the rest warn and report False.
+    """
     try:
-        from openinference.instrumentation.openai import OpenAIInstrumentor
-
-        # Check if already instrumented
-        if not OpenAIInstrumentor().is_instrumented_by_opentelemetry:
-            OpenAIInstrumentor().instrument()
-            logger.info("OpenAI auto-instrumentation enabled")
-        else:
-            logger.debug("OpenAI already instrumented")
-
-        instrumentation_status["openai"] = True
-
+        module = importlib.import_module(module_path)
     except ImportError:
-        logger.debug("OpenInference OpenAI instrumentation not available")
-    except Exception as e:
-        logger.warning(f"Failed to setup OpenAI instrumentation: {e}")
-
-    # Setup Anthropic instrumentation
+        logger.debug(f"OpenInference {label} instrumentation not available")
+        return False
     try:
-        from openinference.instrumentation.anthropic import AnthropicInstrumentor
-
-        # Check if already instrumented
-        if not AnthropicInstrumentor().is_instrumented_by_opentelemetry:
-            AnthropicInstrumentor().instrument()
-            logger.info("Anthropic auto-instrumentation enabled")
-        else:
-            logger.debug("Anthropic already instrumented")
-
-        instrumentation_status["anthropic"] = True
-
-    except ImportError:
-        logger.debug("OpenInference Anthropic instrumentation not available")
+        instrumentor = getattr(module, class_name)()
+        if instrumentor.is_instrumented_by_opentelemetry:
+            logger.debug(f"{label} already instrumented")
+            return True
+        instrumentor.instrument()
     except Exception as e:
-        logger.warning(f"Failed to setup Anthropic instrumentation: {e}")
-
-    # Setup Google GenAI instrumentation
-    try:
-        from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
-
-        # Check if already instrumented
-        if not GoogleGenAIInstrumentor().is_instrumented_by_opentelemetry:
-            GoogleGenAIInstrumentor().instrument()
-            logger.info("Google GenAI auto-instrumentation enabled")
-        else:
-            logger.debug("Google GenAI already instrumented")
-
-        instrumentation_status["google_genai"] = True
-
-    except ImportError:
-        logger.debug("OpenInference Google GenAI instrumentation not available")
-    except Exception as e:
-        logger.warning(f"Failed to setup Google GenAI instrumentation: {e}")
-
-    return instrumentation_status
+        logger.warning(f"Failed to setup {label} instrumentation: {e}")
+        return False
+    if not instrumentor.is_instrumented_by_opentelemetry:
+        logger.warning(
+            f"{label} instrumentor declined to attach (dependency conflict with the "
+            f"installed SDK?); no {label} LLM spans will be captured"
+        )
+        return False
+    logger.info(f"{label} auto-instrumentation enabled")
+    return True
 
 
 def _install_standard_processors(tracer_provider: Any) -> None:

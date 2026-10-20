@@ -48,8 +48,8 @@ def _enable_instrumentor(label: str, module_path: str, class_name: str) -> bool:
     anthropic 1.x vs instrumentor 0.1.x) was caught as "not installed" and
     logged at debug. And `BaseInstrumentor.instrument()` returns without
     raising on a DependencyConflict, so the provider was reported as
-    instrumented while no LLM spans were captured. Only a missing instrumentor
-    package is quiet now; the rest warn and report False.
+    instrumented while no LLM spans were captured. A missing instrumentor or
+    SDK is quiet now; a version conflict or failure warns, and all report False.
     """
     try:
         module = importlib.import_module(module_path)
@@ -61,6 +61,17 @@ def _enable_instrumentor(label: str, module_path: str, class_name: str) -> bool:
         if instrumentor.is_instrumented_by_opentelemetry:
             logger.debug(f"{label} already instrumented")
             return True
+        from opentelemetry.instrumentation.dependencies import get_dependency_conflicts
+
+        conflict = get_dependency_conflicts(instrumentor.instrumentation_dependencies())
+        if conflict is not None:
+            # No SDK installed is an extra not chosen; a version outside the
+            # instrumentor's range is a real conflict worth a warning.
+            # Same rule as OTel's DependencyConflict._is_version_conflict.
+            installed = conflict.found or getattr(conflict, "found_any", None)
+            log = logger.warning if installed else logger.debug
+            log(f"{label} instrumentation skipped: {conflict}")
+            return False
         instrumentor.instrument()
     except Exception as e:
         logger.warning(f"Failed to setup {label} instrumentation: {e}")

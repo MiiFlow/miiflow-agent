@@ -1,5 +1,7 @@
 """Tests for cleaned-up observability features."""
 
+import importlib.metadata
+
 import pytest
 from unittest.mock import Mock, patch
 from typing import Dict, Any
@@ -189,6 +191,7 @@ def _attaching_instrumentor():
     """A mock that behaves like BaseInstrumentor: instrument() attaches it."""
     instrumentor = Mock()
     instrumentor.is_instrumented_by_opentelemetry = False
+    instrumentor.instrumentation_dependencies.return_value = ()
 
     def _instrument(**_kwargs):
         instrumentor.is_instrumented_by_opentelemetry = True
@@ -205,6 +208,7 @@ class TestAutoInstrumentation:
         # DependencyConflict and leaves the instrumentor unattached.
         declining = Mock()
         declining.is_instrumented_by_opentelemetry = False
+        declining.instrumentation_dependencies.return_value = ()
         mock_module = Mock()
         mock_module.AnthropicInstrumentor.return_value = declining
 
@@ -219,6 +223,7 @@ class TestAutoInstrumentation:
         # anthropic.resources.completions and raises ModuleNotFoundError.
         broken = Mock()
         broken.is_instrumented_by_opentelemetry = False
+        broken.instrumentation_dependencies.return_value = ()
         broken.instrument.side_effect = ModuleNotFoundError(
             "No module named 'anthropic.resources.completions'"
         )
@@ -231,6 +236,32 @@ class TestAutoInstrumentation:
 
         assert result["anthropic"] is False
         assert "Failed to setup Anthropic instrumentation" in caplog.text
+
+    @pytest.mark.parametrize(
+        "requirement, found, level",
+        [
+            ("an-sdk-nobody-installed >= 1.0", None, "DEBUG"),
+            ("pytest >= 999.0", f'("pytest {importlib.metadata.version("pytest")}")', "WARNING"),
+        ],
+    )
+    def test_a_dependency_conflict_is_skipped_and_only_a_real_one_warns(
+        self, caplog, requirement, found, level
+    ):
+        instrumentor = _attaching_instrumentor()
+        instrumentor.instrumentation_dependencies.return_value = (requirement,)
+        mock_module = Mock()
+        mock_module.AnthropicInstrumentor.return_value = instrumentor
+
+        with patch.dict('sys.modules', {'openinference.instrumentation.anthropic': mock_module}):
+            with caplog.at_level("DEBUG"):
+                result = setup_openinference_instrumentation()
+
+        assert result["anthropic"] is False
+        instrumentor.instrument.assert_not_called()
+        record = next(r for r in caplog.records if "Anthropic instrumentation skipped" in r.getMessage())
+        assert record.levelname == level
+        if found:
+            assert found in record.getMessage()
 
     @pytest.mark.parametrize(
         "module_path, class_name, sdk",

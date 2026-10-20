@@ -114,3 +114,23 @@ async def test_handoff_requires_registered_successful_submission():
         )
         result = await AgentToolExecutor.execute_tool(executor, "submit", {})
         assert "background_handoff" not in result.metadata
+
+
+async def test_durable_wait_after_approved_write_keeps_gate_and_requires_opt_in():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from miiflow_agent.core.react.tool_executor import AgentToolExecutor
+    from miiflow_agent.core.tools.schemas import ToolResult
+
+    for registered, success, error in [(True, True, None), (False, True, None), (True, False, None), (True, True, "refused")]:
+        output = {"status": "running", "background_wait": {"id": "wait", "run_id": "run"}}
+        if error:
+            output["error"] = error
+        gate = AsyncMock(return_value=ToolResult(name="run_workflow", input={}, output=output, success=success))
+        executor = SimpleNamespace(
+            _get_tool_schema_obj=lambda name: SimpleNamespace(writes=True, metadata={"durable_wait": registered}),
+            _execute_tool_gated=gate,
+        )
+        result = await AgentToolExecutor.execute_tool(executor, "run_workflow", {})
+        gate.assert_awaited_once()
+        assert ("background_wait" in result.metadata) == (registered and success and not error)

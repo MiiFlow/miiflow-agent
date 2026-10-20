@@ -2,6 +2,10 @@
 
 All notable changes to miiflow-agent will be documented here.
 
+## Unreleased
+
+- Explicit durable-wait tools may pause after an approved write finishes, allowing workflow launches to park the chat without repeated status calls. Tool approval and execution gates still run before the wait is accepted.
+
 ## [1.22.1] - 2026-10-12
 
 **A price cut the 1.22.0 audit missed by hours.** Anthropic lowered Claude Sonnet 5.5's prompt-cache reads from $0.20 to $0.10 per 1M on **October 7, 2026** — the same release note that announced Claude Haiku 5.5, which 1.22.0 catalogued. The audit read the Haiku half of that note and not the Sonnet half, so the catalog kept billing Sonnet 5.5 cache reads at **twice the published rate** for three days. No new model shipped from any of the three providers in this window; this release is that correction plus the descriptions it falsified.

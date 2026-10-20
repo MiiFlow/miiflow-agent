@@ -249,7 +249,8 @@ class AgentToolExecutor:
                 result.metadata["pending_wait"] = True
             if (
                 metadata.get("durable_wait") is True
-                and getattr(schema, "writes", None) is False
+                # The explicit contract is checked AFTER the gated execution.
+                # A workflow launch can write and still park its chat safely.
                 and result.is_success
                 and isinstance(result.output, dict)
                 and isinstance(result.output.get("background_wait"), dict)

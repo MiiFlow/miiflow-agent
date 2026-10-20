@@ -819,3 +819,49 @@ def test_a_reply_typed_over_the_card_goes_to_the_model():
         assert orch.event_bus.events == []
 
     asyncio.run(go())
+
+
+def test_approved_background_launch_emits_a_step_before_tool_events():
+    """A deterministic launch can park before any model reasoning step starts."""
+
+    async def go():
+        wait = {"id": "agent_wait_test", "run_id": "agent_run_workflow"}
+        result = SimpleNamespace(
+            success=True,
+            output={
+                "run_id": "agent_run_workflow",
+                "status": "running",
+                "background_wait": wait,
+            },
+            metadata={"background_wait": wait},
+        )
+        executor = _FakeExecutor(_FakeRegistry(["run_workflow"]), result=result)
+        orch = _orch(executor)
+        ctx = SimpleNamespace(
+            deps={
+                "pending_approved_action": {
+                    "tool_name": "run_workflow",
+                    "tool_call_id": "launch",
+                    "inputs": {"workflow_id": "workflow"},
+                }
+            },
+            messages=[],
+            checkpoint=SimpleNamespace(pending_interrupt=SimpleNamespace(
+                tool_call_id="launch", payload={"tool_description": "Run today’s digest"}
+            )),
+        )
+        state = SimpleNamespace(
+            current_step=0, is_running=True, final_answer="", failure_metadata=None
+        )
+        await ReActOrchestrator._execute_pending_approved_action(orch, ctx, state)
+        kinds = [event.event_type for event in orch.event_bus.events]
+        assert kinds[0] == ReActEventType.STEP_START
+        assert kinds.index(ReActEventType.ACTION_EXECUTING) < kinds.index(
+            ReActEventType.OBSERVATION
+        )
+        executing = next(e for e in orch.event_bus.events if e.event_type == ReActEventType.ACTION_EXECUTING)
+        assert executing.data["tool_description"] == "Run today’s digest"
+        assert executor.calls == [("run_workflow", {"workflow_id": "workflow"})]
+        assert state.background_wait == wait
+
+    asyncio.run(go())

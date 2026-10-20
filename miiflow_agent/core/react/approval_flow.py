@@ -558,6 +558,14 @@ class ApprovalResumeFlow:
                     logger.debug("Failed to publish fail-closed answer: %s", evt_err)
                 return
 
+        # Capture the approved proposal's display title before consuming its interrupt.
+        interrupt = (getattr(checkpoint, "interrupts", {}) or {}).get(interrupt_id)
+        if interrupt is None:
+            interrupt = getattr(checkpoint, "pending_interrupt", None)
+        tool_description = None
+        if getattr(interrupt, "tool_call_id", None) == tool_call_id:
+            tool_description = (getattr(interrupt, "payload", None) or {}).get("tool_description")
+
         # Consume now (we will execute) so nothing else re-runs it this turn.
         if isinstance(deps, dict):
             deps["pending_approved_action"] = None
@@ -571,6 +579,17 @@ class ApprovalResumeFlow:
         raw_error = None
         result = None
         try:
+            # Deterministic approval resumes can park before the model loop starts.
+            # Open a transcript step and show execution before awaiting the tool.
+            await self._orch.event_bus.publish(
+                EventFactory.step_started(state.current_step)
+            )
+            await self._orch.event_bus.publish(
+                EventFactory.action_executing(
+                    state.current_step, tool_name, inputs,
+                    tool_description=tool_description, tool_call_id=tool_call_id
+                )
+            )
             result = await self._orch.tool_executor.execute_tool(
                 tool_name, inputs, context=context
             )

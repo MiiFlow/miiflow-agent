@@ -4,6 +4,8 @@ All notable changes to miiflow-agent will be documented here.
 
 ## Unreleased
 
+- Approved tool launches emit a transcript step and execution event before running, so launches that immediately park on a durable wait remain visible in the parent chat.
+
 - Explicit durable-wait tools may pause after an approved write finishes, allowing workflow launches to park the chat without repeated status calls. Tool approval and execution gates still run before the wait is accepted.
 
 ## [1.22.1] - 2026-10-12

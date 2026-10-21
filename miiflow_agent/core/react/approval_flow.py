@@ -325,6 +325,83 @@ class ApprovalResumeFlow:
             )
         )
 
+    async def run_approval_continuation(
+        self,
+        continuation: Dict[str, Any],
+        context: RunContext,
+        state: "ExecutionState",
+    ) -> bool:
+        """Run the tool call a child resumer hands back after its approved action.
+
+        Executing the approved call is only the step a paused sub-agent was
+        waiting on; the sub-agent still owns the rest of its task. The adapter
+        answers with the call that continues it (in practice the same
+        dispatch, on the same child thread), and it runs here as a
+        deterministic step — the same ``handle_tool_action`` path a model-issued
+        call takes, so a second pause inside the continuation surfaces as a new
+        approval and a transfer ends the turn with the child's reply. Only a
+        report-mode continuation hands back to this agent's model, which then
+        reads the child's report like any other dispatch result. Returns
+        whether it dispatched, so the caller can fall back to its steer.
+        """
+        import uuid
+
+        from .models import ReActStep
+
+        tool_name = continuation.get("tool_name")
+        inputs = dict(continuation.get("inputs") or {})
+        if not tool_name or not self._orch.tool_executor.has_tool(tool_name):
+            logger.warning(
+                "[ORCH] approval continuation skipped: tool %r is not available",
+                tool_name,
+            )
+            return False
+        call_id = f"toolu_resume_{uuid.uuid4().hex[:24]}"
+        context.messages.append(
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                tool_calls=[
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": tool_name, "arguments": inputs},
+                    }
+                ],
+            )
+        )
+        state.current_step += 1
+        step = ReActStep(
+            step_number=state.current_step,
+            thought="",
+            action=tool_name,
+            action_input=inputs,
+        )
+        await self._orch._handle_tool_action(step, context, state, tool_call_id=call_id)
+        state.steps.append(step)
+        logger.info(
+            "[ORCH] approval continuation ran %s (paused=%s)",
+            tool_name,
+            state.needs_clarification,
+        )
+        if state.needs_clarification:
+            state.is_running = False
+            return True
+        deps = getattr(context, "deps", None)
+        pending_transfer = (
+            deps.pop("pending_transfer", None) if isinstance(deps, dict) else None
+        )
+        if pending_transfer and not step.error:
+            step.answer = pending_transfer.get("answer") or ""
+            step.metadata["transferred_to"] = pending_transfer.get("handle")
+            step.metadata["answered_by_assistant_id"] = pending_transfer.get(
+                "child_assistant_id"
+            )
+            state.final_answer = step.answer
+            await self._orch._publish_final_answer_event(step, state)
+            state.is_running = False
+        return True
+
     async def execute_pending_approved_action(
         self, context: RunContext, state: "ExecutionState"
     ) -> None:
@@ -393,6 +470,7 @@ class ApprovalResumeFlow:
                     )
                     raw_output = None
                     raw_error = None
+                    outcome = None
                     try:
                         import inspect
 
@@ -504,7 +582,18 @@ class ApprovalResumeFlow:
                         tool_name=tool_name,
                         success=success,
                     )
-                    if failure_payload is not None:
+                    continuation = (
+                        outcome.get("continuation")
+                        if isinstance(outcome, dict)
+                        else getattr(outcome, "continuation", None)
+                    )
+                    # A continuation hands the outcome back to the agent that
+                    # proposed the call; a "report it now" steer here would
+                    # contradict the dispatch that follows.
+                    continued = bool(continuation) and await self.run_approval_continuation(
+                        continuation, context, state
+                    )
+                    if not continued and failure_payload is not None:
                         await self._orch._steer_report_after_approved_action_failure(
                             context=context,
                             state=state,
@@ -514,7 +603,7 @@ class ApprovalResumeFlow:
                             failure_payload=failure_payload,
                             raised_by_path=raised_by_path or ["root"],
                         )
-                    else:
+                    elif not continued:
                         context.messages.append(
                             Message(
                                 role=MessageRole.USER,

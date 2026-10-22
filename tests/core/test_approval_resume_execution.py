@@ -865,3 +865,54 @@ def test_approved_background_launch_emits_a_step_before_tool_events():
         assert state.background_wait == wait
 
     asyncio.run(go())
+
+
+def test_the_call_that_raised_the_approval_stops_saying_it_is_waiting():
+    """freeze_ad_plan opens the publication review under a server-minted id;
+    on approval the publish runs and the freeze's "paused - waiting" result
+    is rewritten, found through the interrupt when the action does not name
+    it (the resume descriptor carries only the approved call)."""
+
+    async def go():
+        ex = _FakeExecutor(
+            _FakeRegistry(["publish_ad_plan"]),
+            result=SimpleNamespace(success=True, output={"status": "succeeded"}),
+        )
+        orch = _orch(ex)
+        cp = Checkpoint()
+        cp.set_interrupt(
+            PendingInterrupt(
+                interrupt_id="int_review",
+                kind="tool_approval",
+                raised_by_path=["root"],
+                tool_call_id="call_ad_publication_review_1",
+                payload={"tool_name": "publish_ad_plan", "parent_tool_call_id": "toolu_freeze"},
+            )
+        )
+        messages = [
+            Message(role=MessageRole.ASSISTANT, content="", tool_calls=[
+                {"id": "toolu_freeze", "type": "function", "function": {"name": "freeze_ad_plan", "arguments": {}}},
+            ]),
+            Message(role=MessageRole.TOOL, content="Tool execution paused - waiting for user approval.", tool_call_id="toolu_freeze"),
+            Message(role=MessageRole.ASSISTANT, content="", tool_calls=[
+                {"id": "call_ad_publication_review_1", "type": "function", "function": {"name": "publish_ad_plan", "arguments": {}}},
+            ]),
+            Message(role=MessageRole.TOOL, content="approved — call it again", tool_call_id="call_ad_publication_review_1"),
+        ]
+        deps = {"pending_approved_action": {
+            "tool_name": "publish_ad_plan",
+            "tool_call_id": "call_ad_publication_review_1",
+            "inputs": {"revision_id": "rev_1"},
+            "interrupt_id": "int_review",
+            "raised_by_path": ["root"],
+        }}
+        ctx = SimpleNamespace(deps=deps, messages=messages, checkpoint=cp)
+        state = SimpleNamespace(current_step=1, is_running=True, final_answer="", failure_metadata=None,
+                                background_handoffs=[], background_wait=None)
+        await ReActOrchestrator._execute_pending_approved_action(orch, ctx, state)
+
+        assert "waiting" not in messages[1].content
+        assert "approve `publish_ad_plan`" in messages[1].content
+        assert "succeeded" in messages[3].content
+
+    asyncio.run(go())

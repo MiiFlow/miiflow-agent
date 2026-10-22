@@ -437,14 +437,15 @@ def _resolve_stale_dispatch_placeholder(
     tool_name: str,
     success: bool,
 ) -> None:
-    """Rewrite the pause turn's frozen dispatch observation after resume.
+    """Rewrite the paused call's frozen observation after resume.
 
-    When a child's approval pauses the run, the parent's ``dispatch_assistant``
-    tool_result is persisted as "Tool execution paused - waiting for user
-    approval." and reconstructed verbatim on every later turn — permanently
-    claiming the dispatch is still waiting even after the approved action ran.
-    That stale claim directly contradicts the real result and has misled the
-    model into re-dispatching. Resolve it in place once the outcome is known.
+    The call whose result raised the approval (a ``dispatch_assistant`` whose
+    child paused, or a ``freeze_ad_plan`` that opened the publication review)
+    keeps "Tool execution paused - waiting for user approval." as its result,
+    which claims it is still waiting after the approved action ran. That stale
+    claim has misled the model into re-dispatching, and into telling a user
+    that a freeze "is still waiting on approval" next to a finished
+    publication. Resolve it in place once the outcome is known.
     """
     if not parent_tool_call_id:
         return
@@ -453,14 +454,19 @@ def _resolve_stale_dispatch_placeholder(
             getattr(msg, "role", None) == MessageRole.TOOL
             and getattr(msg, "tool_call_id", None) == parent_tool_call_id
         ):
-            outcome = "executed" if success else "executed but FAILED"
-            msg.content = (
-                f"This dispatch paused for user approval of `{tool_name}`; the "
-                f"user approved and the action has since been {outcome} — see "
-                f"the `{tool_name}` tool result that follows. This dispatch is "
-                "complete; do not repeat it."
-            )
+            msg.content = resolved_pause_observation(tool_name, success)
             return
+
+
+def resolved_pause_observation(tool_name: str, success: bool) -> str:
+    """What a paused call's result says once the approval it raised has run."""
+    outcome = "executed" if success else "executed but FAILED"
+    return (
+        f"This call finished by asking the user to approve `{tool_name}`; the "
+        f"user approved and `{tool_name}` has since been {outcome}. Its result "
+        "is the separate `" + tool_name + "` call that follows. This call is "
+        "complete; do not repeat it."
+    )
 
 
 def _recover_approval_action_route(

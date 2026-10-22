@@ -652,8 +652,13 @@ class ApprovalResumeFlow:
         if interrupt is None:
             interrupt = getattr(checkpoint, "pending_interrupt", None)
         tool_description = None
+        parent_tool_call_id = action.get("parent_tool_call_id")
         if getattr(interrupt, "tool_call_id", None) == tool_call_id:
-            tool_description = (getattr(interrupt, "payload", None) or {}).get("tool_description")
+            payload = getattr(interrupt, "payload", None) or {}
+            tool_description = payload.get("tool_description")
+            # The call that raised this approval (freeze_ad_plan's review):
+            # its "paused" result is rewritten once the action has run.
+            parent_tool_call_id = parent_tool_call_id or payload.get("parent_tool_call_id")
 
         # Consume now (we will execute) so nothing else re-runs it this turn.
         if isinstance(deps, dict):
@@ -781,7 +786,7 @@ class ApprovalResumeFlow:
 
         _resolve_stale_dispatch_placeholder(
             context.messages,
-            parent_tool_call_id=action.get("parent_tool_call_id"),
+            parent_tool_call_id=parent_tool_call_id,
             tool_name=tool_name,
             success=success,
         )

@@ -181,6 +181,9 @@ class ApprovalResumeFlow:
         ]
         if reason:
             lines.append(f"Noted: {reason}")
+        followup = await _rejection_followup(context)
+        if followup:
+            lines.append(followup)
         lines.append(
             "What would you like to do instead? I can adjust the proposal and "
             "run it past you again, or we can leave it as is."
@@ -807,3 +810,21 @@ class ApprovalResumeFlow:
                     content=_approved_action_success_guidance(tool_name),
                 )
             )
+
+
+async def _rejection_followup(context) -> Optional[str]:
+    """The host's lines about the rest of the request (`REJECTION_FOLLOWUP_DEP`)."""
+    from miiflow_agent.artifacts import REJECTION_FOLLOWUP_DEP
+
+    hook = (getattr(context, "deps", None) or {}).get(REJECTION_FOLLOWUP_DEP)
+    if not callable(hook):
+        return None
+    try:
+        text = hook(context)
+        if inspect.isawaitable(text):
+            text = await text
+    except Exception:  # noqa: BLE001 -- the hook's contract is not to raise
+        logger.exception("[ORCH] rejection follow-up hook failed")
+        return None
+    text = str(text or "").strip()
+    return text or None

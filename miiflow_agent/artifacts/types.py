@@ -83,6 +83,13 @@ ARTIFACT_PREVIEWS_DEP = "artifact_previews"
 #: accepted as written. The hook must not raise.
 ANSWER_CHECK_DEP = "answer_check"
 MAX_ANSWER_CHECK_FAILURES = 2
+#: The `deps` key under which a host adds to the deterministic acknowledgement
+#: of a declined tool approval: `hook(context) -> Optional[str]` (sync or
+#: async). The acknowledgement makes no model call (a model handed a decline
+#: re-requested the declined action), so whatever else the person asked for in
+#: the same request would go unmentioned; the host knows what that is and
+#: returns the lines to say about it, or None. The hook must not raise.
+REJECTION_FOLLOWUP_DEP = "rejection_followup"
 ArtifactPreviewHook = Callable[[Dict[str, Any]], Union[List[Dict[str, Any]], Awaitable[List[Dict[str, Any]]]]]
 
 

@@ -4,6 +4,8 @@ All notable changes to miiflow-agent will be documented here.
 
 ## Unreleased
 
+- `REJECTION_FOLLOWUP_DEP` (`miiflow_agent.artifacts`): a host hook whose text is added to the deterministic acknowledgement of a declined tool approval, so the rest of the person's request is said without a model call. A hook that raises is logged and ignored.
+
 - Approved tool launches emit a transcript step and execution event before running, so launches that immediately park on a durable wait remain visible in the parent chat.
 
 - Explicit durable-wait tools may pause after an approved write finishes, allowing workflow launches to park the chat without repeated status calls. Tool approval and execution gates still run before the wait is accepted.

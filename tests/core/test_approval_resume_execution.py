@@ -560,6 +560,45 @@ def test_rejected_resume_acknowledges_deterministically_without_llm():
     asyncio.run(go())
 
 
+def test_rejected_resume_says_what_else_the_request_holds():
+    """The acknowledgement makes no model call; the host names the rest of the
+    request (REJECTION_FOLLOWUP_DEP), and a failing hook changes nothing."""
+
+    async def go():
+        from miiflow_agent.artifacts import REJECTION_FOLLOWUP_DEP
+
+        orch = SimpleNamespace(event_bus=_FakeBus())
+        orch._acknowledge_rejected_approval = (
+            ReActOrchestrator._acknowledge_rejected_approval.__get__(
+                orch, SimpleNamespace
+            )
+        )
+        resume = ResumeCommand(
+            interrupt_id="int_tool_tc_1", kind="tool_approval", decision="rejected", value={}
+        )
+
+        async def followup(context):
+            return "Also on hold: add more keywords"
+
+        state = SimpleNamespace(current_step=0, is_running=True, final_answer="", failure_metadata=None)
+        await orch._acknowledge_rejected_approval(
+            resume, SimpleNamespace(deps={REJECTION_FOLLOWUP_DEP: followup}, messages=[]), state
+        )
+        assert "Also on hold: add more keywords" in state.final_answer
+        assert state.final_answer.index("Also on hold") < state.final_answer.index("What would you like")
+
+        def broken(context):
+            raise RuntimeError("boom")
+
+        state = SimpleNamespace(current_step=0, is_running=True, final_answer="", failure_metadata=None)
+        await orch._acknowledge_rejected_approval(
+            resume, SimpleNamespace(deps={REJECTION_FOLLOWUP_DEP: broken}, messages=[]), state
+        )
+        assert "cancelled" in state.final_answer and state.is_running is False
+
+    asyncio.run(go())
+
+
 def test_rejected_resume_default_ui_reason_is_not_mirrored():
     async def go():
         orch = SimpleNamespace(event_bus=_FakeBus())

@@ -44,14 +44,11 @@ _NO_SAMPLING_PARAMS = {
 # September 2026) is excluded for the same reason: it is a video generation and
 # editing model billed per second of video, not per token.
 #
-# Also deliberately absent: gemini-nano-banana-2.1, GA October 6, 2026, the
-# newest image generation and conversational editing model (it supersedes
-# gemini-nano-banana-2, now deprecated with no shutdown date announced). Billed
-# per generated IMAGE, not per token, and it is not a generateContent text
-# model, so ModelConfig cannot describe it — the same exclusion as the Live,
-# transcribe and video models above. Recorded here only so the next audit does
-# not re-research it: nothing in this catalog references either Nano Banana
-# model, so the 2.0 deprecation needs no reference updates.
+# Also deliberately absent: the Nano Banana image models (gemini-nano-banana-2.1,
+# gemini-3.1-flash-image, gemini-3.1-flash-lite-image, gemini-3-pro-image).
+# They output images, billed per image token at a different rate from their
+# text and thinking tokens, which a text ModelConfig cannot describe. miiflow-web
+# catalogs them with their rates in server/core/gemini_image_models.py.
 #
 # gemini-4-argon is NO LONGER ABSENT. Three audits tracked it as announced
 # (September 30, 2026) but Fairwind-only and uncallable with an ordinary key;

@@ -24,6 +24,18 @@ _REASONING_MODELS: set[str] = set()
 # not take a chat-completions request, so a ModelConfig here (whose whole
 # contract is per-token pricing plus a token_param_name) cannot describe it.
 #
+# Also deliberately absent: THE DECISIONS API, which went generally available
+# on October 22, 2026. It is not a model and has no model slug of its own — the
+# changelog's pricing table names gpt-6-luna as the model underneath it, which
+# is already catalogued below — but it is listed here because its rate card
+# looks like a model's and does not fit one: $0.10 per 1M input tokens, $0.01
+# per 1M cached input, and NO OUTPUT-TOKEN CHARGE AT ALL. A ModelConfig cannot
+# express a zero output price (every consumer multiplies output tokens by
+# output_cost_hint), and an entry carrying gpt-6-luna's $0.50 output rate for
+# Decisions traffic would over-bill it outright. If Decisions usage ever needs
+# costing, it belongs in the per-request pricing layer beside the long-context
+# surcharge below, not as a row in this catalog.
+#
 # Also deliberately absent: gpt-6-astra-law (Astra for Law, launched
 # September 17, 2026, re-checked October 19, 2026 and still API-unlisted). It is GPT-6 Astra plus legal instructions and a Legal
 # Search Index tool — a configuration of Astra, not a new base model — reached
@@ -175,7 +187,12 @@ _GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
 # Keep both entries until the shutdown so pinned workloads keep resolving, then
 # drop them at the first audit after January 14, 2027. gpt-4.1-nano was removed
 # at the September 29, 2026 audit under its own earlier October 23, 2026
-# shutdown and is not affected by this notice.
+# shutdown and is not affected by this notice — THAT DATE HAS NOW PASSED (the
+# October 26, 2026 audit confirmed it, three days after the fact), so the model
+# is gone from the API and its early removal from this catalog was correct. It
+# is also the one worked example here of a shutdown date that arrived on
+# schedule, which is the reason to treat January 14 as firm rather than as
+# another floor that will slip.
 #
 # When these two do go, so does every OpenAI model that takes `temperature`,
 # `max_tokens`, `frequency_penalty` and `presence_penalty` — the audit that
@@ -191,6 +208,17 @@ _GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
 # that each quote the page's "2026-10-14: GPT-4 series model deprecations"
 # section, which is why it is written into the entries below where a single
 # source would not have been enough.
+#
+# THE EGRESS BLOCK STILL HOLDS as of the October 26, 2026 audit: platform,
+# developers and help openai.com all fail to resolve from this environment, so
+# that audit confirmed OpenAI's lineup from search results quoting the official
+# changelog and deprecations page rather than from either page directly. It
+# found no new model, no price change and no newly published shutdown: the only
+# OpenAI changes in the week to October 26 were the Decisions API going
+# generally available on gpt-6-luna (October 22, excluded above with the
+# reasoning) and an Ultrafast service tier reaching the Agents API the same day.
+# Every rate in this file is therefore carried forward on the October 19
+# confirmation, not re-verified first-party.
 _GPT41_MODELS = {"gpt-4.1", "gpt-4.1-mini"}
 
 # OpenAI applies a request-wide surcharge once a 1.05M-context GPT-5 model's

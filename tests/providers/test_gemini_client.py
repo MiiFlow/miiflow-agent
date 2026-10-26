@@ -74,13 +74,13 @@ class TestGeminiClient:
         """Create test client."""
         from miiflow_agent.providers.gemini_client import GeminiClient
 
-        client = GeminiClient(model="gemini-3.5-flash", api_key="test-key", timeout=30.0)
+        client = GeminiClient(model="gemini-3.8-flash", api_key="test-key", timeout=30.0)
         return client
 
     @pytest.mark.asyncio
     async def test_client_initialization(self, client):
         """Test client initialization."""
-        assert client.model == "gemini-3.5-flash"
+        assert client.model == "gemini-3.8-flash"
         assert client.api_key == "test-key"
         assert client.timeout == 30.0
         assert client.provider_name == "gemini"
@@ -109,7 +109,7 @@ class TestGeminiClient:
         assert response.usage.prompt_tokens == 12
         assert response.usage.completion_tokens == 18
         assert response.usage.total_tokens == 30
-        assert response.model == "gemini-3.5-flash"
+        assert response.model == "gemini-3.8-flash"
         assert response.provider == "gemini"
         assert response.finish_reason == "STOP"
 
@@ -456,7 +456,7 @@ class TestGeminiClient:
         from miiflow_agent.providers.gemini_client import GeminiClient
 
         models = [
-            "gemini-3.5-flash",
+            "gemini-3.8-flash",
             "gemini-3.1-pro",
             "gemini-3.1-flash-lite",
         ]
@@ -576,7 +576,7 @@ class TestGeminiClient:
         """Test REST API URL construction."""
         url = client._build_rest_url(streaming=False)
         assert "generateContent" in url
-        assert "gemini-3.5-flash" in url
+        assert "gemini-3.8-flash" in url
 
         url_stream = client._build_rest_url(streaming=True)
         assert "streamGenerateContent" in url_stream
@@ -596,8 +596,8 @@ class TestGeminiClient:
         """Test that models/ prefix in model name is stripped to avoid double prefix."""
         from miiflow_agent.providers.gemini_client import GeminiClient
 
-        client = GeminiClient(model="models/gemini-3.5-flash", api_key="test-key")
+        client = GeminiClient(model="models/gemini-3.8-flash", api_key="test-key")
         url = client._build_rest_url(streaming=False)
-        # Should have /models/gemini-3.5-flash NOT /models/models/gemini-3.5-flash
-        assert "/models/gemini-3.5-flash:" in url
+        # Should have /models/gemini-3.8-flash NOT /models/models/gemini-3.8-flash
+        assert "/models/gemini-3.8-flash:" in url
         assert "/models/models/" not in url

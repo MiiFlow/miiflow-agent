@@ -29,6 +29,34 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # carrying $0.20 bills cache reads at twice the published rate. Read each
 # model's cache_read_cost_hint as a published figure, never as 0.1x of its
 # input rate.
+#
+# PROVENANCE, AND IT IS BETTER HERE THAN FOR THE OTHER TWO PROVIDERS: the
+# October 26, 2026 audit read platform.claude.com's pricing and model-
+# deprecations pages DIRECTLY — Anthropic's docs host is reachable from this
+# environment, while every openai.com host and ai.google.dev are not — and
+# every one of the twelve entries below matches the published table exactly on
+# base input, cache writes, cache reads and output. Anthropic shipped no new
+# model and changed no price in the week to October 26; Claude Haiku 5.5
+# (October 7) is still the newest, and every model here is listed Active with
+# no deprecation and no retirement date.
+#
+# What DID change that week is the parameter contract, not the catalog: API
+# version 2026-10-21 removes `temperature`, `top_p` and `top_k` for every model
+# at once. It does not affect this file today because the SDK pin keeps requests
+# on 2023-06-01, and the full reasoning lives with `_NO_TEMPERATURE_MODELS`
+# below — read it before raising that pin, because the catalog and the client
+# both have to change in the same commit.
+#
+# Two models in the pricing table are deliberately not catalogued below, both
+# limited-availability: Claude Mythos 5.1 and Claude Mythos 5, priced
+# identically to their Fable twins ($10/$50) but served only to organizations
+# verified through Anthropic's programmes, so they would fail for every key this
+# catalog serves — the same reasoning the Google and OpenAI files apply to their
+# cyber-tier models. Claude Opus 4.5 and Sonnet 4.5 are also absent and for a
+# different reason: both are still in the pricing table, but Sonnet 4.5 is
+# deprecated with a November 30, 2026 retirement and neither was ever carried
+# here, so adding them now would mean onboarding a model two months from
+# shutdown.
 
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     # Ordered newest-first on purpose: `_resolve_model_name`'s third tier is a
@@ -277,7 +305,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-haiku-4.5": ModelConfig(
         model_identifier="claude-haiku-4-5-20251001",
         name="claude-haiku-4.5",
-        description="Legacy — succeeded by Claude Haiku 5.5 (October 7, 2026), which beats it on every axis in this config at once: 1M context against 200K, 128K max output against 64K, adaptive thinking with effort against extended-thinking-only, and a tenth the headline price ($0.10/$0.50 against $1/$5). Kept for pinned workloads only, and for the narrow cases where it is still the better fit: it is the last Haiku to accept `temperature`/`top_p`/`top_k`, the last to take manual `budget_tokens` thinking, the last to accept an assistant prefill, the only one with flat (non-prompt-length-tiered) pricing, and the only one with Priority Tier. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window. ITS RETIREMENT FLOOR HAS NOW PASSED — \"not sooner than October 15, 2026\", four days before the October 19, 2026 audit — and the model is still Active, which is the clearest demonstration available that the floor was never a shutdown date. The deprecations table was re-read directly on October 19, 2026: this model is listed Active with no deprecation date and no retirement date, as is every other model in this catalog, and Anthropic gives at least 60 days' notice before retiring a public model, so the earliest it can now retire is roughly 60 days after a notice that has not yet been sent. Do NOT read the stale floor as grounds to remove the entry. Now that a successor exists, expect the notice in the shape of the one Anthropic sent on September 30, 2026 — Sonnet 4.5 deprecated for a November 30, 2026 retirement, 61 days out, replacement claude-sonnet-5-5 — and treat the arrival of a real date, not the passing of this floor, as the signal to drop it. Migration is not a model-id swap: recount tokens (Haiku 5.5's tokenizer emits ~30% more for the same text, so a `max_tokens` tuned here will truncate), drop the sampling parameters and any prefill, and re-cost long prompts against Haiku 5.5's over-100K tier.",
+        description="Legacy — succeeded by Claude Haiku 5.5 (October 7, 2026), which beats it on every axis in this config at once: 1M context against 200K, 128K max output against 64K, adaptive thinking with effort against extended-thinking-only, and a tenth the headline price ($0.10/$0.50 against $1/$5). Kept for pinned workloads only, and for the narrow cases where it is still the better fit: it is the last Haiku to accept `temperature`/`top_p`/`top_k`, the last to take manual `budget_tokens` thinking, the last to accept an assistant prefill, the only one with flat (non-prompt-length-tiered) pricing, and the only one with Priority Tier. The only model here on extended thinking only: it rejects adaptive thinking and the effort parameter with a 400. 200K context window. ITS RETIREMENT FLOOR HAS NOW PASSED — \"not sooner than October 15, 2026\" — and the model is still Active, which is the clearest demonstration available that the floor was never a shutdown date. The deprecations table was re-read directly on October 26, 2026, eleven days past the floor: this model is still listed Active with no deprecation date and no retirement date, as is every other model in this catalog, and Anthropic gives at least 60 days' notice before retiring a public model, so the earliest it can now retire is roughly 60 days after a notice that has not yet been sent. Do NOT read the stale floor as grounds to remove the entry. Now that a successor exists, expect the notice in the shape of the one Anthropic sent on September 30, 2026 — Sonnet 4.5 deprecated for a November 30, 2026 retirement, 61 days out, replacement claude-sonnet-5-5 — and treat the arrival of a real date, not the passing of this floor, as the signal to drop it. Migration is not a model-id swap: recount tokens (Haiku 5.5's tokenizer emits ~30% more for the same text, so a `max_tokens` tuned here will truncate), drop the sampling parameters and any prefill, and re-cost long prompts against Haiku 5.5's over-100K tier.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -357,6 +385,32 @@ def _resolve_model_name(model: str) -> Optional[str]:
 # model declaring supports_temperature=False is excluded automatically — the
 # request-time gate is `supports_temperature()` below, and this keeps the
 # parameter the UI OFFERS in step with the one the API will actually take.
+#
+# THIS SET IS PER-MODEL ONLY BECAUSE OF THE SDK PIN, and that is now the whole
+# reason it still has members. On API version 2026-10-21 (released October 21,
+# 2026) `temperature`, `top_p` and `top_k` are REMOVED OUTRIGHT: every model
+# returns a 400 for any of the three, INCLUDING AT THE DEFAULT VALUE, so the
+# model-by-model distinction this set draws stops existing and the correct
+# behaviour becomes "never send them to anything".
+#
+# What keeps that from being today's behaviour is the version the SDK sends. An
+# Anthropic SDK requests the API version that was current when its major
+# version shipped, and pyproject pins `anthropic = ">=0.120.2,<0.126.0"`, which
+# is 2023-06-01 — the version under which the per-model rule above is exactly
+# right. The first Python SDK on 2026-10-21 is anthropic 2.0.0.
+#
+# So THE PIN IS LOAD-BEARING FOR THIS FILE, and a bump past it is not a routine
+# dependency update: the moment the SDK major moves to 2.x, every model still
+# declaring supports_temperature=True (Opus 4.6, Sonnet 4.6, Haiku 4.5) starts
+# 400ing on requests this catalog says are fine, because anthropic_client.py
+# only pops `temperature` when `supports_temperature()` is False and otherwise
+# sends it — including the `temperature = 1` it sets for extended thinking.
+# Whoever raises that pin must, in the same change, set supports_temperature
+# False on all three and stop the client sending the parameter at all; the
+# migration guide offers no replacement knob, and prompting is what Anthropic
+# points to instead. Until then leave this set deriving per-model, because
+# under 2023-06-01 a blanket drop would silently discard a temperature the
+# three older models do still honour.
 _NO_TEMPERATURE_MODELS = [
     name for name, config in ANTHROPIC_MODELS.items() if not config.supports_temperature
 ]

@@ -103,7 +103,7 @@ class TestBudgetResolution:
         self, provider, table_name
     ):
         """Callers hold the API identifier (``claude-sonnet-4-6``,
-        ``models/gemini-3.5-flash``), the registry is keyed by catalog name
+        ``models/gemini-3.8-flash``), the registry is keyed by catalog name
         (``claude-sonnet-4.6``). Matching the key alone sent 14 models to the
         provider floor, so Sonnet 4.6 compacted at 150K on a 1M window."""
         from miiflow_agent import models

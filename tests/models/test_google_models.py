@@ -58,8 +58,11 @@ def test_every_model_declares_a_cache_read_rate(name):
     assert GOOGLE_MODELS[name].cache_read_cost_hint > 0, name
 
 
-def test_the_three_current_flash_models_share_one_price():
-    flash = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash")
+def test_the_current_flash_models_share_one_price():
+    # 3.7 Flash used to be the third of these. Google deprecated it on
+    # October 8, 2026 and routes its id to 3.8 Flash, so it is no longer
+    # carried; 3.6 Flash stays because it was not deprecated.
+    flash = ("gemini-3.8-flash", "gemini-3.6-flash")
     prices = {
         (
             GOOGLE_MODELS[name].input_cost_hint,
@@ -73,17 +76,53 @@ def test_the_three_current_flash_models_share_one_price():
     assert prices == {(0.75, 3.75, 0.075)}
 
 
-def test_gemini_3_5_flash_is_not_carried_at_its_batch_rate():
-    # Google runs the Batch API at a flat 50% off, so $0.75/$4.50 is this
-    # model's batch rate and has twice been mistaken for a price cut.
-    config = GOOGLE_MODELS["gemini-3.5-flash"]
-    assert (config.input_cost_hint, config.output_cost_hint) == (1.50, 9.00)
+def test_flash_models_are_not_carried_at_their_batch_rate():
+    # Google runs the Batch API at a flat 50% off input and output, so every
+    # rate here has a halved twin that reads like a plausible standard rate.
+    # Two audits have already mistaken one for a price cut (the September 30,
+    # 2026 audit carried the now-removed gemini-3.5-flash at its batch rate and
+    # read it as evidence of a cut that never happened). The Flash tier is the
+    # easiest to get wrong, because its introductory $0.75/$3.75 is itself
+    # within a factor of two of the $1.50/$7.50 it reverts to.
+    for name in ("gemini-3.8-flash", "gemini-3.6-flash"):
+        config = GOOGLE_MODELS[name]
+        assert (config.input_cost_hint, config.output_cost_hint) == (0.75, 3.75), name
+
+
+def test_auto_routed_model_ids_are_not_in_the_catalog():
+    # Google deprecated both of these on October 8, 2026 WITHOUT retiring the
+    # endpoints: a request naming either succeeds and is silently answered by
+    # another model (3.7 Flash -> 3.8 Flash, 3.5 Flash -> 3.6 Flash). A
+    # ModelConfig promises "this id gets you this model at these rates", which
+    # is false for a routed id — gemini-3.5-flash in particular was carried at
+    # $1.50/$9.00 with temperature support while actually being served by a
+    # model that bills $0.75/$3.75 and ignores sampling parameters. A routed id
+    # is worse to carry than a retired one, which at least fails loudly, so
+    # neither may come back without the routing being gone.
+    for name in ("gemini-3.7-flash", "gemini-3.5-flash"):
+        assert name not in GOOGLE_MODELS, name
+
+
+def test_routed_ids_still_report_sampling_params_as_ineffective():
+    # The other half of the removal, and the easy half to get wrong: both ids
+    # are still CALLABLE (Google routes rather than rejects), and
+    # supports_temperature() defaults to True for a model it does not
+    # recognise. So taking them out of GOOGLE_MODELS without leaving them in
+    # _NO_SAMPLING_PARAMS flips them False -> True and makes the client send a
+    # `temperature` the answering model ignores. For gemini-3.5-flash this is
+    # also stricter than the catalog entry was: it declared
+    # supports_temperature=True, which stopped being true once its requests
+    # began being served by 3.6 Flash.
+    for name in ("gemini-3.7-flash", "gemini-3.5-flash"):
+        assert supports_temperature(name) is False, name
 
 
 def test_sampling_params_are_dropped_from_gemini_3_6_onward():
-    for name in ("gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"):
+    for name in ("gemini-4-argon", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"):
         assert supports_temperature(name) is False, name
-    for name in ("gemini-3.5-flash", "gemini-3.1-pro", "gemini-3.1-flash-lite"):
+    # The 3.1 pair are the last models here that a temperature actually
+    # reaches; gemini-3.5-flash was the third until it was removed.
+    for name in ("gemini-3.1-pro", "gemini-3.1-flash-lite"):
         assert supports_temperature(name) is True, name
 
 

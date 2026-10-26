@@ -376,3 +376,109 @@ class TestHaiku55Contract:
         assert _resolve_model_name("us.anthropic.claude-haiku-4-5-20251001-v1:0") == (
             "claude-haiku-4.5"
         )
+
+
+class TestSamplingParametersAgainstTheSdkPin:
+    """`supports_temperature=True` is only correct on API version 2023-06-01.
+
+    API version 2026-10-21 (October 21, 2026) removes `temperature`, `top_p`
+    and `top_k` outright: every model 400s on any of the three, including at
+    the default value. An Anthropic SDK sends the API version that was current
+    when its major version shipped, so what decides which rule applies here is
+    the `anthropic` pin in pyproject.toml — 0.x means 2023-06-01, and the
+    per-model rule below is right; 2.x means 2026-10-21, and it is wrong for
+    every model at once.
+
+    Neither failure raises at import. On 2.x the catalog would keep reporting
+    temperature as supported, `anthropic_client.py` would keep sending it for
+    the three models below (including the `temperature = 1` it sets for
+    extended thinking), and every one of those requests would 400 at runtime.
+    """
+
+    # The models still declaring supports_temperature=True, i.e. the ones that
+    # honour a non-default temperature under 2023-06-01.
+    PRE_4_7_MODELS = ("claude-opus-4.6", "claude-sonnet-4.6", "claude-haiku-4.5")
+
+    def test_the_sdk_pin_still_selects_the_api_version_these_flags_assume(self):
+        # Asked as "does the declared constraint admit 2.0.0?" rather than by
+        # pattern-matching the bound, so the tripwire fires on the thing that
+        # matters and stays quiet for any equivalent spelling of a safe pin
+        # (`<0.126.0`, `<=0.125.0`, `<2`, `^0.120.2`, a table-form version).
+        import pathlib
+        import re
+
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+
+        pyproject = (
+            pathlib.Path(__file__).resolve().parents[2] / "pyproject.toml"
+        ).read_text(encoding="utf-8")
+        # Inline (`anthropic = "..."`) or table (`anthropic = {version = "..."}`).
+        pin = re.search(
+            r'^anthropic = (?:"([^"]+)"|\{[^}]*?version = "([^"]+)")',
+            pyproject,
+            re.MULTILINE,
+        )
+        assert pin, "anthropic pin not found in pyproject.toml"
+        constraint = pin.group(1) or pin.group(2)
+
+        # Poetry's `^`/`~` are not PEP 440; expand them to the equivalent range.
+        parts = []
+        for clause in (c.strip() for c in constraint.split(",")):
+            if clause.startswith(("^", "~")):
+                base = Version(clause.lstrip("^~"))
+                if clause.startswith("^") and base.major == 0:
+                    cap = f"0.{base.minor + 1}.0"
+                elif clause.startswith("^"):
+                    cap = f"{base.major + 1}.0.0"
+                else:
+                    cap = f"{base.major}.{base.minor + 1}.0"
+                parts += [f">={base}", f"<{cap}"]
+            else:
+                parts.append(clause)
+
+        # Raising the pin to admit 2.x moves the SDK onto API version
+        # 2026-10-21, where the three parameters are gone for EVERY model.
+        # Doing that requires setting supports_temperature=False on
+        # PRE_4_7_MODELS and stopping anthropic_client.py sending `temperature`
+        # at all (including the `temperature = 1` it sets for extended
+        # thinking), in the same change.
+        # Probe a spread of 2.x-and-later releases, not just 2.0.0: a pin like
+        # `^2.1.0` excludes 2.0.0 while admitting 2.1.0, and is just as unsafe.
+        spec = SpecifierSet(",".join(parts))
+        admitted = [
+            v
+            for v in ("2.0.0", "2.1.0", "2.99.99", "3.0.0", "4.0.0", "99.0.0")
+            if spec.contains(v)
+        ]
+        assert not admitted, (
+            f"the anthropic SDK pin ({constraint!r}) admits {admitted[0]}, and "
+            "any 2.x-or-later SDK sends API version 2026-10-21, where "
+            "temperature/top_p/top_k are removed for every model. Set "
+            "supports_temperature=False on "
+            + ", ".join(self.PRE_4_7_MODELS)
+            + " and stop sending the parameter before raising this pin."
+        )
+
+    @pytest.mark.parametrize("model", PRE_4_7_MODELS)
+    def test_pre_4_7_models_still_accept_a_temperature(self, model):
+        assert supports_temperature(model) is True, model
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-fable-5.1",
+            "claude-fable-5",
+            "claude-opus-5.5",
+            "claude-opus-5",
+            "claude-opus-4.8",
+            "claude-opus-4.7",
+            "claude-sonnet-5.5",
+            "claude-sonnet-5",
+            "claude-haiku-5.5",
+        ],
+    )
+    def test_4_7_and_later_refuse_a_temperature_on_every_api_version(self, model):
+        # These 400 on a non-default value under 2023-06-01 and on any value
+        # under 2026-10-21, so this half of the contract is version-independent.
+        assert supports_temperature(model) is False, model

@@ -9,8 +9,9 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # Sampling parameters (temperature / top_p / top_k) are DEPRECATED from Gemini
 # 3.6 Flash and Gemini 3.5 Flash-Lite onward: the API accepts them and silently
 # IGNORES them — no error, no warning — so a value set here would look applied
-# while changing nothing. The older models (3.5 Flash, 3.1 Pro, 3.1 Flash-Lite)
-# still honour them. Google's replacement knob is `thinking_level`, which
+# while changing nothing. Only 3.1 Pro and 3.1 Flash-Lite still honour them;
+# Gemini 3.5 Flash used to be the third, and its removal (see below) leaves the
+# 3.1 pair as the last models here that a temperature actually reaches. Google's replacement knob is `thinking_level`, which
 # GeminiClient does not send yet. Note the scale itself changed: 3.8 Flash
 # documents LOW/MEDIUM/HIGH with MEDIUM as the default, dropping the `minimal`
 # level the earlier generations offered, and Gemini 4 Argon keeps that scale —
@@ -21,14 +22,69 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # generation takes — returns a 400 on Argon rather than being ignored. The set
 # only governs the three sampling parameters, so that one is called out in the
 # Argon entry's description instead of being inferred from membership here.
+#
+# THE LAST TWO ARE NOT IN `GOOGLE_MODELS` AND MUST STAY HERE ANYWAY. Google
+# deprecated gemini-3.7-flash and gemini-3.5-flash on October 8, 2026 and
+# routes them to 3.8 Flash and 3.6 Flash (see the removal note below), so both
+# ids remain CALLABLE — a request naming one succeeds. `supports_temperature()`
+# defaults to True for a model it does not recognise, so dropping them from
+# this set along with their catalog entries would flip them from False to True
+# and make GeminiClient start sending a `temperature` that the model answering
+# the request ignores: precisely the silent no-op this set exists to prevent.
+# For gemini-3.5-flash that is also a correction — its catalog entry declared
+# supports_temperature=True, which stopped being right the moment its requests
+# began being served by 3.6 Flash. Read this set as "ids whose sampling
+# parameters do not take effect", which is a superset of the catalog.
 _NO_SAMPLING_PARAMS = {
     "gemini-4-argon",
     "gemini-3.8-flash",
-    "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
+    # Deprecated and auto-routed; not catalogued, still callable.
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
 }
 
+# REMOVED ON OCTOBER 26, 2026: gemini-3.7-flash and gemini-3.5-flash. Google
+# deprecated both on October 8, 2026 and does NOT reject them — it SILENTLY
+# ROUTES them: a `gemini-3.7-flash` request is served by gemini-3.8-flash, and a
+# `gemini-3.5-flash` request by gemini-3.6-flash. Neither is selectable in AI
+# Studio any more. They were removed rather than marked legacy because a
+# ModelConfig's whole contract is "this id gets you this model at these rates",
+# and for these two ids that contract is now false in a way no description can
+# repair:
+#   * gemini-3.5-flash was carried at $1.50/$9.00 with supports_temperature=True.
+#     Both are wrong at request time. The request is answered by 3.6 Flash, which
+#     bills $0.75/$3.75 and ignores sampling parameters — so the entry overstated
+#     cost by 2x input / 2.4x output, and the ONE reason its description gave for
+#     keeping it ("the last Flash generation to honour temperature/top_p/top_k")
+#     described a model the caller cannot reach.
+#   * gemini-3.7-flash was priced identically to its routing target, so nothing
+#     mis-billed, but the entry was a no-op alias for gemini-3.8-flash: two
+#     catalog rows that cannot be told apart by any request.
+# This is a different case from the retired models further down, and a WORSE one
+# for a catalog to carry: a retired id fails loudly, while a routed id succeeds
+# and quietly bills at another model's rates. Treat "deprecated with automatic
+# routing" as grounds for removal, not for a legacy note. Callers that named
+# either id were moved to gemini-3.8-flash in the same change; 3.6 Flash stays
+# because Google did not deprecate it and it is now 3.5 Flash's routing target.
+#
+# WHAT REMOVING AN ENTRY HERE DOES NOT REACH. Deleting a routed id stops THIS
+# catalog advertising a wrong price, and that is all it can do. A consumer that
+# PERSISTS a copy of this catalog — a model row in its own database, referenced
+# by stored user or workflow config — still holds the old id at the old rate
+# after an entry disappears, and removal does not repoint those references. The
+# effect is a split bill: Google re-rates the request to whatever it routed to
+# (3.6 Flash's $0.75/$3.75 for a 3.5 Flash call), while the consumer keeps
+# metering its own stored rate ($1.50/$9.00), over-charging. Anything that
+# mirrors this catalog therefore needs its own reconciliation step when a
+# routed id is dropped; that is the consumer's layer, not this file's, so it is
+# deliberately not described here — a consuming application documents the gap
+# on its own deactivation path, where a rename cannot leave this file stale.
+# Nothing about this is specific to these two ids — it applies to every
+# removal — and whether any live row anywhere references either id is
+# unverified.
+#
 # Deliberately absent: gemini-3.8-flash-cyber. It is the same core model behind
 # a restricted access envelope — trusted defenders admitted to Google's Fairwind
 # programme, with no self-serve route — so it would fail for every key this
@@ -102,10 +158,12 @@ _NO_SAMPLING_PARAMS = {
 # runs the Batch API at a flat 50% off input and output for every model, so each
 # published price has a halved twin that looks like a plausible standard rate and
 # is not one. The September 30, 2026 audit recorded exactly that mistake:
-# gemini-3.5-flash was carried at $0.75/$4.50, which is its batch rate, and read
-# as evidence Google had cut the model from $1.50/$9.00. Google had not — 3.5
-# Flash has never had an introductory rate and has never been cut, and the entry
-# under-stated its cost by half. If a "price cut" is only ever half the previous
+# gemini-3.5-flash (since removed) was carried at $0.75/$4.50, which was its
+# batch rate, and that was read as evidence Google had cut the model from
+# $1.50/$9.00. Google had not, and the entry under-stated its cost by half. The
+# trap outlives the model: every entry here still has a halved twin, and the
+# Flash tier's $0.75/$3.75 is especially easy to confuse with the $1.50/$7.50
+# standard rate's batch price. If a "price cut" is only ever half the previous
 # figure, check the batch column before believing it.
 #
 # Cached-input rates are now wired for every model here (the October 5, 2026
@@ -113,15 +171,24 @@ _NO_SAMPLING_PARAMS = {
 # model's cached tokens at the full input rate). They were second-hand when
 # written — quotations of the pricing table, cross-checked against the 0.1x
 # ratio the catalog already knew — and the October 12, 2026 audit CONFIRMED
-# every one of them against the primary source: cloud.google.com is reachable
-# from this environment (ai.google.dev is not), and Vertex AI's global
-# standard-tier column matches this file exactly on all seven models, input,
-# output and cached input alike — $0.75/$3.75/$0.075 on the three newer Flash
-# models, $1.50/$9.00/$0.15 on 3.5 Flash, $0.30/$2.50/$0.03 on 3.5 Flash-Lite,
-# $2/$12/$0.20 under 200K and $4/$18/$0.40 above it on 3.1 Pro, and
+# every one of them against the primary source, and Vertex AI's global
+# standard-tier column matched this file exactly, input, output and cached input
+# alike — $0.75/$3.75/$0.075 on the Flash models, $0.30/$2.50/$0.03 on 3.5
+# Flash-Lite, $2/$12/$0.20 under 200K and $4/$18/$0.40 above it on 3.1 Pro, and
 # $0.25/$1.50/$0.025 on 3.1 Flash-Lite. Read the GLOBAL column: Vertex adds 10%
 # for non-global endpoints and Batch halves everything again, so one page shows
 # three plausible-looking rate sets per model.
+# A NOTE ON REACHING THE PRIMARY SOURCE, because it has changed and the next
+# audit should not waste calls rediscovering it: ai.google.dev is not resolvable
+# from this environment, and on October 26, 2026 cloud.google.com — which the
+# October 12 and 19 audits read the Vertex table from — served the pricing page
+# as an empty shell with no table in it. That audit therefore confirmed Google's
+# model lifecycle facts (the two deprecations and their routing targets) from
+# Google's own Gemini API changelog and deprecations page as quoted in search
+# results, NOT by reading either page directly, and it did not re-verify the
+# per-token rates against a first-party table at all. The rates above are
+# carried forward on the October 19 confirmation. Treat them as confirmed as of
+# that date and re-verify when a first-party page is reachable again.
 # Two caveats a flat hint cannot express: the three Flash models' $0.075 is the
 # same INTRODUCTORY rate their input price is, and doubles to $0.15 on January 1,
 # 2027 alongside it; and gemini-3.1-pro's $0.20 is the under-200K tier, $0.40
@@ -132,6 +199,13 @@ _NO_SAMPLING_PARAMS = {
 # The October 19, 2026 audit re-read the same Vertex table and found all seven
 # of those models unchanged, and added gemini-4-argon's row to the list it
 # confirms: $2/$10/$0.10 global standard through November 30, 2026.
+# The October 26, 2026 audit found no new Gemini model and no price change, and
+# removed gemini-3.7-flash and gemini-3.5-flash for the routing reason recorded
+# above. ARGON'S STEP-UP IS NOW THE NEAREST DEADLINE IN THIS FILE: its
+# $2/$10/$0.10 becomes $4/$20/$0.20 on December 1, 2026, five weeks out, and the
+# Flash tier's introductory rate doubles a month after that on January 1, 2027.
+# An audit that runs after either date and changes nothing here leaves every
+# affected request billing at half its real cost.
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-4-argon": ModelConfig(
         model_identifier="models/gemini-4-argon",
@@ -159,26 +233,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.8-flash": ModelConfig(
         model_identifier="models/gemini-3.8-flash",
         name="gemini-3.8-flash",
-        description="Google's best Flash model (released September 2, 2026), and the right default for latency- and cost-sensitive volume here. It is no longer the most capable model in this catalog, nor the default for hard work: Gemini 4 Argon went generally available on October 13, 2026 and is catalogued above — but Argon costs $2/$10 against this model's introductory $0.75/$3.75, so the two split the work rather than one replacing the other. Improves on Gemini 3.7 Flash for reasoning, coding, and agentic workflows, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window, 64K max output. Thinking depth is controlled with thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); temperature, top_p, top_k, candidate_count and the frequency/presence penalties are accepted and silently ignored. Introductory pricing of $0.75/$3.75 per 1M input/output tokens (output includes thinking tokens) applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=True,
-        maximum_context_tokens=1048576,
-        maximum_output_tokens=65536,
-        token_param_name="max_output_tokens",
-        supports_temperature=False,
-        input_cost_hint=0.75,
-        output_cost_hint=3.75,
-        cache_read_cost_hint=0.075,  # 0.1x input; $0.15 from January 1, 2027
-    ),
-    "gemini-3.7-flash": ModelConfig(
-        model_identifier="models/gemini-3.7-flash",
-        name="gemini-3.7-flash",
-        description="Legacy — succeeded by Gemini 3.8 Flash (September 2, 2026), which is stronger at identical pricing, so this is kept for pinned workloads only. Released August 13, 2026. Strong coding and reasoning with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. 1M token context window; thinking depth is controlled with thinking_level rather than sampling parameters. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        description="Google's best Flash model (released September 2, 2026), and the right default for latency- and cost-sensitive volume here. It is no longer the most capable model in this catalog, nor the default for hard work: Gemini 4 Argon went generally available on October 13, 2026 and is catalogued above — but Argon costs $2/$10 against this model's introductory $0.75/$3.75, so the two split the work rather than one replacing the other. Improves on Gemini 3.7 Flash for reasoning, coding, and agentic workflows, with native grounding, computer use, and multimodal (text, image, video, audio, PDF) input. It is also what a `gemini-3.7-flash` request now gets: Google deprecated that id on October 8, 2026 and routes it here at identical pricing, which is why 3.7 Flash is no longer carried as its own entry. 1M token context window, 64K max output. Thinking depth is controlled with thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); temperature, top_p, top_k, candidate_count and the frequency/presence penalties are accepted and silently ignored. Introductory pricing of $0.75/$3.75 per 1M input/output tokens (output includes thinking tokens) applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -197,7 +252,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.6-flash": ModelConfig(
         model_identifier="models/gemini-3.6-flash",
         name="gemini-3.6-flash",
-        description="Legacy — succeeded by Gemini 3.7 Flash (August 2026). Strong coding and agentic performance at Flash-tier pricing, with native grounding and multimodal (text, image, video, audio, PDF) input. 1M token context window; the first generation in which temperature/top_p/top_k are ignored in favour of thinking_level. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        description="Legacy — succeeded by Gemini 3.8 Flash, which is stronger at identical pricing, so new work belongs there. (Gemini 3.7 Flash sat between them and is gone: Google deprecated it on October 8, 2026 and now routes its id to 3.8 Flash.) Kept for two reasons: pinned workloads, and because THIS MODEL IS WHAT A `gemini-3.5-flash` REQUEST NOW GETS — Google deprecated that id on the same date and silently routes it here. Such a request is charged at this entry's $0.75/$3.75, not at 3.5 Flash's $1.50/$9.00, because Google prices what it actually served. Strong coding and agentic performance at Flash-tier pricing, with native grounding and multimodal (text, image, video, audio, PDF) input. 1M token context window; the first generation in which temperature/top_p/top_k are ignored in favour of thinking_level. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -231,25 +286,6 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         input_cost_hint=0.30,
         output_cost_hint=2.50,
         cache_read_cost_hint=0.03,  # 0.1x input
-    ),
-    "gemini-3.5-flash": ModelConfig(
-        model_identifier="models/gemini-3.5-flash",
-        name="gemini-3.5-flash",
-        description="Legacy — succeeded by Gemini 3.6 Flash (July 2026), and superseded twice over since. Released May 19, 2026 at $1.50/$9.00 per 1M input/output tokens and STILL AT THAT PRICE: unlike the 3.6/3.7/3.8 Flash generations it never carried an introductory rate, and Google has never cut it. That makes it the most expensive Flash in this catalog — twice the input and 2.4x the output of the $0.75/$3.75 introductory rate the three newer Flash models share, every one of which also beats it on capability — so no cost or quality argument remains for it. Kept for pinned workloads only, where it is the last Flash generation to honour temperature/top_p/top_k. 1M token context window, 64K max output, cached input $0.15 per 1M.",
-        support_images=True,
-        support_files=True,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=True,
-        maximum_context_tokens=1048576,
-        maximum_output_tokens=65536,
-        token_param_name="max_output_tokens",
-        supports_temperature=True,
-        input_cost_hint=1.50,
-        output_cost_hint=9.00,
-        cache_read_cost_hint=0.15,  # 0.1x input
     ),
     "gemini-3.1-pro": ModelConfig(
         model_identifier="models/gemini-3.1-pro",
@@ -340,10 +376,8 @@ GOOGLE_PARAMETERS: list[ParameterConfig] = [
             # parameter can express.
             "gemini-4-argon": 32768,
             "gemini-3.8-flash": 65536,
-            "gemini-3.7-flash": 65536,
             "gemini-3.6-flash": 65536,
             "gemini-3.5-flash-lite": 65536,
-            "gemini-3.5-flash": 65536,
             "gemini-3.1-pro": 65536,
             "gemini-3.1-flash-lite": 65536,
             "default": 65536,
@@ -392,4 +426,17 @@ def supports_temperature(model: str) -> bool:
     for name, config in GOOGLE_MODELS.items():
         if name in model_lower or config.model_identifier in model_lower:
             return config.supports_temperature
+    # A DEPRECATED-AND-AUTO-ROUTED ID LANDS HERE, and the permissive default
+    # below is wrong for it. gemini-3.7-flash and gemini-3.5-flash were dropped
+    # from the catalog on October 26, 2026 because Google routes them to
+    # 3.8 Flash and 3.6 Flash, but routing means they still SUCCEED, and none
+    # of the lookups above can match them: no catalog name is a substring of
+    # either id (`gemini-3.5-flash-lite` is longer than `gemini-3.5-flash`, so
+    # even that near-miss does not fire). Falling through to True would make
+    # GeminiClient send a `temperature` that the model actually answering the
+    # request ignores — the silent no-op `_NO_SAMPLING_PARAMS` exists to
+    # prevent. Consulting that set here keeps it authoritative for ids the
+    # catalog no longer carries, rather than only for the UI's parameter list.
+    if model_lower.removeprefix("models/") in _NO_SAMPLING_PARAMS:
+        return False
     return True

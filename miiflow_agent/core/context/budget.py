@@ -113,8 +113,8 @@ def _match_config(table: dict, model: str):
     """The registry entry for ``model``, matched on BOTH spellings of a model.
 
     A registry is keyed by catalog name (``claude-sonnet-4.6``,
-    ``gemini-3.5-flash``) while callers hold the API identifier the request is
-    sent with (``claude-sonnet-4-6``, ``models/gemini-3.5-flash``). Matching the
+    ``gemini-3.8-flash``) while callers hold the API identifier the request is
+    sent with (``claude-sonnet-4-6``, ``models/gemini-3.8-flash``). Matching the
     key alone missed every model whose two spellings differ, so 14 models fell
     through to the provider floor: Claude Sonnet/Opus 4.6-4.8 compacted at
     150K on a 1M window. Tiers, most specific first: exact key, exact

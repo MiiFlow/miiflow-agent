@@ -38,7 +38,9 @@ from ..core.streaming import StreamChunk
 from ..utils.document_text import document_to_text
 from ..models.openai import (
     get_token_param_name,
+    REASONING_EFFORT_VALUES,
     normalize_model_name,
+    reasoning_effort_levels,
     requires_responses_api,
     supports_explicit_cache_breakpoints,
     supports_native_mcp,
@@ -149,6 +151,23 @@ class OpenAIClient(ModelClient):
         # requests that share it to the same cache, and keeps one tenant's
         # cached prefixes from serving (or being probed by) another's.
         self.prompt_cache_key = kwargs.pop("prompt_cache_key", None) or None
+        # The reasoning effort for every request this client sends, unless the
+        # call passes its own `reasoning_effort`. Same delivery path and name as
+        # `AnthropicClient.effort` — a model_config key spread into the
+        # constructor — so an assistant's `effort` means the same thing on
+        # either provider. Before this was popped here, the base class absorbed
+        # it and every OpenAI turn silently ran at the API default.
+        effort = kwargs.pop("effort", None) or None
+        if effort is not None and effort not in REASONING_EFFORT_VALUES:
+            raise ValueError(
+                f"effort must be one of {REASONING_EFFORT_VALUES}, got {effort!r}"
+            )
+        self.effort: Optional[str] = effort
+        # True makes `effort` beat a call's own `reasoning_effort` (as an
+        # AnthropicClient's effort always does — it has no per-call channel).
+        # Set by an evaluation pin: a model compared at `@high` must run at
+        # high even through a call site that asks for its own level.
+        self.effort_overrides_call: bool = bool(kwargs.pop("effort_overrides_call", False))
         super().__init__(model=model, api_key=api_key, **kwargs)
         from .sdk_client_cache import get_or_create_sdk_client
 
@@ -377,6 +396,31 @@ class OpenAIClient(ModelClient):
             message = getattr(error, "message", None) or str(error or response.status)
             raise ModelError(f"OpenAI background response {message}", self.model)
         return response
+
+    def _with_configured_effort(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """``kwargs`` carrying the client's configured ``effort`` as
+        ``reasoning_effort`` when the call did not pass one (or always, under
+        ``effort_overrides_call``).
+
+        Applied before endpoint selection, which reads ``reasoning_effort``.
+        A level this model does not accept is dropped rather than remapped,
+        as ``AnthropicClient._apply_effort`` does: the model then runs at its
+        own default, and one config can be shared across model swaps.
+        """
+        if not self.effort:
+            return kwargs
+        if kwargs.get("reasoning_effort") is not None and not self.effort_overrides_call:
+            return kwargs
+        levels = reasoning_effort_levels(self.model)
+        if self.effort not in levels:
+            logger.debug(
+                "Dropping effort=%r for %s: model accepts %s",
+                self.effort,
+                self.model,
+                levels,
+            )
+            return kwargs
+        return {**kwargs, "reasoning_effort": self.effort}
 
     def _apply_reasoning_effort(
         self,
@@ -790,6 +834,7 @@ class OpenAIClient(ModelClient):
         Returns:
             ChatResponse with assistant message and metadata
         """
+        kwargs = self._with_configured_effort(kwargs)
         if json_schema and not supports_json_mode(self.model):
             raise ModelError(f"Structured outputs are not supported by {self.model}", self.model)
         if self._should_use_responses_api(tools=tools, mcp_servers=mcp_servers, kwargs=kwargs):
@@ -1240,6 +1285,7 @@ class OpenAIClient(ModelClient):
         Yields:
             StreamChunk with delta content and metadata
         """
+        kwargs = self._with_configured_effort(kwargs)
         if json_schema and not supports_json_mode(self.model):
             raise ModelError(f"Structured outputs are not supported by {self.model}", self.model)
         use_responses_api = self._should_use_responses_api(

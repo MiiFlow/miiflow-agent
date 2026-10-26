@@ -4,6 +4,8 @@ All notable changes to miiflow-agent will be documented here.
 
 ## Unreleased
 
+- `OpenAIClient(effort=...)`: a reasoning effort for every request the client sends, from the same constructor key `AnthropicClient` takes (an assistant's `model_config.effort`). Before, the base class absorbed the key silently and OpenAI turns ran at the API default. Validated against `models.openai.REASONING_EFFORT_VALUES`, projected per model through the new `reasoning_effort_levels(model)` (exported as `openai_reasoning_effort_levels`); a level the model does not take is dropped, and a call's own `reasoning_effort` wins unless `effort_overrides_call=True` (what an evaluation pin sets; `AnthropicClient` accepts the flag, its configured effort already overriding the call).
+
 - `REJECTION_FOLLOWUP_DEP` (`miiflow_agent.artifacts`): a host hook whose text is added to the deterministic acknowledgement of a declined tool approval, so the rest of the person's request is said without a model call. A hook that raises is logged and ignored.
 
 - Approved tool launches emit a transcript step and execution event before running, so launches that immediately park on a durable wait remain visible in the parent chat.

@@ -8,6 +8,7 @@ from miiflow_agent.models.openai import (
     get_parameters_for_model,
     get_token_param_name,
     is_gpt6_model,
+    reasoning_effort_levels,
     supports_json_mode,
     supports_temperature,
     tools_require_responses_api,
@@ -351,3 +352,16 @@ class TestGpt61Sol:
         # model spelling.
         assert "gpt-6.1-sol-ultrafast" not in OPENAI_MODELS
         assert "gpt-6-astra-ultrafast" not in OPENAI_MODELS
+
+
+def test_reasoning_effort_levels_match_the_ui_options():
+    """The client's per-model scale and the importer's dropdown are one table."""
+    for model in OPENAI_MODELS:
+        options = [p for p in get_parameters_for_model(model) if p.field_name == "reasoning_effort"]
+        assert reasoning_effort_levels(model) == tuple(options[0].options if options else ())
+
+
+def test_reasoning_effort_levels_follow_the_fast_variant():
+    assert reasoning_effort_levels("gpt-6-sol-fast") == reasoning_effort_levels("gpt-6-sol")
+    assert "none" not in reasoning_effort_levels("gpt-6.1-sol")
+    assert reasoning_effort_levels("gpt-4.1") == ()

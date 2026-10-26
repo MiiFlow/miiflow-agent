@@ -36,6 +36,7 @@ from .ollama import get_token_param_name as ollama_get_token_param_name
 # OpenAI
 from .openai import OPENAI_MODELS, OPENAI_PARAMETERS
 from .openai import get_token_param_name as openai_get_token_param_name
+from .openai import reasoning_effort_levels as openai_reasoning_effort_levels
 from .openai import supports_temperature as openai_supports_temperature
 
 # OpenRouter
@@ -58,6 +59,7 @@ __all__ = [
     "OPENAI_MODELS",
     "OPENAI_PARAMETERS",
     "openai_get_token_param_name",
+    "openai_reasoning_effort_levels",
     "openai_supports_temperature",
     # Anthropic
     "ANTHROPIC_MODELS",

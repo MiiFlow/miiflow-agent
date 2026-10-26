@@ -687,6 +687,18 @@ _REASONING_EFFORT_OPTIONS = {
 }
 
 
+#: Every value any OpenAI model accepts as a reasoning effort — the vocabulary a
+#: configured ``effort`` is validated against, so one config survives a model
+#: swap; the per-model projection is ``reasoning_effort_levels``.
+REASONING_EFFORT_VALUES = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def reasoning_effort_levels(model: str) -> tuple[str, ...]:
+    """The reasoning efforts ``model`` accepts, or ``()`` when it takes none
+    (or the catalog does not list its scale)."""
+    return tuple(_REASONING_EFFORT_OPTIONS.get(_base_model_name(model), ()))
+
+
 def get_parameters_for_model(model: str) -> list[ParameterConfig]:
     """Return an exact parameter contract for one OpenAI model.
 

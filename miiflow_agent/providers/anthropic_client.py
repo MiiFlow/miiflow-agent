@@ -72,6 +72,10 @@ class AnthropicClient(ModelClient):
                 f"effort must be one of {EFFORT_LEVELS}, got {effort!r}"
             )
         self.effort: Optional[str] = effort
+        # Accepted for parity with OpenAIClient: a configured effort here
+        # already overrides the call (`_apply_effort` writes it over any
+        # `output_config.effort`), so there is nothing to switch.
+        kwargs.pop("effort_overrides_call", None)
         # `cache_ttl` extends the prompt-cache TTL of the tools + system
         # breakpoints (the org-stable prefix) beyond the 5-minute default;
         # history stays at five minutes unless conversation_cache_ttl opts a

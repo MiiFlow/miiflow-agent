@@ -459,6 +459,71 @@ class TestReasoningEffort:
         mock_create.assert_awaited_once()
 
 
+class TestConfiguredEffort:
+    """`effort` from an assistant's model_config (a constructor kwarg, as on
+    AnthropicClient) becomes the request's reasoning effort."""
+
+    _TOOLS = TestReasoningEffort._TOOLS
+
+    @pytest.mark.asyncio
+    async def test_configured_effort_reaches_tool_turns(self, sample_messages):
+        client = OpenAIClient(model="gpt-6-luna", api_key="test-key", effort="high")
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _responses_response()
+            await client.achat(sample_messages, tools=self._TOOLS)
+
+        assert mock_create.call_args.kwargs["reasoning"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_configured_effort_reaches_streamed_tool_turns(self, sample_messages):
+        client = OpenAIClient(model="gpt-6.1-sol", api_key="test-key", effort="medium")
+
+        async def _gen():
+            yield SimpleNamespace(type="response.completed", response=_responses_response())
+
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _gen()
+            async for _ in client.astream_chat(sample_messages, tools=self._TOOLS):
+                pass
+
+        assert mock_create.call_args.kwargs["reasoning"] == {"effort": "medium"}
+
+    @pytest.mark.asyncio
+    async def test_call_level_reasoning_effort_wins(self, sample_messages):
+        client = OpenAIClient(model="gpt-6-luna", api_key="test-key", effort="high")
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _responses_response()
+            await client.achat(sample_messages, tools=self._TOOLS, reasoning_effort="low")
+
+        assert mock_create.call_args.kwargs["reasoning"] == {"effort": "low"}
+
+    @pytest.mark.asyncio
+    async def test_overriding_effort_beats_call_level_reasoning_effort(self, sample_messages):
+        # An evaluation pin: the variant's effort, not the call site's.
+        client = OpenAIClient(
+            model="gpt-6-luna", api_key="test-key", effort="high", effort_overrides_call=True
+        )
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _responses_response()
+            await client.achat(sample_messages, tools=self._TOOLS, reasoning_effort="low")
+
+        assert mock_create.call_args.kwargs["reasoning"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_level_the_model_rejects_is_dropped(self, sample_messages):
+        # GPT-6.1 Sol has no `none`: sending it would be a 400.
+        client = OpenAIClient(model="gpt-6.1-sol", api_key="test-key", effort="none")
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _responses_response()
+            await client.achat(sample_messages, tools=self._TOOLS)
+
+        assert "reasoning" not in mock_create.call_args.kwargs
+
+    def test_unknown_effort_is_rejected_at_construction(self):
+        with pytest.raises(ValueError, match="effort must be one of"):
+            OpenAIClient(model="gpt-6-luna", api_key="test-key", effort="extreme")
+
+
 class TestOpenAIRequestMapping:
     _TOOLS = [
         {

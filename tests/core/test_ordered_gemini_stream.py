@@ -88,3 +88,27 @@ def test_signed_text_and_function_parts_round_trip_without_merging():
 
     converted = asyncio.run(client._convert_messages_to_gemini_format([message]))
     assert _convert_to_rest_format(converted)[0]["parts"] == parts
+
+
+def test_call_ids_stay_unique_across_requests_in_one_turn():
+    """Each ReAct step is a new request; ids restarting per request made step 2's
+    first call share step 1's id, so consumers pairing by id merged the two."""
+    from miiflow_agent.providers.gemini_client import _parse_rest_response
+
+    response = {"candidates": [{"content": {"parts": [{"functionCall": {"name": "tool_call", "args": {}}}]}}]}
+    normalizer = GeminiStreamNormalizer()
+    streamed = []
+    for _ in range(2):
+        normalizer.reset_state()
+        streamed += [c.tool_calls[0]["id"] for c in normalizer.normalize_ordered_chunks(response)]
+    parsed = [_parse_rest_response(response, {})[1][0]["id"] for _ in range(2)]
+    assert len(set(streamed + parsed)) == 4
+
+
+def test_wire_call_id_is_kept():
+    from miiflow_agent.providers.gemini_client import _parse_rest_response
+
+    response = {"candidates": [{"content": {"parts": [{"functionCall": {"id": "w1", "name": "lookup"}}]}}]}
+    (chunk,) = GeminiStreamNormalizer().normalize_ordered_chunks(response)
+    assert chunk.tool_calls[0]["id"] == "w1"
+    assert _parse_rest_response(response, {})[1][0]["id"] == "w1"

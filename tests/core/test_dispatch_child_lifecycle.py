@@ -69,6 +69,40 @@ def test_transfer_forwards_child_narration_with_its_own_step():
     assert received[0].data["text"] == "Generating frame 1 now."
 
 
+def test_child_tool_events_carry_the_call_input():
+    """A child's planned/executing tool events forward the call's input beside
+    its emitted name: a bridged `tool_call` runs the tool its input names, and
+    the parent can only record that if the input reaches it."""
+    from miiflow_agent.core.react.dispatch import forward_subagent_events
+    from miiflow_agent.core.react.enums import ReActEventType
+    from miiflow_agent.core.react.react_events import ReActEvent
+
+    call = {"name": "get_performance", "arguments": {"days": 7}}
+
+    async def child():
+        for et in (ReActEventType.ACTION_PLANNED, ReActEventType.ACTION_EXECUTING):
+            yield ReActEvent(
+                event_type=et, step_number=1, data={"action": "tool_call", "action_input": call, "tool_call_id": "c1"}
+            )
+        yield ReActEvent(
+            event_type=ReActEventType.OBSERVATION,
+            step_number=1,
+            data={"action": "tool_call", "observation": "{}", "tool_call_id": "c1"},
+        )
+
+    bus, received = _make_event_bus()
+    asyncio.run(
+        forward_subagent_events(
+            child(), parent_event_bus=bus, parent_step_number=2, subagent_id="sub_abc", own_path=["sub_abc"]
+        )
+    )
+
+    tool_events = [e.data for e in received if e.data.get("sub_event") == "tool"]
+    assert [(d["tool_name"], d["tool_input"]) for d in tool_events] == [("tool_call", call), ("tool_call", call)]
+    # The id pairs the call's events; the name cannot when calls share it.
+    assert [e.data["tool_call_id"] for e in received] == ["c1", "c1", "c1"]
+
+
 # ── the dispatch owns the child's run ─────────────────────────────────────
 
 

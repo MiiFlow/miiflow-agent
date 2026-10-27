@@ -410,6 +410,14 @@ async def forward_subagent_events(
                         "subagent_id": subagent_id,
                         "subagent_path": own_path,
                         "tool_name": data.get("action"),
+                        # With `tool_name` (the call as emitted), what a
+                        # reader needs to name what ran: a bridged
+                        # `tool_call` runs the tool its input names.
+                        "tool_input": data.get("action_input"),
+                        # Pairs this call's planned/executing/observation
+                        # events; the name cannot when two calls share one
+                        # (every bridged call is `tool_call`).
+                        "tool_call_id": data.get("tool_call_id"),
                         "tool_description": data.get("tool_description"),
                         "status": "planned",
                     },
@@ -424,6 +432,14 @@ async def forward_subagent_events(
                         "subagent_id": subagent_id,
                         "subagent_path": own_path,
                         "tool_name": data.get("action"),
+                        # With `tool_name` (the call as emitted), what a
+                        # reader needs to name what ran: a bridged
+                        # `tool_call` runs the tool its input names.
+                        "tool_input": data.get("action_input"),
+                        # Pairs this call's planned/executing/observation
+                        # events; the name cannot when two calls share one
+                        # (every bridged call is `tool_call`).
+                        "tool_call_id": data.get("tool_call_id"),
                         "tool_description": data.get("tool_description"),
                         "status": "executing",
                     },
@@ -443,6 +459,7 @@ async def forward_subagent_events(
                         "subagent_id": subagent_id,
                         "subagent_path": own_path,
                         "tool_name": data.get("action"),
+                        "tool_call_id": data.get("tool_call_id"),
                         "chunk": data.get("observation") or "",
                         "success": data.get("success", True),
                         "observation_ref": data.get("observation_ref"),

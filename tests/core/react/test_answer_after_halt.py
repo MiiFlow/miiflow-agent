@@ -31,11 +31,14 @@ class _FakeBus:
         self.events.append(e)
 
 
-def _chunk(delta="", usage=None):
+LOOP_TOOLS = [{"name": "google_ads_query"}, {"name": "read_observation"}]
+
+
+def _chunk(delta="", usage=None, tool_calls=None):
     return SimpleNamespace(
         delta=delta,
         thinking_delta=None,
-        tool_calls=None,
+        tool_calls=tool_calls,
         finish_reason=None,
         usage=usage,
         cost=0.0,
@@ -43,27 +46,53 @@ def _chunk(delta="", usage=None):
     )
 
 
-def _run(chunks, *, steps=None, final_answer=None, cancelled=False, raises=None):
+def _run(
+    chunks,
+    *,
+    steps=None,
+    final_answer=None,
+    cancelled=False,
+    raises=None,
+    retry_chunks=None,
+    schema_error=None,
+    native_mcp=False,
+):
     """Run the real wrap-up against a canned stream.
 
     Returns (produced, state, context, bus, calls) where `calls` records the
     kwargs each stream_with_tools invocation received — that is how the
-    tool-free property is asserted rather than assumed.
+    request shape is asserted rather than assumed. ``retry_chunks`` is what a
+    second (tools-withheld) call streams.
     """
     calls = []
 
     async def go():
-        async def stream_with_tools(messages=None, prebuilt_tools=None):
-            calls.append({"messages": messages, "prebuilt_tools": prebuilt_tools})
+        async def stream_with_tools(
+            messages=None, prebuilt_tools=None, withhold_native_mcp=False
+        ):
+            calls.append(
+                {
+                    "messages": messages,
+                    "prebuilt_tools": prebuilt_tools,
+                    "withhold_native_mcp": withhold_native_mcp,
+                }
+            )
             if raises is not None:
                 raise raises
-            for c in chunks:
+            for c in chunks if len(calls) == 1 else (retry_chunks or []):
                 yield c
+
+        def build_schemas():
+            if schema_error is not None:
+                raise schema_error
+            return [dict(t) for t in LOOP_TOOLS]
 
         orch = SimpleNamespace(
             event_bus=_FakeBus(),
             tool_executor=SimpleNamespace(
                 stream_with_tools=stream_with_tools,
+                _build_native_tool_schemas=build_schemas,
+                has_native_mcp_servers=lambda: native_mcp,
                 agent=SimpleNamespace(temperature=0.0, max_tokens=8192),
             ),
         )
@@ -92,16 +121,87 @@ class TestWrapUpProducesTheAnswer:
         # Recorded as a step so cost/token totals in _build_result include it.
         assert state.steps[-1].answer == state.final_answer
 
-    def test_the_wrap_up_turn_carries_no_tools(self):
-        """The model must be UNABLE to call a tool, not merely asked not to.
+    def test_the_wrap_up_resends_the_loops_tools(self):
+        """Same tools array as the loop, so the prompt cache survives.
 
-        An empty list is how every provider client here drops the `tools` key;
-        `tool_choice: "none"` is spelled differently per provider.
+        Withholding tools invalidates the whole cache and `tool_choice: none`
+        still invalidates every message block. Production 2026-10-27: a
+        395k-token wrap-up re-written uncached for $1.20, 31% of the turn.
         """
         _produced, _state, _ctx, _bus, calls = _run([_chunk("done")])
 
         assert len(calls) == 1
+        assert calls[0]["prebuilt_tools"] == LOOP_TOOLS
+        assert calls[0]["withhold_native_mcp"] is False
+
+    def test_native_mcp_servers_send_the_turn_tool_free(self):
+        """The provider calls a native MCP server during the request, before
+        the orchestrator could refuse it, so such an agent gives up the cache
+        rather than risk a call on a halted run."""
+        produced, _state, _ctx, _bus, calls = _run([_chunk("done")], native_mcp=True)
+
+        assert produced is True
+        assert [(c["prebuilt_tools"], c["withhold_native_mcp"]) for c in calls] == [
+            ([], True)
+        ]
+
+    def test_a_tool_call_is_discarded_and_re_asked_without_tools(self):
+        produced, state, _ctx, bus, calls = _run(
+            [
+                _chunk("Let me check one more thing."),
+                _chunk(tool_calls=[{"id": "t1", "type": "function"}]),
+            ],
+            retry_chunks=[_chunk("Findings: $1,200 wasted.")],
+        )
+
+        assert produced is True
+        assert state.final_answer == "Findings: $1,200 wasted."
+        assert [(c["prebuilt_tools"], c["withhold_native_mcp"]) for c in calls] == [
+            (LOOP_TOOLS, False),
+            ([], True),
+        ]
+        retracted = [
+            e for e in bus.events if e.event_type == ReActEventType.ANSWER_RETRACTED
+        ]
+        assert [e.data["retracted_text"] for e in retracted] == [
+            "Let me check one more thing."
+        ]
+
+    def test_no_second_call_when_the_first_was_already_tool_free(self):
+        produced, _state, _ctx, _bus, calls = _run(
+            [_chunk(tool_calls=[{"id": "t1", "type": "function"}])],
+            schema_error=RuntimeError("registry gone"),
+        )
+
+        assert produced is False
+        assert [c["prebuilt_tools"] for c in calls] == [[]]
+
+    def test_a_schema_build_failure_sends_the_turn_tool_free(self):
+        produced, state, _ctx, _bus, calls = _run(
+            [_chunk("answer")], schema_error=RuntimeError("registry gone")
+        )
+
+        assert produced is True
+        assert state.final_answer == "answer"
         assert calls[0]["prebuilt_tools"] == []
+
+    def test_buffered_mode_replays_the_answer_after_the_stream(self, monkeypatch):
+        monkeypatch.setenv("MIIFLOW_OPTIMISTIC_ANSWER_STREAMING", "0")
+        _produced, state, _ctx, bus, _calls = _run(
+            [
+                _chunk("narration"),
+                _chunk(tool_calls=[{"id": "t1", "type": "function"}]),
+            ],
+            retry_chunks=[_chunk("a"), _chunk("b")],
+        )
+
+        kinds = [e.event_type for e in bus.events]
+        assert ReActEventType.ANSWER_RETRACTED not in kinds
+        chunks = [
+            e for e in bus.events if e.event_type == ReActEventType.FINAL_ANSWER_CHUNK
+        ]
+        assert [e.data["delta"] for e in chunks] == ["a", "b"]
+        assert state.final_answer == "ab"
 
     def test_guidance_is_a_user_turn_naming_the_halt(self):
         _produced, _state, ctx, _bus, _calls = _run([_chunk("done")])

@@ -907,19 +907,26 @@ class AgentToolExecutor:
         )
 
     async def stream_with_tools(
-        self, messages: List, temperature: float = None, prebuilt_tools: List = None
+        self,
+        messages: List,
+        temperature: float = None,
+        prebuilt_tools: List = None,
+        withhold_native_mcp: bool = False,
     ):
         """Stream LLM call WITH native tools enabled.
 
         ``prebuilt_tools`` lets the caller reuse a schema list it already
         built this step (the orchestrator builds one for trace logging);
         building ~50 provider-format schemas twice per step is pure waste.
+        ``withhold_native_mcp`` sends the call without the registry's native
+        MCP servers, which the provider would otherwise call on its own.
         """
         tools = (
             prebuilt_tools
             if prebuilt_tools is not None
             else self._build_native_tool_schemas()
         )
+        extra = {"mcp_servers": None} if withhold_native_mcp else {}
 
         # Use LLMClient with pre-formatted tools via _formatted_tools parameter
         # This ensures callbacks fire while avoiding tool re-formatting
@@ -928,8 +935,17 @@ class AgentToolExecutor:
             _formatted_tools=tools,
             temperature=temperature or self.agent.temperature,
             max_tokens=self.agent.max_tokens,
+            **extra,
         ):
             yield chunk
+
+    def has_native_mcp_servers(self) -> bool:
+        """Whether this agent's requests carry MCP servers the provider calls.
+
+        Those calls run on the provider's side during the request, so the
+        orchestrator cannot refuse one the way it refuses a local tool call.
+        """
+        return bool(self._tool_registry.has_native_mcp_servers())
 
     def build_request_shape(self, messages: List, tools: List = None):
         """Describe the next request the way the context engine needs to see it.

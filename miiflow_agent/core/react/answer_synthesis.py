@@ -1,7 +1,7 @@
 """Turning a finished (or halted) run into what the caller receives.
 
 Owns the terminal paths of a ReAct run: publishing the closing final-answer
-event, building the success/crash results, the one tool-free wrap-up turn
+event, building the success/crash results, the one wrap-up turn
 after a safety halt (_answer_after_halt — report the work in hand instead of
 discarding it), and the canned fallback when even that fails. Methods were
 moved verbatim from ReActOrchestrator (which keeps thin delegates);
@@ -11,6 +11,7 @@ moved verbatim from ReActOrchestrator (which keeps thin delegates);
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, List
@@ -21,7 +22,11 @@ from .enums import StopReason
 from .events import EventFactory
 from .media_refs import referenced_media_ids
 from .models import ReActResult, ReActStep
-from .orchestrator import _extract_partial_results, _preview
+from .orchestrator import (
+    _extract_partial_results,
+    _optimistic_answer_streaming_enabled,
+    _preview,
+)
 
 if TYPE_CHECKING:
     from ..agent import RunContext
@@ -200,7 +205,7 @@ class AnswerSynthesis:
     async def answer_after_halt(
         self, context: RunContext, state: "ExecutionState"
     ) -> bool:
-        """One tool-free LLM turn, so a safety halt reports instead of discarding.
+        """One more LLM turn, so a safety halt reports instead of discarding.
 
         A safety condition halting the loop says "stop doing work", NOT "throw the
         work away" — but that is what happened: the loop broke with no
@@ -214,15 +219,21 @@ class AnswerSynthesis:
         what the platform prompt's Rule 17 asks for and could never deliver while
         the string was generated in Python.
 
-        Tools are withheld by passing an EMPTY schema list — every provider client
-        here skips the `tools` key when it is falsy — rather than by asking nicely
-        or by sending `tool_choice: "none"`, whose spelling differs per provider.
-        The model therefore *cannot* call anything, which is also why the deltas
-        stream unconditionally: no tool_use block can arrive to retract them.
+        The request is the loop's own request plus one user turn: the SAME tool
+        list (`_build_native_tool_schemas` is memoized per surface, so it is the
+        array the last step sent) and no `tool_choice`. That is what keeps the
+        prompt cache. Withholding tools (an empty array) invalidates the whole
+        cache, and switching `tool_choice` to none still invalidates every
+        message block — production 2026-10-27 (org hello-gravel-87201,
+        thread_orzeErnSYPu7EBEdJGHaG5ts): a 395k-token wrap-up re-written
+        uncached for $1.20, 31% of the whole turn.
 
-        Cost: an empty tools array is a different array, so this one call re-bills
-        the prompt uncached (~$0.2 at a 64k-token context on Sonnet). It buys back
-        a turn that was otherwise 100% waste, and only ever runs on a halt.
+        No tool runs on this turn: a call the model emits anyway is never
+        executed. Its preamble is retracted and the turn is re-asked once with
+        tools withheld — uncached, but only when the model ignored the halt.
+        That refusal only works for tools the orchestrator runs. Native MCP
+        servers are called by the provider itself, during the request, so an
+        agent that has them skips the cached attempt and answers tool-free.
 
         Returns True when it produced an answer. On any failure the caller still
         has `_generate_fallback_answer`, so this degrades to the old behaviour.
@@ -237,46 +248,59 @@ class AnswerSynthesis:
             Message(
                 role=MessageRole.USER,
                 content=(
-                    f"SYSTEM: This run has been halted — {reason}. No further tool "
-                    "calls are possible; none are available to you on this turn.\n\n"
-                    "Write your final answer NOW, using only what is already in "
-                    "this conversation. Report everything you did establish, with "
-                    "the concrete numbers and findings from the tool results above "
-                    "— partial results are valuable and must not be withheld. Then "
-                    "state plainly what you could not finish and what would let you "
-                    "finish it. Do not apologise generically, do not claim you were "
-                    "unable to produce an answer, and do not ask to try again."
+                    f"SYSTEM: This run has been halted — {reason}. Tool calls are "
+                    "disabled: any call you make on this turn is discarded "
+                    "unexecuted.\n\n"
+                    "Write your final answer NOW, as text only, using only what "
+                    "is already in this conversation. Report everything you did "
+                    "establish, with the concrete numbers and findings from the "
+                    "tool results above — partial results are valuable and must "
+                    "not be withheld. Then state plainly what you could not "
+                    "finish and what would let you finish it. Do not apologise "
+                    "generically, do not claim you were unable to produce an "
+                    "answer, and do not ask to try again."
                 ),
             )
         )
 
+        executor = self._orch.tool_executor
+        try:
+            # Same seam and memo as the step streamer, so the array is the one
+            # the last step sent.
+            loop_tools = (
+                []
+                if executor.has_native_mcp_servers()
+                else executor._build_native_tool_schemas()
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Without the loop's list the cache is lost anyway; a tool-free
+            # turn still answers.
+            logger.warning(
+                "[ORCH] wrap-up after halt could not rebuild the loop's tool "
+                "list (%s); sending it tool-free",
+                exc,
+            )
+            loop_tools = []
+
         step = ReActStep(step_number=state.current_step, thought="")
         started = time.time()
-        buffer = ""
         try:
             await self._orch.event_bus.publish(
                 EventFactory.step_started(state.current_step)
             )
-            async for chunk in self._orch.tool_executor.stream_with_tools(
-                messages=context.messages, prebuilt_tools=[]
-            ):
-                if getattr(chunk, "thinking_delta", None):
-                    await self._orch.event_bus.publish(
-                        EventFactory.thinking_chunk(
-                            state.current_step, chunk.thinking_delta, buffer
-                        )
-                    )
-                if chunk.delta:
-                    buffer += chunk.delta
-                    await self._orch.event_bus.publish(
-                        EventFactory.final_answer_chunk(
-                            state.current_step, chunk.delta, buffer
-                        )
-                    )
-                if getattr(chunk, "usage", None):
-                    # Assigned, not accumulated — usage chunks carry the running
-                    # total for the call, as `_execute_reasoning_step_native` does.
-                    step.tokens_used = chunk.usage.total_tokens or 0
+            answer, called_tool, step.tokens_used = await self._stream_wrap_up(
+                context, state, loop_tools, tool_free=not loop_tools
+            )
+            if called_tool and loop_tools:
+                logger.warning(
+                    "[ORCH] wrap-up after halt (%s) called a tool; discarded it "
+                    "and re-asking with tools withheld",
+                    reason,
+                )
+                answer, _, retry_tokens = await self._stream_wrap_up(
+                    context, state, [], tool_free=True
+                )
+                step.tokens_used += retry_tokens
         except asyncio.CancelledError:
             # Cancellation is not a failed wrap-up: it must reach the caller,
             # or a cancelled turn looks like one that merely had nothing to say.
@@ -293,7 +317,6 @@ class AnswerSynthesis:
             )
             return False
 
-        answer = buffer.strip()
         # Log the OUTCOME, not just the exception path: "the wrap-up ran and the
         # model said nothing" and "the wrap-up never ran" are different bugs and
         # must not look identical in the logs.
@@ -318,6 +341,79 @@ class AnswerSynthesis:
             EventFactory.final_answer(state.current_step, answer)
         )
         return True
+
+    async def _stream_wrap_up(
+        self,
+        context: RunContext,
+        state: "ExecutionState",
+        tools: List,
+        *,
+        tool_free: bool,
+    ) -> tuple[str, bool, int]:
+        """Stream one wrap-up call: (answer text, whether it called a tool, tokens).
+
+        Text is published as it arrives (the step streamer's optimistic
+        protocol, under the same kill switch) and retracted if a tool call
+        follows it, which makes it preamble rather than an answer. Tool calls
+        are only observed, never executed. ``tool_free`` also withholds the
+        native MCP servers, so nothing at all can be called.
+        """
+        optimistic = _optimistic_answer_streaming_enabled()
+        buffer = ""
+        held: list[str] = []
+        tokens = 0
+        # aclosing: leaving on a tool call must close the provider stream now,
+        # not at garbage collection — the model is still generating (and
+        # billing) the call's arguments.
+        async with contextlib.aclosing(
+            self._orch.tool_executor.stream_with_tools(
+                messages=context.messages,
+                prebuilt_tools=tools,
+                withhold_native_mcp=tool_free,
+            )
+        ) as stream:
+            async for chunk in stream:
+                if getattr(chunk, "thinking_delta", None):
+                    await self._orch.event_bus.publish(
+                        EventFactory.thinking_chunk(
+                            state.current_step, chunk.thinking_delta, buffer
+                        )
+                    )
+                if getattr(chunk, "tool_calls", None):
+                    if buffer:
+                        if optimistic:
+                            await self._orch.event_bus.publish(
+                                EventFactory.answer_retracted(
+                                    state.current_step, buffer, "tool_call"
+                                )
+                            )
+                        await self._orch.event_bus.publish(
+                            EventFactory.thinking_chunk(
+                                state.current_step, buffer, buffer
+                            )
+                        )
+                    return "", True, tokens
+                if chunk.delta:
+                    buffer += chunk.delta
+                    if optimistic:
+                        await self._orch.event_bus.publish(
+                            EventFactory.final_answer_chunk(
+                                state.current_step, chunk.delta, buffer
+                            )
+                        )
+                    else:
+                        held.append(chunk.delta)
+                if getattr(chunk, "usage", None):
+                    # Assigned, not accumulated — usage chunks carry the running
+                    # total for the call, as `_execute_reasoning_step_native` does.
+                    tokens = chunk.usage.total_tokens or 0
+        replayed = ""
+        for delta in held:
+            replayed += delta
+            await self._orch.event_bus.publish(
+                EventFactory.final_answer_chunk(state.current_step, delta, replayed)
+            )
+        return buffer.strip(), False, tokens
 
     def generate_fallback_answer(self, steps) -> str:
         """Compose an answer for a run that stopped without producing one.

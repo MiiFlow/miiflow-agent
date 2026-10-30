@@ -342,9 +342,16 @@ class TestGpt61Sol:
 
     def test_the_cancelled_and_unreleased_ids_are_absent(self):
         # GPT-6.1 Astra was cancelled over safety findings and there is no
-        # GPT-6.1 Luna or Terra. Each would be an id that 404s.
-        for model in ("gpt-6.1-astra", "gpt-6.1-luna", "gpt-6.1-terra"):
+        # GPT-6.1 Luna. Each would be an id that 404s. `gpt-6.1-terra` was in
+        # this list until it shipped on October 26, 2026 — see TestGpt61Terra.
+        for model in ("gpt-6.1-astra", "gpt-6.1-luna"):
             assert model not in OPENAI_MODELS
+
+    def test_the_tier_does_not_share_one_effort_scale(self):
+        # The sibling restores `none`, so a reader cannot infer either model's
+        # scale from the tier name.
+        assert "none" not in reasoning_effort_levels("gpt-6.1-sol")
+        assert "none" in reasoning_effort_levels("gpt-6.1-terra")
 
     def test_ultrafast_is_a_service_tier_not_a_model_id(self):
         # Three speed tiers with three shapes: standard, the `-fast` suffix on
@@ -352,6 +359,85 @@ class TestGpt61Sol:
         # model spelling.
         assert "gpt-6.1-sol-ultrafast" not in OPENAI_MODELS
         assert "gpt-6-astra-ultrafast" not in OPENAI_MODELS
+
+
+class TestGpt61Terra:
+    """GPT-6.1 Terra, generally available October 26, 2026.
+
+    The mid tier OpenAI skipped in GPT-6 and brought back one generation later,
+    which is why this catalog carried "there is no GPT-6 successor to Terra" as
+    settled across three audits.
+    """
+
+    def test_pricing_matches_published_rates(self):
+        config = OPENAI_MODELS["gpt-6.1-terra"]
+        assert (config.input_cost_hint, config.output_cost_hint) == (1.0, 5.0)
+        assert config.cache_read_cost_hint == 0.05
+        assert config.cache_write_cost_hint == 1.25
+        assert config.maximum_context_tokens == 1_050_000
+        assert config.maximum_output_tokens == 128_000
+
+    def test_cached_input_follows_the_gpt61_rate_not_gpt6s(self):
+        # 5% of input, like its 6.1 sibling — not the 10% the GPT-6 tier reads
+        # at. Assuming the family rate here overstates cached spend by 2x.
+        config = OPENAI_MODELS["gpt-6.1-terra"]
+        assert config.cache_read_cost_hint == pytest.approx(
+            config.input_cost_hint * 0.05
+        )
+        assert OPENAI_MODELS["gpt-6-luna"].cache_read_cost_hint == pytest.approx(
+            OPENAI_MODELS["gpt-6-luna"].input_cost_hint * 0.1
+        )
+
+    def test_it_undercuts_the_tier_it_succeeds(self):
+        # Unlike the 6.1 Sol succession, this one IS cheaper per token — half
+        # the input and well under half the output of GPT-5.6 Terra.
+        newer = OPENAI_MODELS["gpt-6.1-terra"]
+        older = OPENAI_MODELS["gpt-5.6-terra"]
+        assert newer.input_cost_hint < older.input_cost_hint
+        assert newer.output_cost_hint < older.output_cost_hint
+
+    def test_effort_restores_none(self):
+        # Load-bearing, not cosmetic: the client DROPS a level the catalog
+        # omits, so inheriting its sibling's scale would silently discard a
+        # configured `effort="none"` — the one level at which Chat Completions
+        # calls function tools.
+        assert reasoning_effort_levels("gpt-6.1-terra") == (
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        )
+        assert "none" in _parameter("gpt-6.1-terra", "reasoning_effort").options
+
+    def test_pro_mode_is_not_offered(self):
+        # Undocumented on the 6.1 tier, same as its sibling.
+        assert "reasoning_mode" not in _parameter_names("gpt-6.1-terra")
+
+    def test_it_takes_the_gpt6_parameter_contract(self):
+        names = _parameter_names("gpt-6.1-terra")
+        assert "temperature" not in names
+        assert "max_tokens" not in names
+        assert "max_completion_tokens" in names
+        assert unsupported_request_params("gpt-6.1-terra") == frozenset(
+            {"logprobs", "prompt_cache_retention", "temperature", "top_logprobs", "top_p"}
+        )
+
+    def test_it_carries_the_long_context_surcharge(self):
+        assert get_long_context_pricing_multipliers("gpt-6.1-terra", 272_001) == (2.0, 1.5)
+        assert get_long_context_pricing_multipliers("gpt-6.1-terra", 272_000) == (1.0, 1.0)
+
+    def test_input_modality_flags_match_the_rest_of_gpt6(self):
+        # OpenAI's model page lists text and image for Terra, Astra and 6.1 Sol
+        # alike, while all three carry support_files=True here because PDF
+        # arrives as a Responses-API `file` input rather than a listed
+        # modality. Whether that flag is right is a family-wide question; this
+        # pins Terra to its siblings so it is never flipped for Terra alone.
+        terra = OPENAI_MODELS["gpt-6.1-terra"]
+        for sibling in ("gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"):
+            assert terra.support_files == OPENAI_MODELS[sibling].support_files
+            assert terra.support_images == OPENAI_MODELS[sibling].support_images
 
 
 def test_reasoning_effort_levels_match_the_ui_options():

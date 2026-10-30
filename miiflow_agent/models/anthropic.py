@@ -40,6 +40,25 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # (October 7) is still the newest, and every model here is listed Active with
 # no deprecation and no retirement date.
 #
+# The October 30, 2026 audit re-confirmed all of that and changed no entry:
+# Haiku 5.5 is still the newest API model, no price moved, and no deprecation
+# or retirement date was published. Fable 5.1 is still the top tier — no Fable
+# 5.5 had been announced as of October 28, 2026. Two things that happened in
+# that week look like catalog events and are NOT, both worth recording so a
+# later audit does not act on them:
+#   * CLAUDE DUET (waitlist preview for US Pro and Max subscribers) is a
+#     proactive assistant product built ON Opus 5.5, not a new model. It has no
+#     model id and no rate card; `claude-opus-5-5` below is what it runs on.
+#   * On OCTOBER 29, 2026 Haiku 4.5 stopped appearing in the model selector for
+#     chat, Cowork and Design on the Free, Pro and Max plans, replaced there by
+#     Haiku 5.5. That is a CONSUMER-SURFACE removal and it left the API
+#     untouched — the model is still served, still $1/$5, and still in Claude
+#     Code and on Team and Enterprise plans. It is precisely the kind of event
+#     the Haiku 4.5 entry below warns not to read as a retirement signal, and it
+#     arrived three days after that warning was written. The signal to drop that
+#     entry is still a dated deprecation notice on the API, which has not been
+#     sent.
+#
 # What DID change that week is the parameter contract, not the catalog: API
 # version 2026-10-21 removes `temperature`, `top_p` and `top_k` for every model
 # at once. It does not affect this file today because the SDK pin keeps requests

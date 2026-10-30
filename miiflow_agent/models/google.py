@@ -154,6 +154,25 @@ _NO_SAMPLING_PARAMS = {
 # only, so it would fail for every key this catalog serves — the same reasoning
 # as gemini-3.8-flash-cyber above and gpt-5.6-cyber in the OpenAI catalog.
 #
+# Also deliberately absent, and NEW at the October 30, 2026 audit: GEMINI 4
+# CARBON, announced October 28-30, 2026 as Google's newest frontier model, for
+# coding and cybersecurity. It is not catalogued because it is not callable:
+# access is limited to selected defenders in the same Fairwind programme, whose
+# members pass background checks, must use phishing-resistant MFA, may only
+# extend access to internal security, incident-response or penetration-testing
+# teams, and may not share or resell it. Google has published no date for
+# developers, businesses or consumers and no first-party rate card — the
+# introductory figures circulating rest partly on Google's internal
+# measurements, and the model cannot yet be exercised through a public API — so
+# an entry here would 404 for every key this catalog serves AND carry a price
+# nobody can verify. Watch for it on the ARGON PRECEDENT rather than on an
+# announcement: Argon was Fairwind-only from September 30 and opened to the paid
+# developer API on October 13, about two weeks later, so the next audit should
+# re-check Carbon rather than assume the gate holds. Also out of scope and not a
+# gap: Genie 4 (October 27, 2026) is a world model, not a text LLM, and
+# gemini-nano-banana-2.1 (October 6, 2026) is image generation — neither takes
+# the generateContent request shape a ModelConfig here describes.
+#
 # PRICES HERE ARE STANDARD (pay-as-you-go) RATES, never the batch rate. Google
 # runs the Batch API at a flat 50% off input and output for every model, so each
 # published price has a halved twin that looks like a plausible standard rate and
@@ -201,7 +220,12 @@ _NO_SAMPLING_PARAMS = {
 # confirms: $2/$10/$0.10 global standard through November 30, 2026.
 # The October 26, 2026 audit found no new Gemini model and no price change, and
 # removed gemini-3.7-flash and gemini-3.5-flash for the routing reason recorded
-# above. ARGON'S STEP-UP IS NOW THE NEAREST DEADLINE IN THIS FILE: its
+# above. The October 30, 2026 audit found no price change and no change to any
+# model's availability, deprecation or retirement status, and no new CALLABLE
+# model: Gemini 4 Carbon shipped in that window but is Fairwind-gated, and is
+# excluded with its reasoning and its re-check trigger recorded above. Argon
+# remains the frontier model a paid API key can reach.
+# ARGON'S STEP-UP IS NOW THE NEAREST DEADLINE IN THIS FILE: its
 # $2/$10/$0.10 becomes $4/$20/$0.20 on December 1, 2026, five weeks out, and the
 # Flash tier's introductory rate doubles a month after that on January 1, 2027.
 # An audit that runs after either date and changes nothing here leaves every

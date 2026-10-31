@@ -31,9 +31,8 @@ def _executor(slow_tool):
 
 
 def _pending_cancels() -> int:
-    # Task.cancelling() is 3.11+; a 3.10 task has no counter to leak into, so
-    # the sleep before each call is the whole check there (same guard as the
-    # SDK). Never call it directly: some pytest-asyncio versions hide that.
+    # Same guard as the SDK. Never call Task.cancelling() directly: some
+    # pytest-asyncio versions hide it.
     return getattr(asyncio.current_task(), "cancelling", lambda: 0)()
 
 

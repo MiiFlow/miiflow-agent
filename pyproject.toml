@@ -15,7 +15,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -23,10 +22,10 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-# Floor raised 3.9 -> 3.10 for openai 2.x, which requires >=3.10. The server
-# runs 3.11, so nothing here regressed; this only narrows who else could
-# install the package.
-python = ">=3.10,<3.13"
+# Floor 3.11: Pillow 13 (the first release without the 2026 decoder
+# advisories still open against 12.x) dropped 3.10, which reaches end of life
+# in October 2026. The server runs 3.11. (Earlier: 3.9 -> 3.10 for openai 2.x.)
+python = ">=3.11,<3.13"
 # 2.x: the only documented breaking change in v2.0.0 is
 # ResponseFunctionToolCallOutputItem.output / ResponseCustomToolCallOutput.output
 # widening from `str` to `str | list[...]`. This package never reads those
@@ -53,16 +52,16 @@ mistralai = { version = "^1.0.0", optional = true }
 
 # Optional multimedia dependencies
 PyMuPDF = { version = "^1.23.0", optional = true }
-# Range spans 10-12: the package uses only long-stable Image APIs (open, size,
-# thumbnail/resize, save), and 12.3.0 is the first release without the
-# 2026 decoder/heap advisories, so the lock resolves there.
-Pillow = { version = ">=10.0.0,<13.0.0", optional = true }
+# The package uses only long-stable Image APIs (open, size, thumbnail/resize,
+# save), none of which 13.0 changed. 13.0.0 is the first release without the
+# decoder/heap advisories still open against 12.3.
+Pillow = { version = "^13.0.0", optional = true }
 
 # Optional example dependencies
 yfinance = { version = "^1.7.0", optional = true }
 
 # Optional MCP (Model Context Protocol) support
-mcp = { version = "^1.23.0", optional = true, python = ">=3.10" }
+mcp = { version = "^1.23.0", optional = true }
 
 # Optional AG-UI (Agent-User Interaction Protocol) support
 ag-ui-protocol = { version = "^1.0.0", optional = true }
@@ -117,7 +116,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.black]
 line-length = 100
-target-version = ['py310']
+target-version = ['py311']
 
 [tool.isort]
 profile = "black"
@@ -127,7 +126,7 @@ line_length = 100
 # pass strict mode today. Kept for local/incremental use; wiring it into CI
 # requires paying down the typing debt module by module first.
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

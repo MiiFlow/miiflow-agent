@@ -10,11 +10,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
-      # One failing version must not cancel the others: fail-fast hid a
-      # 3.10-only failure behind a 3.11 one.
+      # One failing version must not cancel the others: fail-fast once hid a
+      # failure on one version behind another's.
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12", "3.11"]
+        python-version: ["3.12", "3.11"]
 
     steps:
     - uses: actions/checkout@v4

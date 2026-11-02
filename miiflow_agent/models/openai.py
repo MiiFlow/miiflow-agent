@@ -250,6 +250,24 @@ _GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
 # October 19 first-party confirmation rather than re-verified. Still excluded for
 # the reasons recorded above: the Decisions API (GA October 22, on gpt-6-luna),
 # the Ultrafast service tier, gpt-6-astra-law, and gpt-5.6-cyber.
+#
+# The NOVEMBER 2, 2026 audit found NO new model and NO price change: GPT-6.1
+# Terra (October 26) is still OpenAI's newest, GPT-6 Astra is still the
+# capability ceiling, and nothing newer than the 6.1 tier exists — no GPT-6.2,
+# and still no GPT-6.1 Astra (cancelled). The egress block holds unchanged, so
+# that audit again worked from search results quoting the official changelog,
+# model and pricing pages. Two shutdown dates were re-checked and are still in
+# the future, so no entry was dropped: gpt-4.1 and gpt-4.1-mini on January 14,
+# 2027, and gpt-5.4-nano on April 1, 2027.
+#
+# ONE DEADLINE IS NOW CLOSE, and it is a PRICE, not a retirement:
+# gpt-5.6-sol's $4/$20 below is promotional — OpenAI's wording is "through at
+# least November 21, 2026" — against a $5/$30 list price it was cut from on
+# August 21, 2026. Nineteen days out as of this audit. An audit running after
+# that date must re-check it before carrying the hints forward: if the promotion
+# lapses and this file is not updated, every gpt-5.6-sol request bills 20% under
+# on input and 33% under on output. The same caution does not apply to
+# gpt-6-sol, gpt-6-luna or gpt-6.1-terra, whose rates are standard.
 _GPT41_MODELS = {"gpt-4.1", "gpt-4.1-mini"}
 
 # OpenAI applies a request-wide surcharge once a 1.05M-context GPT-5 model's

@@ -76,6 +76,17 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # deprecated with a November 30, 2026 retirement and neither was ever carried
 # here, so adding them now would mean onboarding a model two months from
 # shutdown.
+#
+# The NOVEMBER 2, 2026 audit re-read both first-party pages (pricing and the
+# models overview) and changed no entry: all twelve models below still match the
+# published table exactly on base input, cache writes, cache reads and output,
+# and the lineup is unchanged — Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5,
+# with Haiku 5.5 (October 7) still the newest and Fable 5.1 still the top tier
+# a standard API key can reach. No new model, no price move and no new
+# deprecation or retirement date in the week to November 2; still no Fable 5.5.
+# Anthropic's docs host remains the ONLY provider page reachable from this
+# environment, which is why this file is the best-sourced of the three — the
+# OpenAI and Google catalogs are both carried on search-result corroboration.
 
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     # Ordered newest-first on purpose: `_resolve_model_name`'s third tier is a

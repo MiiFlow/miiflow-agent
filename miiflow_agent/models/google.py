@@ -225,11 +225,45 @@ _NO_SAMPLING_PARAMS = {
 # model: Gemini 4 Carbon shipped in that window but is Fairwind-gated, and is
 # excluded with its reasoning and its re-check trigger recorded above. Argon
 # remains the frontier model a paid API key can reach.
-# ARGON'S STEP-UP IS NOW THE NEAREST DEADLINE IN THIS FILE: its
-# $2/$10/$0.10 becomes $4/$20/$0.20 on December 1, 2026, five weeks out, and the
-# Flash tier's introductory rate doubles a month after that on January 1, 2027.
-# An audit that runs after either date and changes nothing here leaves every
-# affected request billing at half its real cost.
+# TWO DATED PRICE STEP-UPS ARE PENDING IN THIS FILE: Argon's $2/$10/$0.10
+# becomes $4/$20/$0.20 on December 1, 2026, and the Flash tier's introductory
+# rate doubles a month after that on January 1, 2027. An audit that runs after
+# either date and changes nothing here leaves every affected request billing at
+# half its real cost. How far out each one is, and which date in this file is
+# nearest, is stated once in the dated block below rather than here, so the two
+# places cannot drift apart.
+# The NOVEMBER 2, 2026 audit found no new callable model, no price change, and
+# no change to any model's availability, deprecation or retirement status. It
+# DID run the Carbon re-check this file asked for on the Argon precedent, and
+# THE GATE HAS NOT OPENED: Gemini 4 Carbon is still Fairwind-only, still has no
+# published API model id, and still appears on neither the Gemini API pricing
+# page nor the changelog, so it stays excluded on the same reasoning as before.
+# Argon remains the frontier model a paid API key can reach. Neither first-party
+# page became readable in this window — ai.google.dev still does not resolve and
+# cloud.google.com still serves the pricing page as a shell with no table — so
+# the rates below are still carried on the October 19 confirmation, now two
+# weeks stale. Argon's December 1 step-up is four weeks out — but it is NOT the
+# nearest date in this file any more: the possible November 19 retirement below
+# would land before it.
+#
+# ONE UNVERIFIED SIGNAL for the next audit, recorded because its date is close:
+# a third-party model-lifecycle tracker lists gemini-3.6-flash for retirement on
+# NOVEMBER 19, 2026, naming gemini-3.8-flash as the replacement. No first-party
+# notice has been seen and Google's deprecations page could not be read to
+# confirm or refute it, so the entry below stays — but if the date is real it is
+# seventeen days out. Re-pointing THIS CATALOG would be cheap: 3.6 and 3.8 Flash
+# are priced identically ($0.75/$3.75/$0.075) and share a parameter contract, so
+# swapping the entry is an id change, not a re-costing. THE REST OF IT IS NOT
+# CHEAP, because this entry is a ROUTING TARGET, not just a model: a
+# `gemini-3.5-flash` request is what Google silently serves from here (see the
+# entry's own description), so retiring 3.6 breaks that chain too, and any
+# persisted row still pointing at either id has to be repointed or have its
+# `PricingConfig` retired — `server/workflow/commands/
+# import_llm_models_from_providers.py` calls a routed id the dangerous kind to
+# deactivate, because deactivating one quotes a stale rate against what is
+# actually charged. Budget for that, not just for the swap. Confirm against
+# Google's own deprecations page before acting; this file has been wrong before
+# by trusting a tracker.
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-4-argon": ModelConfig(
         model_identifier="models/gemini-4-argon",

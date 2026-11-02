@@ -25,6 +25,8 @@ from .models import ReActStep, ToolInvocation
 from .react_events import ReActEvent
 from .tool_executor import ToolCall
 from .orchestrator import (
+    approval_marker_tool_name,
+    waiting_pause_observation,
     _format_missing_params_error,
     _observation_with_citation_ref,
     _preparse_tool_args_string,
@@ -369,8 +371,8 @@ class ToolActionHandler:
                     result,
                     parent_tool_call_id=tool_call_id,
                 ):
-                    step.observation = (
-                        "Tool execution paused - waiting for user approval."
+                    step.observation = waiting_pause_observation(
+                        approval_marker_tool_name(result)
                     )
 
                 resolved = await self.handle_clarification_result(
@@ -510,7 +512,7 @@ class ToolActionHandler:
             if tool_call_id:
                 observation_message = Message(
                     role=MessageRole.TOOL,
-                    content="Tool execution paused - waiting for user approval.",
+                    content=waiting_pause_observation(e.tool_name),
                     tool_call_id=tool_call_id,
                 )
                 context.messages.append(observation_message)
@@ -1042,9 +1044,7 @@ class ToolActionHandler:
                 logger.debug("Failed to publish approval event: %s", evt_err)
             for inv in invocations:
                 if inv.name == approval_pause.tool_name:
-                    inv.observation = (
-                        "Tool execution paused - waiting for user approval."
-                    )
+                    inv.observation = waiting_pause_observation(approval_pause.tool_name)
                 else:
                     inv.observation = (
                         f"Not executed - batch paused pending approval of "
@@ -1093,7 +1093,9 @@ class ToolActionHandler:
                 result,
                 parent_tool_call_id=inv.tool_call_id,
             ):
-                inv.observation = "Tool execution paused - waiting for user approval."
+                inv.observation = waiting_pause_observation(
+                    approval_marker_tool_name(result)
+                )
             elif result.success:
                 resolved = await self.handle_clarification_result(
                     context, state, result, inv.tool_call_id

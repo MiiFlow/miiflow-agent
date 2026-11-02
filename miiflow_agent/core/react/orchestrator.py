@@ -458,6 +458,32 @@ def _resolve_stale_dispatch_placeholder(
             return
 
 
+def waiting_pause_observation(tool_name: Optional[str]) -> str:
+    """What a call whose child paused for approval returns, while it waits.
+
+    Written ONCE, at pause time, as the call's stored result — so the turns
+    that follow replay the same bytes (a request must be a byte prefix of the
+    next) until `resolved_pause_observation` replaces it with the outcome.
+    The old text, "Tool execution paused - waiting for user approval.", read
+    as a stuck task: with two specialists paused in one batch, the resume turn
+    for the first re-dispatched the second from scratch, raising a second card
+    (thread_474iZNmonj4UxDnb1ZugJAmw).
+    """
+    action = f"`{tool_name}`" if tool_name else "a proposed change"
+    return (
+        f"This call finished by asking the user to approve {action}. The user "
+        "has not decided yet; once they do, the work resumes from where it "
+        "stopped. Do not call or dispatch it again; if you mention it, say it "
+        "is waiting on their approval."
+    )
+
+
+def approval_marker_tool_name(result: Any) -> Optional[str]:
+    """The tool a child-approval marker result asks the user to approve."""
+    output = getattr(result, "output", None)
+    return output.get("tool_name") if isinstance(output, dict) else None
+
+
 def resolved_pause_observation(tool_name: str, success: bool) -> str:
     """What a paused call's result says once the approval it raised has run."""
     outcome = "executed" if success else "executed but FAILED"

@@ -17,6 +17,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from ..checkpoint import user_decline_reason
 from ..message import Message, MessageRole
 from .enums import ReActEventType
 from .events import EventFactory
@@ -37,6 +38,9 @@ if TYPE_CHECKING:
     from .orchestrator import ReActOrchestrator
 
 logger = logging.getLogger(__name__)
+
+#: ``deps`` key naming the tool approval this run resumed (absent otherwise).
+RESUMED_APPROVAL_DEP = "resumed_approval_interrupt_id"
 
 
 class ApprovalResumeFlow:
@@ -84,6 +88,11 @@ class ApprovalResumeFlow:
             return None
 
         if resume.kind == "tool_approval":
+            # This run continues a paused batch: a sibling still waiting on
+            # the user must not be dispatched again from scratch during it
+            # (`dispatch_assistant` reads this; per-run, never persisted).
+            if isinstance(getattr(context, "deps", None), dict):
+                context.deps[RESUMED_APPROVAL_DEP] = interrupt.interrupt_id
             payload = interrupt.payload or {}
             tool_name = payload.get("tool_name")
             tool_call_id = interrupt.tool_call_id
@@ -132,7 +141,6 @@ class ApprovalResumeFlow:
                 promoted.interrupt_id,
                 resume.interrupt_id,
             )
-
         # Consume: the stored resume answered THIS interrupt. Leaving it on the
         # checkpoint would make every later turn re-see a stale "rejected"/
         # "approved" command.
@@ -170,11 +178,11 @@ class ApprovalResumeFlow:
         if str((getattr(resume, "value", None) or {}).get("user_message") or "").strip():
             return False
 
-        reason = str((getattr(resume, "value", None) or {}).get("reason") or "").strip()
-        # UI-default placeholder, not user-authored text (set by the approval
-        # modal when the user declines without typing a reason).
-        if reason.lower() in {"", "no reason given", "user declined this change"}:
-            reason = ""
+        # A UI-default placeholder is not the person's words (see
+        # ``checkpoint.DECLINE_PLACEHOLDER_REASONS``).
+        reason = user_decline_reason(
+            (getattr(resume, "value", None) or {}).get("reason")
+        )
 
         lines = [
             "Understood — I've cancelled that proposed change. Nothing was modified."

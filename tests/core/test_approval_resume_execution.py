@@ -625,6 +625,45 @@ def test_rejected_resume_default_ui_reason_is_not_mirrored():
     asyncio.run(go())
 
 
+def test_every_released_decline_placeholder_is_not_mirrored():
+    """thread_6LgxMyftVnUXgKgqvq8bniC1: chat-ui sent "User declined this
+    action", which the old two-string filter missed, and the ack quoted it
+    back as "Noted: User declined this action"."""
+    from miiflow_agent.core.checkpoint import (
+        DECLINE_PLACEHOLDER_REASONS,
+        user_decline_reason,
+    )
+
+    for placeholder in DECLINE_PLACEHOLDER_REASONS:
+        for variant in (placeholder, placeholder.capitalize(), placeholder.capitalize() + "."):
+            assert user_decline_reason(variant) == "", variant
+    assert user_decline_reason("  too expensive  ") == "too expensive"
+    assert user_decline_reason(None) == ""
+
+    async def go():
+        orch = SimpleNamespace(event_bus=_FakeBus())
+        orch._acknowledge_rejected_approval = (
+            ReActOrchestrator._acknowledge_rejected_approval.__get__(
+                orch, SimpleNamespace
+            )
+        )
+        resume = ResumeCommand(
+            interrupt_id="int_tool_tc_1",
+            kind="tool_approval",
+            decision="rejected",
+            value={"reason": "User declined this action"},
+        )
+        state = SimpleNamespace(
+            current_step=0, is_running=True, final_answer="", failure_metadata=None
+        )
+        await orch._acknowledge_rejected_approval(
+            resume, SimpleNamespace(deps={}, messages=[]), state
+        )
+        assert "Noted" not in state.final_answer
+
+    asyncio.run(go())
+
+
 def test_approved_or_absent_resume_does_not_acknowledge():
     async def go():
         orch = SimpleNamespace(event_bus=_FakeBus())

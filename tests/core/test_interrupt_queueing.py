@@ -142,3 +142,66 @@ def test_apply_resume_command_promotes_queued_interrupt_and_flags_resurface():
         assert cp.extra.get("resurface_interrupt_id") == "int_queued"
 
     asyncio.run(go())
+
+
+def test_resume_leaves_stored_tool_results_byte_identical():
+    """A request must be a byte prefix of the next: resuming one approval of a
+    paused batch must not rewrite the waiting sibling's stored result (the
+    first fix for thread_474iZNmonj4UxDnb1ZugJAmw relabelled it on resume,
+    which broke the cached prefix and kept a stale label in history). The
+    waiting text is written once, at pause time — see
+    `tests/core/react/test_batch_child_approval.py`."""
+    from miiflow_agent.core.message import Message, MessageRole
+    from miiflow_agent.core.react.orchestrator import waiting_pause_observation
+
+    def child_pause(iid, tool, parent):
+        interrupt = _interrupt(iid, tool_call_id=f"child_{iid}")
+        interrupt.payload = {
+            "tool_name": tool,
+            "tool_inputs": {},
+            "handle": tool.split("_")[0] + "_ads_specialist",
+            "parent_tool_call_id": parent,
+        }
+        return interrupt
+
+    cp = Checkpoint(thread_id="t")
+    meta = child_pause("int_meta", "meta_ads_mutate", "dispatch_meta")
+    google = child_pause("int_google", "google_ads_mutate", "dispatch_google")
+    cp.interrupts[meta.interrupt_id] = meta
+    cp.set_interrupt(google)
+    cp.interrupt_queue.append(meta.interrupt_id)
+    cp.resume = ResumeCommand(
+        interrupt_id="int_google", kind="tool_approval", decision="approved", value={}
+    )
+    stored = [
+        waiting_pause_observation("meta_ads_mutate"),
+        waiting_pause_observation("google_ads_mutate"),
+    ]
+    messages = [
+        Message(role=MessageRole.TOOL, content=stored[0], tool_call_id="dispatch_meta"),
+        Message(role=MessageRole.TOOL, content=stored[1], tool_call_id="dispatch_google"),
+    ]
+    ctx = SimpleNamespace(checkpoint=cp, deps={}, resume=None, messages=messages)
+
+    ReActOrchestrator._apply_resume_command(_orch(), ctx)
+
+    assert [m.content for m in messages] == stored
+    # The queued sibling is promoted and flagged for re-surfacing instead.
+    assert cp.active_interrupt_id == "int_meta"
+    assert cp.extra.get("resurface_interrupt_id") == "int_meta"
+    # And this run is marked as resuming the batch (dispatch guard reads it).
+    from miiflow_agent.core.react.approval_flow import RESUMED_APPROVAL_DEP
+
+    assert ctx.deps[RESUMED_APPROVAL_DEP] == "int_google"
+    assert [i.interrupt_id for i in cp.waiting_tool_approvals()] == ["int_meta"]
+
+
+def test_waiting_tool_approvals_lists_active_then_queued_approvals_only():
+    cp = Checkpoint(thread_id="t")
+    a, b = _interrupt("int_a"), _interrupt("int_b")
+    question = _interrupt("int_q", kind="clarification")
+    cp.set_interrupt(a)
+    for queued in (question, b):
+        cp.interrupts[queued.interrupt_id] = queued
+        cp.interrupt_queue.append(queued.interrupt_id)
+    assert [i.interrupt_id for i in cp.waiting_tool_approvals()] == ["int_a", "int_b"]

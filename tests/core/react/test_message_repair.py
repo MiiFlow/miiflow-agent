@@ -89,3 +89,26 @@ class TestMcpCallsAreNotPending:
         assert anomalies == ["synthesized missing tool_result for toolu_a"]
         synthesized = [m for m in repaired if m.role == MessageRole.TOOL]
         assert [m.tool_call_id for m in synthesized] == ["toolu_a"]
+
+
+def test_a_reused_tool_use_id_is_renamed_with_its_result():
+    """thread_TG8uEw0qc3cNdz8Uwb0Lc2wY: one pause answered twice put the same
+    ask_user_clarification id on two assistant messages; the provider called
+    the later one unanswered on every request, and pairing per answer window
+    found nothing to fix."""
+    call_id = "toolu_01ShRkvSfSH4stehDvFibYZ4"
+    history = [
+        _assistant([_local_call(call_id)]),
+        Message(role=MessageRole.TOOL, content="typed reply", tool_call_id=call_id),
+        Message(role=MessageRole.USER, content="Say AI credits"),
+        _assistant([_local_call(call_id)]),
+        Message(role=MessageRole.TOOL, content="card answer", tool_call_id=call_id),
+    ]
+    repaired, anomalies = repair_tool_pairing(history)
+    assert any("renamed reused tool_use id" in a for a in anomalies)
+    first, later = repaired[0].tool_calls[0]["id"], repaired[3].tool_calls[0]["id"]
+    assert first == call_id and later != call_id
+    assert repaired[4].tool_call_id == later and repaired[4].content == "card answer"
+    assert history[3].tool_calls[0]["id"] == call_id  # input not mutated
+    # Valid now: a second pass finds nothing.
+    assert repair_tool_pairing(repaired)[1] == []

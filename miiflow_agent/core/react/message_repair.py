@@ -18,6 +18,7 @@ strict projection + ProjectionAnomaly design.
 
 import logging
 import re
+from dataclasses import replace
 from typing import List, Optional, Tuple
 
 from ..message import Message, MessageRole
@@ -93,8 +94,12 @@ def repair_tool_pairing(
 ) -> Tuple[List[Message], List[str]]:
     """Restore the tool_use ↔ tool_result pairing invariant.
 
-    Two repairs, mirroring the two 400s providers actually raise:
+    Repairs, mirroring the 400s providers actually raise:
 
+    * a tool_use id an EARLIER assistant message already used is renamed
+      (with its results) — ids are unique per request on every provider, and
+      a reused one leaves the later call looking unanswered
+      (thread_TG8uEw0qc3cNdz8Uwb0Lc2wY);
     * an orphan TOOL message (its tool_use is gone) is dropped;
     * a DUPLICATE TOOL message (its tool_use was already answered) is dropped
       — providers accept exactly one result per call;
@@ -110,6 +115,8 @@ def repair_tool_pairing(
 
     pending: List[str] = []  # unanswered call ids from the latest assistant
     answered: set = set()  # call ids already answered in this answer window
+    used_ids: set = set()  # every tool_use id an earlier assistant used
+    renamed: dict = {}  # this window's reused id -> its fresh id
 
     def close_pending() -> None:
         for call_id in pending:
@@ -123,10 +130,14 @@ def repair_tool_pairing(
             )
         pending.clear()
         answered.clear()
+        renamed.clear()
 
     for message in messages:
         if message.role == MessageRole.TOOL:
             call_id: Optional[str] = message.tool_call_id
+            if call_id in renamed:
+                call_id = renamed[call_id]
+                message = replace(message, tool_call_id=call_id)
             if call_id is not None and call_id in pending:
                 pending.remove(call_id)
                 answered.add(call_id)
@@ -147,11 +158,38 @@ def repair_tool_pairing(
         close_pending()
 
         if message.role == MessageRole.ASSISTANT and message.tool_calls:
+            message = _rename_reused_calls(message, used_ids, renamed, anomalies)
             pending.extend(_call_ids(message))
         repaired.append(message)
 
     close_pending()
     return repaired, anomalies
+
+
+def _rename_reused_calls(
+    message: Message, used_ids: set, renamed: dict, anomalies: List[str]
+) -> Message:
+    """Give a call whose id an earlier assistant message used a fresh id.
+
+    Its results in the same answer window follow it (``renamed``). Renaming,
+    not dropping, keeps what the call and its answer said.
+    """
+    calls = []
+    changed = False
+    for call in message.tool_calls or []:
+        call_id = call.get("id") if isinstance(call, dict) else None
+        if call_id and call.get("type") != "mcp_function" and str(call_id) in used_ids:
+            fresh = f"{call_id}_r{len(used_ids)}"
+            while fresh in used_ids:
+                fresh += "_"
+            anomalies.append(f"renamed reused tool_use id {call_id!r} to {fresh!r}")
+            renamed[str(call_id)] = fresh
+            call = {**call, "id": fresh}
+            changed = True
+        if isinstance(call, dict) and call.get("id"):
+            used_ids.add(str(call["id"]))
+        calls.append(call)
+    return replace(message, tool_calls=calls) if changed else message
 
 
 # ── Unprocessable media ─────────────────────────────────────────────────────

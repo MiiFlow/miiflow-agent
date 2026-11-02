@@ -135,6 +135,36 @@ class PendingInterrupt:
         )
 
 
+# Text an approval surface sent as the decline "reason" when the person typed
+# none. Surfaces now send no reason at all; these are the defaults released
+# clients (web approval cards, ``@miiflow/assistant-ui``'s ToolApprovalPanel,
+# the plan/approval fallbacks) shipped, which stay in the wild. They are UI
+# chrome, never the person's words: mirroring one back ("Noted: User declined
+# this action") reads as Adlyse quoting the user something they never said.
+DECLINE_PLACEHOLDER_REASONS = frozenset(
+    {
+        "no reason given",
+        "user declined this action",
+        "user declined this change",
+        "user declined this catalog change",
+        "user rejected the tool execution",
+    }
+)
+
+
+def user_decline_reason(reason: Any) -> str:
+    """The person's own words in a decline reason — ``""`` for a UI default.
+
+    The ONE definition of "did the user actually give a reason": the approval
+    reply parser (Django ``decision_payload``) and the deterministic decline
+    acknowledgement both read it, so a placeholder cannot leak through either.
+    """
+    text = str(reason or "").strip()
+    if text.rstrip(".").strip().lower() in DECLINE_PLACEHOLDER_REASONS:
+        return ""
+    return text
+
+
 @dataclass
 class ResumeCommand:
     """A deterministic response to a previously persisted human interrupt.
@@ -538,6 +568,18 @@ class Checkpoint:
         if self.active_interrupt_id and self.active_interrupt_id in self.interrupts:
             return self.interrupts[self.active_interrupt_id]
         return self.pending_interrupt
+
+    def waiting_tool_approvals(self) -> List[PendingInterrupt]:
+        """Tool approvals the user has not decided: the active one, then the
+        queued ones (parallel children that paused in the same batch)."""
+        ids = ([self.active_interrupt_id] if self.active_interrupt_id else []) + [
+            i for i in self.interrupt_queue if i != self.active_interrupt_id
+        ]
+        return [
+            self.interrupts[i]
+            for i in ids
+            if i in self.interrupts and self.interrupts[i].kind == "tool_approval"
+        ]
 
     def set_interrupt(self, interrupt: PendingInterrupt) -> None:
         """Make ``interrupt`` the single active UI interrupt.

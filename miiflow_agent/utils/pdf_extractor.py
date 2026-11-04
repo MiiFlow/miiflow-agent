@@ -7,8 +7,8 @@ import os
 import tempfile
 from typing import Dict, Any, Optional, List
 
-import fitz
 import httpx
+import pymupdf
 
 from miiflow_agent.utils.url_validator import validate_external_url, URLSecurityError
 
@@ -47,7 +47,7 @@ def extract_pdf_text(pdf_data: str, use_ocr: bool = True, max_size_mb: int = 100
                     if len(pdf_bytes) > max_size_mb * 1024 * 1024:
                         raise ValueError(f"PDF size limit exceeded during download (max: {max_size_mb}MB)")
         
-        doc = fitz.open("pdf", pdf_bytes)
+        doc = pymupdf.open("pdf", pdf_bytes)
         
         text_content = ""
         metadata = {
@@ -135,7 +135,7 @@ def _extract_with_ocr(doc, pdf_bytes: bytes) -> Dict[str, Any]:
         for page_num in range(len(doc)):
             page = doc[page_num]
             
-            mat = fitz.Matrix(2.0, 2.0)
+            mat = pymupdf.Matrix(2.0, 2.0)
             pix = page.get_pixmap(matrix=mat)
             img_data = pix.tobytes("png")
             img = Image.open(io.BytesIO(img_data))
@@ -185,15 +185,13 @@ def is_pdf_scanned(pdf_data: str) -> bool:
 def extract_pdf_metadata(pdf_data: str) -> Dict[str, Any]:
     """Extract PDF metadata only."""
     try:
-        import fitz
-        
         if pdf_data.startswith("data:application/pdf;base64,"):
             pdf_bytes = base64.b64decode(pdf_data.split(",")[1])
         else:
             response = httpx.get(pdf_data, timeout=30)
             pdf_bytes = response.content
         
-        doc = fitz.open("pdf", pdf_bytes)
+        doc = pymupdf.open("pdf", pdf_bytes)
         
         metadata = {
             "pages": len(doc),

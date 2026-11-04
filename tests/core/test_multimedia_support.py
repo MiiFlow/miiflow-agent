@@ -2,12 +2,11 @@
 
 import base64
 import pytest
-from pathlib import Path
 from unittest.mock import Mock, patch
 from dataclasses import asdict
 
-# Skip if fitz (PyMuPDF) is not installed
-pytest.importorskip("fitz", reason="PyMuPDF (fitz) not installed")
+# Skip if PyMuPDF is not installed
+pymupdf = pytest.importorskip("pymupdf", reason="PyMuPDF not installed")
 
 from miiflow_agent.core.message import (
     Message,
@@ -23,16 +22,35 @@ from miiflow_agent.utils.pdf_extractor import (
 )
 
 
-# Test data paths
-TEST_DOCS_DIR = Path(__file__).parent.parent.parent / "docs"
-TEST_PDF_PATH = TEST_DOCS_DIR / "DebjyotiRay..pdf"
+A4_POINTS = (595, 842)
+TYPED_TEXT = "Revenue grew 12 percent."
+SCANNED_TEXT = "Invoice 4471 paid"
 
 
-def load_pdf_as_data_uri(pdf_path: Path) -> str:
-    """Helper to load PDF file as base64 data URI."""
-    with open(pdf_path, 'rb') as f:
-        pdf_bytes = f.read()
-        return f"data:application/pdf;base64,{base64.b64encode(pdf_bytes).decode()}"
+def build_pdf_data_uri() -> str:
+    """A two-page A4 PDF built with PyMuPDF itself, so the integration tests
+    run against the installed library instead of skipping for a missing
+    fixture.
+
+    Page 1 carries selectable text. Page 2 is a scan: a raster of rendered
+    text with no text layer, the case that sends extraction down the OCR path.
+    """
+    width, height = A4_POINTS
+    scan_source = pymupdf.open()
+    scan_page = scan_source.new_page(width=width, height=height)
+    scan_page.insert_text((72, 144), SCANNED_TEXT, fontsize=36)
+    scan = scan_page.get_pixmap(matrix=pymupdf.Matrix(2, 2))
+    scan_source.close()
+
+    doc = pymupdf.open()
+    doc.set_metadata({"title": "Quarterly plan", "author": "Ada"})
+    text_page = doc.new_page(width=width, height=height)
+    text_page.insert_text((72, 72), TYPED_TEXT)
+    image_page = doc.new_page(width=width, height=height)
+    image_page.insert_image(image_page.rect, pixmap=scan)
+    pdf_bytes = doc.tobytes()
+    doc.close()
+    return f"data:application/pdf;base64,{base64.b64encode(pdf_bytes).decode()}"
 
 
 class TestContentBlocks:
@@ -140,10 +158,10 @@ class TestMultimediaMessages:
 class TestPDFExtraction:
     """Test PDF text extraction functionality."""
     
-    @patch('fitz.open')
-    def test_pdf_metadata_extraction(self, mock_fitz):
+    @patch('pymupdf.open')
+    def test_pdf_metadata_extraction(self, mock_open):
         """Test PDF metadata extraction."""
-        # Mock fitz document
+        # Mock PyMuPDF document
         mock_doc = Mock()
         mock_doc.__len__ = Mock(return_value=3)
         mock_doc.metadata = {
@@ -151,7 +169,7 @@ class TestPDFExtraction:
             'author': 'Test Author',
             'subject': 'Test Subject'
         }
-        mock_fitz.return_value = mock_doc
+        mock_open.return_value = mock_doc
         
         from miiflow_agent.utils.pdf_extractor import extract_pdf_metadata
         
@@ -246,64 +264,73 @@ class TestMessageSerialization:
 
 
 class TestMultimediaIntegration:
-    """Integration tests for multimedia functionality."""
-    
+    """Integration tests that run the installed PyMuPDF on a real PDF."""
+
     def test_real_pdf_extraction(self):
-        """Integration test with real PDF file using PyMuPDF."""
-        if not TEST_PDF_PATH.exists():
-            pytest.skip(f"Test PDF file not found at {TEST_PDF_PATH}")
-        
-        # Load PDF as data URI
-        pdf_data_uri = load_pdf_as_data_uri(TEST_PDF_PATH)
-        
-        # Test text extraction without OCR
+        pdf_data_uri = build_pdf_data_uri()
+
         result = extract_pdf_text(pdf_data_uri, use_ocr=False)
-        
-        assert "text" in result
-        assert "metadata" in result
-        assert len(result["text"]) > 0
-        assert result["metadata"]["pages"] > 0
-        assert result["metadata"]["extraction_method"] in ["pymupdf", "pymupdf + tesseract_ocr"]
-        
-        # Test metadata extraction
-        metadata = extract_pdf_metadata(pdf_data_uri)
-        
-        assert "pages" in metadata
-        assert "file_size" in metadata
-        assert metadata["pages"] > 0
-        assert metadata["file_size"] > 0
-    
+
+        metadata = result["metadata"]
+        assert TYPED_TEXT in result["text"]
+        assert metadata["pages"] == 2
+        assert metadata["extraction_method"] == "pymupdf"
+        assert metadata["text_based_pages"] == 1
+        assert metadata["image_based_pages"] == 1
+        assert metadata["has_images"] is True
+        assert metadata["ocr_used"] is False
+
+        pdf_metadata = extract_pdf_metadata(pdf_data_uri)
+
+        assert pdf_metadata["pages"] == 2
+        assert pdf_metadata["title"] == "Quarterly plan"
+        assert pdf_metadata["author"] == "Ada"
+        assert pdf_metadata["file_size"] > 0
+
+    def test_ocr_renders_image_only_pages(self):
+        """The OCR path rasterizes each page with PyMuPDF and hands Pillow a
+        PNG. The OCR engine is stubbed so this runs without tesseract."""
+        pytest.importorskip("PIL", reason="Pillow not installed")
+        from PIL import Image
+
+        rendered_sizes = []
+
+        def image_to_string(image, config=""):
+            assert isinstance(image, Image.Image)
+            rendered_sizes.append(image.size)
+            return "stub ocr text"
+
+        fake_tesseract = Mock(image_to_string=image_to_string)
+        with patch.dict("sys.modules", {"pytesseract": fake_tesseract}):
+            result = extract_pdf_text(build_pdf_data_uri(), use_ocr=True)
+
+        metadata = result["metadata"]
+        assert metadata["ocr_used"] is True
+        assert metadata["extraction_method"] == "pymupdf + tesseract_ocr"
+        # OCR fills only the page that had no text layer.
+        assert metadata["page_texts"] == [TYPED_TEXT, "stub ocr text"]
+        assert "--- Page 2 (OCR) ---\nstub ocr text" in result["text"]
+        # Pages are rendered at Matrix(2, 2).
+        doubled = (A4_POINTS[0] * 2, A4_POINTS[1] * 2)
+        assert rendered_sizes == [doubled, doubled]
+
     def test_ocr_functionality(self):
-        """Integration test for OCR functionality with tesseract."""
-        if not TEST_PDF_PATH.exists():
-            pytest.skip(f"Test PDF file not found at {TEST_PDF_PATH}")
-        
-        try:
-            import pytesseract
-            from PIL import Image
-        except ImportError:
-            pytest.skip("pytesseract and/or Pillow not installed")
-        
-        # Check if tesseract is available
+        """End to end with the real tesseract binary, when it is installed."""
+        pytesseract = pytest.importorskip("pytesseract", reason="pytesseract not installed")
+        pytest.importorskip("PIL", reason="Pillow not installed")
         try:
             pytesseract.get_tesseract_version()
         except Exception:
             pytest.skip("Tesseract OCR not installed or not in PATH")
-        
-        # Load PDF as data URI
-        pdf_data_uri = load_pdf_as_data_uri(TEST_PDF_PATH)
-        
-        # Test text extraction with OCR enabled
-        result = extract_pdf_text(pdf_data_uri, use_ocr=True)
-        
-        assert "text" in result
-        assert "metadata" in result
-        assert len(result["text"]) > 0
-        
-        # If the PDF had image-based pages and OCR was used, verify that
-        if result["metadata"].get("image_based_pages", 0) > 0:
-            # OCR should have been attempted
-            assert result["metadata"].get("ocr_used") in [True, False]  # May or may not succeed
+
+        result = extract_pdf_text(build_pdf_data_uri(), use_ocr=True)
+
+        metadata = result["metadata"]
+        assert metadata["ocr_used"] is True
+        assert metadata["page_texts"][0] == TYPED_TEXT
+        # Compared without whitespace: tesseract drops word spaces under the
+        # extractor's character whitelist.
+        assert SCANNED_TEXT.replace(" ", "") in "".join(metadata["page_texts"][1].split())
 
 
 if __name__ == "__main__":

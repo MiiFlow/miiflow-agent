@@ -87,6 +87,51 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # Anthropic's docs host remains the ONLY provider page reachable from this
 # environment, which is why this file is the best-sourced of the three — the
 # OpenAI and Google catalogs are both carried on search-result corroboration.
+#
+# The NOVEMBER 4, 2026 audit read all THREE first-party pages directly —
+# pricing, the models overview and model-deprecations — and changed no entry.
+# Every rate below still matches the published table exactly: Fable 5.1
+# $10/$50 with cache writes $12.50 and reads $0.25, Opus 5.5 $4/$20 / $5 /
+# $0.20, Sonnet 5.5 $2/$10 / $2.50 / $0.10, Haiku 5.5 $0.10/$0.50 / $0.125 /
+# $0.01 under 100K and five times each above it. The overview's spec columns
+# match too — 1M context and 128K max output on all four current models, Jun
+# 2026 cutoffs — and the lineup is unchanged, with Haiku 5.5 (October 7) still
+# the newest model and Fable 5.1 still the top tier a standard API key can
+# reach. Still no Fable 5.5.
+#
+# THE DEPRECATIONS TABLE WAS READ IN FULL and all twelve catalogued models are
+# listed Active with no deprecation date, Haiku 4.5 included — now TWENTY DAYS
+# past the "not sooner than October 15, 2026" floor that its entry warns not to
+# read as a shutdown. That entry's reasoning is holding exactly as written, and
+# the consumer-surface removal of October 29 (see above) still has no API
+# counterpart.
+#
+# TWO NOVEMBER DATES ON THAT TABLE BELONG TO MODELS THIS FILE DOES NOT CARRY,
+# recorded here so a later audit does not mistake either for one of ours:
+#   * claude-sonnet-4-5-20250929 is Deprecated with a NOVEMBER 30, 2026
+#     retirement (the September 30 notice, replacement claude-sonnet-5-5). It
+#     has never been catalogued here, so there is nothing to remove — and that
+#     notice is still the worked example the Haiku 4.5 entry points to for what
+#     a real retirement signal looks like.
+#   * claude-opus-4-5-20251101 is ACTIVE with a floor of "not sooner than
+#     NOVEMBER 24, 2026" — the nearest Anthropic date of any kind, and a floor,
+#     not a retirement. It is not catalogued (it was never carried, and
+#     onboarding a model weeks from its floor would be pointless), and when
+#     that date passes with the model still Active it will be the second
+#     demonstration after Haiku 4.5 that these floors are not shutdowns.
+# No new model, no price move and no new deprecation or retirement in the week
+# to November 4.
+#
+# A NOTE ON THE HOST, because it moved: docs.claude.com now 302s to
+# platform.claude.com, and it is that host the pages above were read from.
+# It remains the ONLY provider documentation reachable from this environment.
+# The other two got worse rather than better in this window: every openai.com
+# host still fails to resolve, ai.google.dev still fails to resolve, and
+# cloud.google.com — which earlier audits read the Vertex rate table from — now
+# 301s its docs paths to docs.cloud.google.com, which the egress proxy refuses
+# with a 403. So the gap in sourcing between this file and the other two has
+# widened, and a cross-provider price comparison drawn from all three is not
+# evidenced to the same standard in each.
 
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     # Ordered newest-first on purpose: `_resolve_model_name`'s third tier is a

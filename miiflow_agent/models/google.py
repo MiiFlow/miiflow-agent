@@ -156,7 +156,15 @@ _NO_SAMPLING_PARAMS = {
 #
 # Also deliberately absent, and NEW at the October 30, 2026 audit: GEMINI 4
 # CARBON, announced October 28-30, 2026 as Google's newest frontier model, for
-# coding and cybersecurity. It is not catalogued because it is not callable:
+# coding and cybersecurity. It is genuinely ahead of Argon and not merely
+# newer — Artificial Analysis put it top of its Intelligence Index v5, above
+# every model in this catalog — which is why the Argon entry below says a more
+# capable Google model exists rather than claiming Argon is the best there is.
+# That ranking is a third-party measurement and is deliberately recorded HERE
+# rather than in Argon's `description`, which renders as a subtitle in the
+# model picker: a user choosing a model needs to know which one to pick, not
+# how this catalog reasons about an id it cannot call, and a leaderboard
+# position goes stale faster than anything else on this page. It is not catalogued because it is not callable:
 # access is limited to selected defenders in the same Fairwind programme, whose
 # members pass background checks, must use phishing-resistant MFA, may only
 # extend access to internal security, incident-response or penetration-testing
@@ -244,31 +252,78 @@ _NO_SAMPLING_PARAMS = {
 # the rates below are still carried on the October 19 confirmation, now two
 # weeks stale. Argon's December 1 step-up is four weeks out — but it is NOT the
 # nearest date in this file any more: the possible November 19 retirement below
-# would land before it.
+# would land before it. (SUPERSEDED on November 4, 2026: that last sentence was
+# written while November 19 was an unverified retirement of a catalogued model.
+# It is now known to be an Agent Platform date that leaves this catalog's
+# entries untouched — see the next block, which owns the nearest-date claim.)
 #
-# ONE UNVERIFIED SIGNAL for the next audit, recorded because its date is close:
-# a third-party model-lifecycle tracker lists gemini-3.6-flash for retirement on
-# NOVEMBER 19, 2026, naming gemini-3.8-flash as the replacement. No first-party
-# notice has been seen and Google's deprecations page could not be read to
-# confirm or refute it, so the entry below stays — but if the date is real it is
-# seventeen days out. Re-pointing THIS CATALOG would be cheap: 3.6 and 3.8 Flash
-# are priced identically ($0.75/$3.75/$0.075) and share a parameter contract, so
-# swapping the entry is an id change, not a re-costing. THE REST OF IT IS NOT
-# CHEAP, because this entry is a ROUTING TARGET, not just a model: a
-# `gemini-3.5-flash` request is what Google silently serves from here (see the
-# entry's own description), so retiring 3.6 breaks that chain too, and any
-# persisted row still pointing at either id has to be repointed or have its
-# `PricingConfig` retired — `server/workflow/commands/
-# import_llm_models_from_providers.py` calls a routed id the dangerous kind to
-# deactivate, because deactivating one quotes a stale rate against what is
-# actually charged. Budget for that, not just for the swap. Confirm against
-# Google's own deprecations page before acting; this file has been wrong before
-# by trusting a tracker.
+# THE NOVEMBER 4, 2026 AUDIT RESOLVED THE NOVEMBER 19 SIGNAL, and the answer is
+# that it is REAL BUT NOT OURS. The Nov 2 audit recorded, as an unverified
+# third-party tracker claim, that gemini-3.6-flash retires on NOVEMBER 19, 2026
+# with gemini-3.8-flash as the replacement. That date is genuine and it is
+# Google's own — but it belongs to the GEMINI ENTERPRISE AGENT PLATFORM (the
+# Vertex-side product), whose model-lifecycle and per-model pages both carry it,
+# and the Agent Platform's own wording is that "models may remain accessible
+# through the Gemini API after these dates have passed". On the GEMINI
+# DEVELOPER API — which is the API this catalog serves, and the reason every
+# entry's `model_identifier` is a `models/...` id posted to `:generateContent`
+# — the deprecations page lists gemini-3.6-flash with a July 21, 2026 release
+# date and "No shutdown date announced". Firebase AI Logic's model table states
+# the split in one row: Agent Platform November 19, 2026, Developer API "to be
+# determined".
+#
+# SO THE ENTRY STAYS, and the distinction is the whole reason why. Treating a
+# Vertex/Agent-Platform retirement as a Developer API one would have dropped a
+# model that is still served, still priced and — critically — STILL A ROUTING
+# TARGET: a `gemini-3.5-flash` request is what Google silently serves from this
+# entry (see its description), so removing it would have broken that chain for
+# no reason. This is the mirror image of the Haiku 4.5 lesson in the Anthropic
+# file, where a CONSUMER-surface removal was not an API retirement: read every
+# date against the platform it was published for before acting on it.
+#
+# WHAT WOULD MAKE IT ACT-ON-ABLE is a shutdown date on the Gemini API
+# deprecations page itself. When one appears, re-pointing THIS CATALOG is cheap:
+# 3.6 and 3.8 Flash are priced identically ($0.75/$3.75/$0.075) and share a
+# parameter contract, so swapping the entry is an id change, not a re-costing.
+# THE REST OF IT IS NOT CHEAP, because of that routing chain: retiring 3.6
+# breaks what `gemini-3.5-flash` resolves to as well, and any persisted row
+# still pointing at either id has to be repointed or have its `PricingConfig`
+# retired — `server/workflow/commands/import_llm_models_from_providers.py` calls
+# a routed id the dangerous kind to deactivate, because deactivating one quotes
+# a stale rate against what is actually charged. Budget for that, not just for
+# the swap.
+#
+# Also dated November 17, 2026 and deliberately NOT a concern here: Google's
+# deprecations page shuts down several Gemini 3.x PREVIEW TTS and Live models
+# that day. None of them is catalogued below, and none could be: the Live models
+# are excluded on the per-minute-billing reasoning recorded above, and the TTS
+# models are excluded for the same structural reason without being named there —
+# a speech model takes no generateContent request and has no per-token
+# input/output pair, which is the whole contract a ModelConfig expresses. So
+# that date needs no action in this file.
+#
+# NOVEMBER 4, 2026 AUDIT, otherwise: no new callable model, no price change, and
+# no change to any catalogued model's availability. The Carbon re-check this
+# file asks for on the Argon precedent was run again and THE GATE IS STILL
+# SHUT (see the Carbon note above). Argon's December 1 step-up is 27 days out
+# and the Flash tier's January 1 step-up 58 days out; with the November 19 date
+# resolved as Agent-Platform-only, DECEMBER 1 IS NOW THE NEAREST DATE AFFECTING
+# A CATALOGUED ENTRY — which is the claim this block owns, and the only one an
+# audit should act on. Two earlier November dates are written into this file and
+# neither is one: November 17 retires preview TTS and Live models that are not
+# catalogued, and November 19 retires gemini-3.6-flash from the Agent Platform
+# while leaving the Gemini API entry below served and priced. Neither first-party rate table became readable in this window:
+# ai.google.dev still does not resolve, and cloud.google.com now 301s its
+# pricing and model-lifecycle paths to docs.cloud.google.com, which the egress
+# proxy refuses with a 403 — so the per-token rates below are still carried on
+# the October 19 confirmation, now sixteen days stale. The lifecycle facts above
+# were confirmed from Google's own Agent Platform, Gemini API deprecations and
+# Firebase AI Logic pages as quoted in search results, not by reading them.
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-4-argon": ModelConfig(
         model_identifier="models/gemini-4-argon",
         name="gemini-4-argon",
-        description="Google's frontier model and the strongest thing in this catalog (announced September 30, 2026, generally available October 13, 2026). It replaces Gemini 3.8 Flash as the default here for hard reasoning, long-horizon agentic work and coding; keep 3.8 Flash for latency- and cost-sensitive volume, where it is still a third of Argon's price. Three audits carried it as uncallable — launch access was Google's Fairwind programme only — and that is over: a paid API key reaches it, though it is not on the free tier or the AI Pro plan in AI Studio. PRICING IS INTRODUCTORY AND STEPS UP: $2/$10 per 1M input/output tokens with cached input at $0.10 through November 30, 2026, then $4/$20 with cached input at $0.20 from December 1, 2026 — the hints here are the introductory tier, so costing after that date doubles. On the Gemini API the $2 is the price; Vertex instead bills $4 and returns 50% as credits, so the two platforms' invoices do not look alike. 1M token context window shared by input, thinking AND output, so a large prompt leaves less room to answer in. Max output is three different numbers and the catalog carries the smallest: 32,768 on a non-streaming direct-HTTP request (down from 65,536 on Gemini 3.x, and what Argon's Models API entry reports as its outputTokenLimit), 65,536 when streaming, and 1,048,576 only through long decode, where max_output_tokens is set above the cap and `continuation_token` is followed across requests — automatic in the Google GenAI SDK, manual over raw REST. This client's non-streaming path is a direct HTTP POST, so 32,768 is the ceiling a plain call here can actually reach. Thinking depth is thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); `minimal` is gone and so are `xhigh`/`max`, which 400. Sampling parameters are accepted and silently ignored, as on 3.6 Flash and later, but thinking_budget is a hard 400 here rather than ignored — a 3.1 Pro request carrying one fails rather than degrades. Structured outputs, function calling and multimodal (text, image, video, audio, PDF) input are supported; context caching is IMPLICIT ONLY, with a 6,144-token minimum and no explicit cache to pin.",
+        description="The strongest model a paid Gemini API key can reach, and the strongest thing in this catalog (announced September 30, 2026, generally available October 13, 2026). Google has since announced a more capable model, Gemini 4 Carbon, but it is not available through the API, so Argon is the one to pick for hard work here. It replaces Gemini 3.8 Flash as the default here for hard reasoning, long-horizon agentic work and coding; keep 3.8 Flash for latency- and cost-sensitive volume, where it is still a third of Argon's price. Three audits carried it as uncallable — launch access was Google's Fairwind programme only — and that is over: a paid API key reaches it, though it is not on the free tier or the AI Pro plan in AI Studio. PRICING IS INTRODUCTORY AND STEPS UP: $2/$10 per 1M input/output tokens with cached input at $0.10 through November 30, 2026, then $4/$20 with cached input at $0.20 from December 1, 2026 — the hints here are the introductory tier, so costing after that date doubles. On the Gemini API the $2 is the price; Vertex instead bills $4 and returns 50% as credits, so the two platforms' invoices do not look alike. 1M token context window shared by input, thinking AND output, so a large prompt leaves less room to answer in. Max output is three different numbers and the catalog carries the smallest: 32,768 on a non-streaming direct-HTTP request (down from 65,536 on Gemini 3.x, and what Argon's Models API entry reports as its outputTokenLimit), 65,536 when streaming, and 1,048,576 only through long decode, where max_output_tokens is set above the cap and `continuation_token` is followed across requests — automatic in the Google GenAI SDK, manual over raw REST. This client's non-streaming path is a direct HTTP POST, so 32,768 is the ceiling a plain call here can actually reach. Thinking depth is thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); `minimal` is gone and so are `xhigh`/`max`, which 400. Sampling parameters are accepted and silently ignored, as on 3.6 Flash and later, but thinking_budget is a hard 400 here rather than ignored — a 3.1 Pro request carrying one fails rather than degrades. Structured outputs, function calling and multimodal (text, image, video, audio, PDF) input are supported; context caching is IMPLICIT ONLY, with a 6,144-token minimum and no explicit cache to pin.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -310,7 +365,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-3.6-flash": ModelConfig(
         model_identifier="models/gemini-3.6-flash",
         name="gemini-3.6-flash",
-        description="Legacy — succeeded by Gemini 3.8 Flash, which is stronger at identical pricing, so new work belongs there. (Gemini 3.7 Flash sat between them and is gone: Google deprecated it on October 8, 2026 and now routes its id to 3.8 Flash.) Kept for two reasons: pinned workloads, and because THIS MODEL IS WHAT A `gemini-3.5-flash` REQUEST NOW GETS — Google deprecated that id on the same date and silently routes it here. Such a request is charged at this entry's $0.75/$3.75, not at 3.5 Flash's $1.50/$9.00, because Google prices what it actually served. Strong coding and agentic performance at Flash-tier pricing, with native grounding and multimodal (text, image, video, audio, PDF) input. 1M token context window; the first generation in which temperature/top_p/top_k are ignored in favour of thinking_level. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027.",
+        description="Legacy — succeeded by Gemini 3.8 Flash, which is stronger at identical pricing, so new work belongs there. (Gemini 3.7 Flash sat between them and is gone: Google deprecated it on October 8, 2026 and now routes its id to 3.8 Flash.) Kept for two reasons: pinned workloads, and because THIS MODEL IS WHAT A `gemini-3.5-flash` REQUEST NOW GETS — Google deprecated that id on the same date and silently routes it here. Such a request is charged at this entry's $0.75/$3.75, not at 3.5 Flash's $1.50/$9.00, because Google prices what it actually served. Strong coding and agentic performance at Flash-tier pricing, with native grounding and multimodal (text, image, video, audio, PDF) input. 1M token context window; the first generation in which temperature/top_p/top_k are ignored in favour of thinking_level. Introductory pricing of $0.75/$3.75 per 1M input/output tokens applies through December 31, 2026, rising to $1.50/$7.50 on January 1, 2027. ONE RETIREMENT DATE EXISTS FOR THIS MODEL AND IT IS NOT THE GEMINI API'S: Google retires it from the Gemini Enterprise Agent Platform on November 19, 2026, naming Gemini 3.8 Flash as the replacement, while the Gemini API deprecations page — the API this entry describes — still lists it with no shutdown date announced. A workload reached through the Agent Platform or Vertex must migrate by that date; one reached through the Gemini API, as this catalog's callers are, does not.",
         support_images=True,
         support_files=True,
         support_streaming=True,

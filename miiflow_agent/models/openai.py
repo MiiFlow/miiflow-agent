@@ -18,6 +18,40 @@ _REASONING_MODELS: set[str] = set()
 # approved defenders, with no self-serve route — so it would 404 for every key
 # this catalog serves. Add it only if an org is onboarded to Daybreak.
 #
+# Also deliberately absent, and NEW at the November 4, 2026 audit:
+# GPT-6 ROSALIND RESEARCH (`gpt-6-rosalind`). This is the one OpenAI catalog
+# event in the week to November 4 and it needs the same treatment gpt-5.6-cyber
+# gets, for the same reason: it is GATED, not self-serve. OpenAI began it as a
+# two-week admin preview for Enterprise organizations on October 30, 2026 and
+# access runs through a TRUSTED-ACCESS PROGRAMME for organizations approved for
+# Rosalind Research, for internal research by authorized users only — there is
+# no switch an ordinary paid key can flip, and it does not appear in ChatGPT's
+# model picker at all. So an entry here would 404 for every key this catalog
+# serves.
+#
+# What makes it worth recording rather than ignoring is that it is FURTHER along
+# than the other gated models: unlike gpt-5.6-cyber it now has a published rate
+# card. OpenAI's API pricing page, read on November 1, 2026, lists
+# `gpt-6-rosalind` at $15 input / $1.50 cached input / $75 output per 1M for
+# prompts up to 272K input tokens — exactly 1.5x GPT-6 Astra's $10/$1/$50, which
+# matches the independent description of it as Astra's weights with a looser
+# biology refusal boundary rather than a separately trained model. The same
+# rates appear on OpenAI's Enterprise ChatGPT rate card. Treat that figure as
+# corroborated but NOT first-party-read: every openai.com host is still refused
+# from this environment (see the egress note below), and two write-ups that
+# checked the page on October 31 reported NO `gpt-6-rosalind` row at all while a
+# third read $15/$75 off it the same day, so the row appears to have landed
+# between October 31 and November 1. One further gap, flagged by a secondary
+# source and not resolved anywhere first-party: OpenAI has not stated whether a
+# call to this id bills at the Rosalind rate or at Astra's. That is one more
+# reason not to carry it — an entry would have to pick, and picking wrong
+# mis-bills by 1.5x.
+#
+# The ADD TRIGGER is therefore narrower than "it got a price": add it only when
+# an org this catalog serves is admitted to the Rosalind Research programme, and
+# confirm the billing question above in that org's own console before trusting
+# the $15/$75 hints. Do NOT add it on the strength of the pricing row alone.
+#
 # Also deliberately absent: gpt-live-1 (released September 10, 2026). It is a
 # full-duplex VOICE front end billed per MINUTE ($0.05/min) that delegates the
 # reasoning to whatever model sits behind it — it has no token prices and does
@@ -260,14 +294,64 @@ _GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
 # the future, so no entry was dropped: gpt-4.1 and gpt-4.1-mini on January 14,
 # 2027, and gpt-5.4-nano on April 1, 2027.
 #
+# The NOVEMBER 4, 2026 audit changed no catalogued entry either: GPT-6.1 Terra
+# is still OpenAI's newest GENERALLY AVAILABLE model, GPT-6 Astra is still the
+# ceiling — re-confirmed against OpenAI's own developer docs as quoted in search
+# results, which still call Astra "OpenAI's most capable model" at $10/$50 — and
+# no price moved on any entry. It found ONE catalog event, GPT-6 Rosalind
+# Research, which is gated and is excluded with its reasoning and its add
+# trigger recorded above. The egress block holds: platform, developers and
+# plain openai.com all still fail to resolve here, so this audit too worked from
+# search results quoting the official changelog, deprecations, model and pricing
+# pages.
+#
+# ONE THING THE NEXT AUDIT SHOULD EXPECT TO FIND: press reporting on November 3,
+# 2026 says new OpenAI models could ship as soon as FRIDAY, NOVEMBER 6, 2026,
+# named only as Astra-, Sol- and Cyber-line releases with no versions, ids or
+# prices. OpenAI has confirmed nothing, so nothing is written into the catalog
+# from it — but an audit running after November 6 should look for an Astra
+# successor specifically, because GPT-6 Astra's entry says in terms that
+# GPT-6.1 Astra was CANCELLED and not to hold migrations for it. If an Astra-line
+# model does land, that sentence is the one that goes stale first.
+#
+# A THIRD SHUTDOWN DATE WAS CHECKED AND DOES NOT TOUCH THIS CATALOG, recorded so
+# a later audit does not have to re-derive it. OpenAI's deprecations page
+# carries a June 11, 2026 notice removing six older snapshots from the API on
+# DECEMBER 11, 2026: gpt-5-2025-08-07, gpt-5-mini-2025-08-07,
+# gpt-5-nano-2025-08-07, gpt-5-pro-2025-10-06, o3-2025-04-16 and
+# o3-pro-2025-06-10, replacements in the GPT-5.6 family. Every one of them is a
+# DATED GPT-5 or o-series snapshot, and this catalog carries none of them — the
+# GPT-5.x entries below are gpt-5.4 and gpt-5.5, which are different models, not
+# snapshots of gpt-5 — so December 11 needs no action here. Do not read "GPT-5
+# deprecations" in a summary as reaching gpt-5.4 or gpt-5.5: neither appears on
+# the deprecations page, and `_matches_model_family` only ever matches a
+# snapshot of an id this file lists.
+#
 # ONE DEADLINE IS NOW CLOSE, and it is a PRICE, not a retirement:
 # gpt-5.6-sol's $4/$20 below is promotional — OpenAI's wording is "through at
 # least November 21, 2026" — against a $5/$30 list price it was cut from on
-# August 21, 2026. Nineteen days out as of this audit. An audit running after
-# that date must re-check it before carrying the hints forward: if the promotion
-# lapses and this file is not updated, every gpt-5.6-sol request bills 20% under
-# on input and 33% under on output. The same caution does not apply to
-# gpt-6-sol, gpt-6-luna or gpt-6.1-terra, whose rates are standard.
+# August 21, 2026. SEVENTEEN DAYS OUT as of the November 4, 2026 audit, and the
+# nearest date AFFECTING A CATALOGUED ENTRY — which is the scope this claim is
+# made in, because two other dates in this file fall between it and the next
+# such date. One of them is this very promotion's single-sourced November 30
+# alternate end (below), which is the same event as this date rather than a
+# separate one; the other is the December 11, 2026 shutdown of six GPT-5/o3
+# snapshots this catalog does not carry (above), which reaches no entry at all.
+# After those, the next date that does reach an entry is gpt-4.1's January 14,
+# 2027 shutdown.
+# An audit running after November 21 must re-check the rate before
+# carrying the hints forward: if the promotion lapses and this file is not
+# updated, every gpt-5.6-sol request bills 20% under on input and 33% under on
+# output. Note that "at least" is doing real work in OpenAI's wording — the
+# promotion may simply be extended, as Anthropic's Sonnet 5 introductory rate
+# was, so the date is a RE-CHECK trigger and not a scheduled edit; do not raise
+# the hints to $5/$30 on November 22 without confirming the rate first. One
+# secondary report claims a customer email puts the end at November 30, 2026
+# instead; it is a single uncorroborated source and the documented date is still
+# November 21, so treat November 21 as the trigger and November 30 as a hint
+# that the answer may be "extended" rather than "lapsed". The same caution does
+# not apply to gpt-6-sol, gpt-6-luna or gpt-6.1-terra, whose rates are
+# standard.
 _GPT41_MODELS = {"gpt-4.1", "gpt-4.1-mini"}
 
 # OpenAI applies a request-wide surcharge once a 1.05M-context GPT-5 model's

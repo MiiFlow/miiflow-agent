@@ -86,12 +86,41 @@ client = LLMClient.create("mistral", model="mistral-large-latest")
 ## XAI (Grok)
 
 ```python
-client = LLMClient.create("xai", model="grok-beta")
+client = LLMClient.create("xai", model="grok-4.7")
 ```
 
 **API Key:** `XAI_API_KEY`
 
-**Models:** `grok-beta`
+**Models:** `grok-4.7`, `grok-4.6`, `grok-4.3`
+
+Uses the OpenAI-compatible Chat Completions endpoint at `https://api.x.ai/v1`.
+Supports text and image input, function tools, streaming (including cached and
+reasoning token usage), JSON mode, and strict structured output via `json_schema`.
+Pass `reasoning_effort="low"`, `"medium"`, `"high"`, or `"xhigh"` per call;
+Grok 4.3 additionally accepts `"none"`. A constructor `effort` sets the default;
+unsupported constructor defaults are dropped when switching models, while
+unsupported explicit per-call values raise `ValueError`.
+`base_url` may override the endpoint, for example for a regional deployment.
+
+Catalog pricing hints use the standard tier below 200K prompt tokens; xAI doubles
+input, cached input, and output rates at or above 200K. Use
+`miiflow_agent.models.xai.prompt_length_multiplier(model, input_tokens)` to
+apply this whole-request tier; Adlyse applies it when recording usage costs.
+There is no separate text
+output cap: input, reasoning, and output share the context window. Native xAI
+search, file uploads, media generation, and the Responses API are not exposed by
+this adapter. Older retired slugs are no longer advertised, but can still be
+passed explicitly if xAI accepts or redirects them.
+
+```python
+response = await client.achat(
+    [{"role": "user", "content": "Summarize the benefits of prompt caching."}],
+    reasoning_effort="low",
+    max_tokens=2048,
+)
+```
+
+Model details: [xAI models](https://docs.x.ai/developers/models).
 
 ## Configuration
 

@@ -24,7 +24,7 @@ async def test_streaming_normalization():
         ("openai", "gpt-6-luna"),
         ("anthropic", "claude-haiku-5-5"), 
         ("groq", "llama-3.1-8b-instant"),
-        ("xai", "grok-beta"),
+        ("xai", "grok-4.7"),
     ]
     
     messages = [

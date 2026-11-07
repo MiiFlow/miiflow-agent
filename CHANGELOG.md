@@ -4,6 +4,16 @@ All notable changes to miiflow-agent will be documented here.
 
 ## Unreleased
 
+- Refresh direct xAI/Grok support with Grok 4.7, 4.6 and 4.3 catalog entries,
+  image and structured-output capabilities, cache rates and model-specific
+  reasoning controls. Retired slugs are no longer advertised (explicit calls
+  remain supported, subject to provider redirects).
+- Preserve streaming usage-only chunks and cache/reasoning token counts; close
+  streams and isolate concurrent accumulators. Share SDK connections per loop
+  and credential, with custom endpoints isolated from one another.
+- Document `XAI_API_KEY`, current model IDs and the flat pricing hints' 200K
+  long-context tier; expose its multiplier for Adlyse usage billing.
+
 - **Python 3.10 support removed** **(breaking)** (`pyproject.toml`): the supported range narrows to `>=3.11,<3.13`. Consumers on 3.10 should stay on `1.22.1`. The `images`/`multimedia` extras now take Pillow 13 (`^13.0.0`), the first release without the 2026 decoder and heap advisories still open against 12.3, and Pillow 13 dropped Python 3.10, which reaches end of life in October 2026. The package uses only long-stable Image APIs (`open`, `size`, `thumbnail`/`resize`, `save`), none of which 13.0 changed.
 
 - **PyMuPDF 1.x and 2.x both accepted; floor raised to 1.24.3** (`pyproject.toml`, `utils/pdf_extractor.py`): the `pdf`, `multimedia` and `all` extras take `>=1.24.3,!=2.0,<3.0.0` (was `^1.23.0`), so consumers pinned to PyMuPDF 1.23.x must upgrade. PyMuPDF 2.x hard-requires onnxruntime, numpy, networkx, psutil, pyyaml and tabulate for its bundled layout models, which this package does not use, so the range keeps 1.x open instead of forcing them on consumers. 2.0 itself is excluded because it starts those models and their ONNX threads on every import (pymupdf#5196, fixed in 2.1). `pdf_extractor` imports `pymupdf` instead of the `fitz` alias, which 2.x deprecates with a `FutureWarning`; that module name first shipped in 1.24.3, hence the floor. CI tests the locked 2.1; the suite was also run locally on 1.24.3 and 1.28.2, including the PDF text and OCR paths.

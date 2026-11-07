@@ -436,7 +436,7 @@ Streams retry transparently until the first chunk arrives (`MIIFLOW_STREAM_RETRY
 | Groq | `groq` | ✅ | ✅ | - | Beta |
 | Mistral | `mistral` | ✅ | ✅ | - | Beta |
 | Ollama | `ollama` | ✅ | ✅ | - | Beta |
-| xAI | `xai` | ✅ | ✅ | - | Beta |
+| xAI (Grok) | `xai` | ✅ | ✅ | ✅ | Beta |
 
 > Keys are lowercase and exact — `gemini`, not `google` (that is only the pip extra's name). Bedrock takes `aws_access_key_id`, `aws_secret_access_key` and `region_name` as keyword arguments instead of an API key.
 

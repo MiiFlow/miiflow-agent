@@ -1,223 +1,89 @@
-"""xAI Grok model configurations."""
+"""Grok models served directly by xAI (verified November 6, 2026).
+
+Sources: https://docs.x.ai/developers/models/grok-4.7 (also 4.6 and 4.3)
+and https://docs.x.ai/developers/grok-4-7.
+Prices are USD per million tokens below 200K prompt tokens. At >=200K,
+xAI doubles all three rates; prompt_length_multiplier exposes that tier.
+Grok has no separate text output limit: the context budget is the ceiling,
+shared with input and reasoning. Files are not advertised by this Chat
+Completions adapter. Native search, media generation and multi-agent endpoints
+are outside its scope. Retired Grok 2/3/4 slugs are deliberately not advertised;
+callers can still pass an older slug explicitly, subject to xAI redirects.
+"""
 
 from typing import Dict
 
 from .base import ModelConfig, ParameterConfig, ParameterType
 
-# xAI uses OpenAI-compatible API with max_tokens parameter
-
 XAI_MODELS: Dict[str, ModelConfig] = {
-    "grok-2": ModelConfig(
-        model_identifier="grok-2",
-        name="grok-2",
-        description="xAI's Grok 2 model with improved capabilities.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=4096,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=2.0,
-        output_cost_hint=10.0,
-    ),
-    "grok-2-mini": ModelConfig(
-        model_identifier="grok-2-mini",
-        name="grok-2-mini",
-        description="xAI's smaller Grok 2 model - faster and more cost-effective.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=4096,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.40,
-        output_cost_hint=2.0,
-    ),
-    # Grok 4.1 Fast models (latest flagships)
-    "grok-4-1-fast-reasoning": ModelConfig(
-        model_identifier="grok-4-1-fast-reasoning",
-        name="grok-4-1-fast-reasoning",
-        description="xAI's Grok 4.1 Fast with reasoning - 2M context, agentic tool calling.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=True,
-        maximum_context_tokens=2000000,
-        maximum_output_tokens=16384,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.20,
-        output_cost_hint=0.50,
-    ),
-    "grok-4-1-fast-non-reasoning": ModelConfig(
-        model_identifier="grok-4-1-fast-non-reasoning",
-        name="grok-4-1-fast-non-reasoning",
-        description="xAI's Grok 4.1 Fast without reasoning - low-latency instant responses.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=2000000,
-        maximum_output_tokens=16384,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.20,
-        output_cost_hint=0.50,
-    ),
-    # Grok Code model
-    "grok-code-fast-1": ModelConfig(
-        model_identifier="grok-code-fast-1",
-        name="grok-code-fast-1",
-        description="xAI's Grok optimized for agentic coding tasks.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=True,
-        maximum_context_tokens=262144,
-        maximum_output_tokens=16384,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.10,
-        output_cost_hint=0.30,
-    ),
-    # Grok 4 Fast models
-    "grok-4-fast-reasoning": ModelConfig(
-        model_identifier="grok-4-fast-reasoning",
-        name="grok-4-fast-reasoning",
-        description="xAI's Grok 4 Fast with reasoning capabilities.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=True,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=16384,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.50,
-        output_cost_hint=1.50,
-    ),
-    "grok-4-fast-non-reasoning": ModelConfig(
-        model_identifier="grok-4-fast-non-reasoning",
-        name="grok-4-fast-non-reasoning",
-        description="xAI's Grok 4 Fast without reasoning - low-latency responses.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=16384,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.50,
-        output_cost_hint=1.50,
-    ),
-    "grok-4-0709": ModelConfig(
-        model_identifier="grok-4-0709",
-        name="grok-4-0709",
-        description="xAI's Grok 4 model (July 2025 version).",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=True,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=16384,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=2.0,
-        output_cost_hint=6.0,
-    ),
-    # Grok 3 models
-    "grok-3": ModelConfig(
-        model_identifier="grok-3",
-        name="grok-3",
-        description="xAI's Grok 3 model with advanced reasoning.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=True,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=8192,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=3.0,
-        output_cost_hint=15.0,
-    ),
-    "grok-3-mini": ModelConfig(
-        model_identifier="grok-3-mini",
-        name="grok-3-mini",
-        description="xAI's Grok 3 mini - faster and cost-effective.",
-        support_images=False,
-        support_files=False,
-        support_streaming=True,
-        supports_json_mode=True,
-        supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=True,
-        maximum_context_tokens=131072,
-        maximum_output_tokens=8192,
-        token_param_name="max_tokens",
-        supports_temperature=True,
-        input_cost_hint=0.30,
-        output_cost_hint=0.50,
-    ),
-    # Grok 2 Vision
-    "grok-2-vision-1212": ModelConfig(
-        model_identifier="grok-2-vision-1212",
-        name="grok-2-vision-1212",
-        description="xAI's Grok 2 Vision model with image support.",
+    model: ModelConfig(
+        model_identifier=model,
+        name=model,
+        description=description,
         support_images=True,
         support_files=False,
         support_streaming=True,
         supports_json_mode=True,
         supports_tool_call=True,
-        supports_structured_outputs=False,
-        reasoning=False,
-        maximum_context_tokens=32768,
-        maximum_output_tokens=4096,
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=context,
+        maximum_output_tokens=context,
         token_param_name="max_tokens",
         supports_temperature=True,
-        input_cost_hint=2.0,
-        output_cost_hint=10.0,
-    ),
+        input_cost_hint=input_cost,
+        output_cost_hint=output_cost,
+        cache_read_cost_hint=cache_cost,
+    )
+    for model, description, context, input_cost, output_cost, cache_cost in [
+        (
+            "grok-4.7",
+            "Grok 4.7: coding, agentic tasks and knowledge work.",
+            500000,
+            2.0,
+            6.0,
+            0.50,
+        ),
+        (
+            "grok-4.6",
+            "Grok 4.6: previous generation for pinned workloads.",
+            500000,
+            2.0,
+            6.0,
+            0.50,
+        ),
+        (
+            "grok-4.3",
+            "Grok 4.3: fast tool calling with configurable reasoning.",
+            1000000,
+            1.25,
+            2.50,
+            0.20,
+        ),
+    ]
 }
+
+
+def prompt_length_multiplier(model: str, input_tokens: int | None) -> float:
+    """Whole-request rate multiplier, using inclusive prompt/cache tokens."""
+    if model in {"grok-4.3", "grok-4.6", "grok-4.7"} and (input_tokens or 0) >= 200_000:
+        return 2.0
+    return 1.0
+
+
+def reasoning_effort_levels(model: str) -> list[str]:
+    """Return only the effort levels documented for this model."""
+    if model == "grok-4.3":
+        return ["none", "low", "medium", "high", "xhigh"]
+    if model in {"grok-4.6", "grok-4.7"}:
+        return ["low", "medium", "high", "xhigh"]
+    return []
 
 
 XAI_PARAMETERS: list[ParameterConfig] = [
     ParameterConfig(
         field_name="temperature",
         display_name="Temperature",
-        description="Controls randomness in responses. Higher values make output more random.",
         parameter_type=ParameterType.NUMBER,
         default_value=0.7,
         min_value=0,
@@ -227,7 +93,6 @@ XAI_PARAMETERS: list[ParameterConfig] = [
     ParameterConfig(
         field_name="top_p",
         display_name="Top P",
-        description="Nucleus sampling parameter.",
         parameter_type=ParameterType.NUMBER,
         default_value=1.0,
         min_value=0,
@@ -237,31 +102,27 @@ XAI_PARAMETERS: list[ParameterConfig] = [
     ParameterConfig(
         field_name="max_tokens",
         display_name="Max Tokens",
-        description="Maximum number of tokens to generate.",
+        description="Output budget, including reasoning; also bounded by remaining context.",
         parameter_type=ParameterType.NUMBER,
         default_value=4096,
         min_value=1,
-        max_value=4096,
-        step=4,
+        max_value={
+            model: config.maximum_output_tokens for model, config in XAI_MODELS.items()
+        },
+        step=1,
     ),
     ParameterConfig(
-        field_name="frequency_penalty",
-        display_name="Frequency Penalty",
-        description="Penalizes tokens based on their frequency in the text.",
-        parameter_type=ParameterType.NUMBER,
-        default_value=0,
-        min_value=-2,
-        max_value=2,
-        step=0.1,
+        field_name="reasoning_effort",
+        display_name="Reasoning Effort",
+        parameter_type=ParameterType.SELECT,
+        options=["low", "medium", "high", "xhigh"],
+        supported_models=["grok-4.6", "grok-4.7"],
     ),
     ParameterConfig(
-        field_name="presence_penalty",
-        display_name="Presence Penalty",
-        description="Penalizes tokens based on their presence in the text.",
-        parameter_type=ParameterType.NUMBER,
-        default_value=0,
-        min_value=-2,
-        max_value=2,
-        step=0.1,
+        field_name="reasoning_effort",
+        display_name="Reasoning Effort",
+        parameter_type=ParameterType.SELECT,
+        options=reasoning_effort_levels("grok-4.3"),
+        supported_models=["grok-4.3"],
     ),
 ]

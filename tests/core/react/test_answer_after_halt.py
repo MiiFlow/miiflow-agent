@@ -218,13 +218,14 @@ class TestWrapUpProducesTheAnswer:
         assert kinds.count(ReActEventType.FINAL_ANSWER_CHUNK) == 2
         assert kinds[-1] == ReActEventType.FINAL_ANSWER
 
-    def test_usage_is_assigned_not_summed(self):
-        """Usage chunks carry the running total for the call; adding them up
-        would over-report the wrap-up's tokens."""
+    def test_usage_is_the_sum_of_what_each_chunk_added(self):
+        """A chunk's usage is what that chunk added (the contract the client's
+        billing sum relies on; Gemini's running totals are turned into
+        increments by its normalizer), so the wrap-up adds them up."""
         _p, state, _ctx, _bus, _calls = _run(
             [
                 _chunk("a", usage=SimpleNamespace(total_tokens=100)),
-                _chunk("b", usage=SimpleNamespace(total_tokens=140)),
+                _chunk("b", usage=SimpleNamespace(total_tokens=40)),
             ]
         )
 

@@ -40,6 +40,17 @@ logger = logging.getLogger(__name__)
 
 
 
+# Every correction retracts the answer it corrects, and the model cannot see
+# that: told only "answer, covering every item", it points the user back to
+# "my previous message", which the user never got (a whole draft disappeared
+# this way). Whatever the host's check says, the model learns the answer is gone.
+ANSWER_WITHDRAWN_NOTE = (
+    "Your answer above was withdrawn: the user does not see it. After acting on this "
+    "note, write your complete answer again in full. Do not refer to it or summarise it "
+    "as an earlier message."
+)
+
+
 async def _answer_check_correction(context, state, answer: str) -> Optional[str]:
     """The host's correction for a final answer, or None to accept it.
 
@@ -67,7 +78,7 @@ async def _answer_check_correction(context, state, answer: str) -> Optional[str]
         state.answer_checks_failed,
         MAX_ANSWER_CHECK_FAILURES,
     )
-    return str(correction)
+    return f"{correction}\n\n{ANSWER_WITHDRAWN_NOTE}"
 
 
 class StepStreamer:
@@ -119,6 +130,12 @@ class StepStreamer:
             # Single-phase: Stream LLM response WITH tools enabled
             buffer = ""
             tokens_used = 0
+            # A chunk's usage is what that chunk added (the client sums the same
+            # chunks for billing), so the step accumulates them too: a provider
+            # that reports usage on several chunks is counted once.
+            step_usage = None
+            input_tokens = None
+            output_tokens = None
             # Slots whose ACTION_STREAMING announcement already went out.
             announced_tool_slots: set = set()
             cost = 0.0
@@ -508,17 +525,16 @@ class StepStreamer:
                         )
 
                 # Accumulate metrics
-                output_tokens = None
-                input_tokens = None
                 if chunk.usage:
-                    tokens_used = chunk.usage.total_tokens
-                    output_tokens = getattr(chunk.usage, "completion_tokens", None)
-                    input_tokens = getattr(chunk.usage, "prompt_tokens", None)
+                    step_usage = chunk.usage if step_usage is None else step_usage + chunk.usage
+                    tokens_used = step_usage.total_tokens
+                    output_tokens = getattr(step_usage, "completion_tokens", None)
+                    input_tokens = getattr(step_usage, "prompt_tokens", None)
                     # Ground the context engine's estimate in what the provider
                     # actually counted. This is the only place with both halves
                     # of the comparison, and it costs nothing — the number
                     # already came back on the response.
-                    self._orch._reconcile_context_usage(chunk.usage, state)
+                    self._orch._reconcile_context_usage(step_usage, state)
                 if hasattr(chunk, "cost"):
                     cost += chunk.cost
                 if getattr(chunk, "finish_reason", None):

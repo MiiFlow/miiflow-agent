@@ -404,9 +404,10 @@ class AnswerSynthesis:
                     else:
                         held.append(chunk.delta)
                 if getattr(chunk, "usage", None):
-                    # Assigned, not accumulated — usage chunks carry the running
-                    # total for the call, as `_execute_reasoning_step_native` does.
-                    tokens = chunk.usage.total_tokens or 0
+                    # Accumulated: a chunk's usage is what that chunk added, the
+                    # contract the client's billing sum relies on (a provider that
+                    # reports on several chunks, like Gemini, reports increments).
+                    tokens += chunk.usage.total_tokens or 0
         replayed = ""
         for delta in held:
             replayed += delta

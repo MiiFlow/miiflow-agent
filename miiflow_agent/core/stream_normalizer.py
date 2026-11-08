@@ -108,6 +108,9 @@ class StreamState:
     current_search_use: Optional[Dict[str, Any]] = None
     accumulated_search_json: str = ""
     current_search_result: Optional[Dict[str, Any]] = None
+    # Gemini repeats running usage totals on every chunk; the last totals seen,
+    # so each chunk reports only what it added (see GeminiStreamNormalizer).
+    gemini_usage_seen: Optional[Any] = None
     # Content block tracking to prevent interleaving of different block types
     current_block_index: int = -1
     current_block_type: Optional[str] = None  # "text", "thinking", "tool_use", etc.
@@ -788,14 +791,39 @@ class GeminiStreamNormalizer(BaseStreamNormalizer):
     - protobuf chunks from the SDK (legacy fallback)
     """
 
+    _USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
     def normalize_chunk(self, chunk: Any) -> StreamChunk:
         """Normalize Gemini streaming format to unified StreamChunk."""
         # Route dict chunks (from REST API) to dedicated handler
         if isinstance(chunk, dict):
-            return self._normalize_dict_chunk(chunk)
+            normalized = self._normalize_dict_chunk(chunk)
+        else:
+            # Legacy protobuf path (SDK objects)
+            normalized = self._normalize_protobuf_chunk(chunk)
+        normalized.usage = self._usage_added(normalized.usage)
+        return normalized
 
-        # Legacy protobuf path (SDK objects)
-        return self._normalize_protobuf_chunk(chunk)
+    def _usage_added(self, usage: Optional[TokenCount]) -> Optional[TokenCount]:
+        """What this chunk added to the stream's usage.
+
+        Gemini sends ``usageMetadata`` on EVERY chunk as running totals (the
+        prompt count repeats, the output count grows). Consumers add chunk
+        usages up (the client's billing total, the step's metrics), which is
+        right for providers that report once and counted a Gemini prompt once
+        per chunk: a 2,232-token prompt streamed in 7 chunks was billed as
+        15,624. Reporting the increment over the last totals makes the sum the
+        real total."""
+        if usage is None:
+            return None
+        seen = self._state.gemini_usage_seen or TokenCount()
+        # Totals seen so far, field by field: a chunk that leaves a field out
+        # (0) must not make the next chunk's total count again.
+        self._state.gemini_usage_seen = TokenCount(
+            **{f: max(getattr(usage, f, 0) or 0, getattr(seen, f, 0) or 0) for f in self._USAGE_FIELDS}
+        )
+        added = TokenCount(**{f: max(0, (getattr(usage, f, 0) or 0) - (getattr(seen, f, 0) or 0)) for f in self._USAGE_FIELDS})
+        return added if any(getattr(added, f) for f in self._USAGE_FIELDS) else None
 
     def normalize_ordered_chunks(self, chunk: dict):
         """Yield parts in wire order; never aggregate speech across a tool boundary."""

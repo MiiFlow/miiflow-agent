@@ -79,6 +79,10 @@ class TestAnswerCheck:
         assert ctx.messages[-2].role == MessageRole.ASSISTANT
         assert ctx.messages[-1].role == MessageRole.USER
         assert "no such file exists" in ctx.messages[-1].content
+        # The model is told its answer was taken back, so it restates it in full
+        # instead of pointing the user at a message they never saw.
+        assert "withdrawn: the user does not see it" in ctx.messages[-1].content
+        assert "write your complete answer again in full" in ctx.messages[-1].content
         assert state.answer_checks_failed == 1
 
     def test_an_accepted_answer_ends_the_run(self):

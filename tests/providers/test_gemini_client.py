@@ -331,9 +331,12 @@ class TestGeminiClient:
         double-checking Gemini after the Responses-API fix)."""
         from miiflow_agent.core.streaming import canonical_finish_reason
 
-        chunk1_data = _make_rest_response(text="The answer is", finish_reason=None)
+        # Gemini repeats running totals on every chunk (they only grow).
+        chunk1_data = _make_rest_response(
+            text="The answer is", finish_reason=None, prompt_tokens=12, completion_tokens=3, total_tokens=15
+        )
         chunk2_data = _make_rest_response(
-            text=" cut off mid", finish_reason="MAX_TOKENS", prompt_tokens=12, completion_tokens=8
+            text=" cut off mid", finish_reason="MAX_TOKENS", prompt_tokens=12, completion_tokens=8, total_tokens=20
         )
         sse_lines = [f"data: {json.dumps(chunk1_data)}", "", f"data: {json.dumps(chunk2_data)}", ""]
 
@@ -358,9 +361,12 @@ class TestGeminiClient:
         reasons = [c.finish_reason for c in chunks if c.finish_reason]
         assert reasons == ["MAX_TOKENS"]
         assert canonical_finish_reason(reasons[-1]) == "length"
-        # Usage rides on the same final chunk, so the truncated call still bills.
+        # Usage rides on the same final chunk, so the truncated call still bills,
+        # and the chunks' usage adds up to the call's totals, counted once.
         assert chunks[-1].usage is not None
-        assert chunks[-1].usage.completion_tokens == 8
+        billed = [c.usage for c in chunks if c.usage]
+        assert sum(u.prompt_tokens for u in billed) == 12
+        assert sum(u.completion_tokens for u in billed) == 8
 
     @pytest.mark.asyncio
     async def test_system_message_handling(self, client):

@@ -319,6 +319,63 @@ _NO_SAMPLING_PARAMS = {
 # the October 19 confirmation, now sixteen days stale. The lifecycle facts above
 # were confirmed from Google's own Agent Platform, Gemini API deprecations and
 # Firebase AI Logic pages as quoted in search results, not by reading them.
+#
+# NOVEMBER 9, 2026 AUDIT: no new callable model, no price change, and no change
+# to any catalogued model's availability, deprecation or retirement status. The
+# CARBON RE-CHECK this file asks for on the Argon precedent was run a third time
+# and THE GATE IS STILL SHUT: as of November 3, 2026 Gemini 4 Carbon reaches
+# only US government pre-release testers and a subset of Fairwind defenders, and
+# it is absent from the Gemini API, AI Studio, the Gemini app and the Agent
+# Platform alike. What DID change is that its rate card is now public — $2/$10
+# introductory, $4/$20 after, the same pair as Argon — while Google still gives
+# developers only "as soon as possible" with no date. A published price is
+# therefore again NOT an add trigger, for the same reason it is not one for
+# gpt-6-cyber in the OpenAI file: a priced id nobody can call is a 404 with a
+# number attached. Argon remains the frontier Google model a paid API key can
+# reach, and the Argon precedent (Fairwind-only September 30, paid API October
+# 13) still says to keep re-checking rather than assume the gate holds.
+#
+# A GEMINI 4 FLASH LEAK IS CIRCULATING AND MUST NOT BE PRE-CATALOGUED.
+# Reporting on November 8, 2026 names a Gemini 4 Flash — codenames "Hydrogen"
+# and "Hyperion" — with a November 18 release date, and is explicit that GOOGLE
+# HAS ANNOUNCED NOTHING: the name is inferred and the date traces to unsourced
+# posts on X. There is no model id, no price and no changelog entry.
+# gemini-3.8-flash (September 2, 2026) is still the current Flash model on
+# Google's own changelog, so both Flash entries below stay exactly as they are.
+# If a 4 Flash does land it is a NEW entry rather than an edit to either of
+# theirs — and note it would arrive one day before the November 19
+# Agent-Platform retirement of gemini-3.6-flash, which is a coincidence of dates
+# and not a migration path.
+#
+# ONE GOOGLE RELEASE DID LAND IN THIS WINDOW AND IT IS OUT OF SCOPE:
+# gemini-omni-1.2-flash went generally available on November 5, 2026 (clips up
+# to 15 seconds, from 10). It is excluded on exactly the reasoning recorded
+# above for gemini-omni-1.1-flash — it is video generation, billed per second of
+# output, $0.07/s at 720p, 30% below 1.1 Flash's rate — and it is worth naming
+# because its rate card now ALSO quotes per-token figures ($1.50 per 1M input,
+# $12 per 1M video-output tokens, metered at 5,792 tokens per second of 720p),
+# which is precisely the shape that makes a video model look catalogue-able. It
+# is not: an output_cost_hint multiplied by text output tokens describes nothing
+# about a 15-second clip, and the model does not take the generateContent text
+# request shape a ModelConfig here expresses. Same trap as 1.1 Flash, one step
+# more convincing than last time.
+#
+# DECEMBER 1 IS STILL THE NEAREST DATE AFFECTING A CATALOGUED ENTRY, now 22 days
+# out: Argon's $2/$10/$0.10 becomes $4/$20/$0.20, and an audit that runs after
+# it without doubling all three leaves every Argon request billing at half cost.
+# The Flash tier's January 1, 2027 step-up is 53 days out. The two November
+# dates written into this file remain not-ours — November 17 retires preview
+# TTS and Live models that are not catalogued, and November 19 retires
+# gemini-3.6-flash from the Agent Platform while leaving the Gemini API entry
+# below served and priced.
+#
+# SOURCING IS UNCHANGED AND NOW THREE WEEKS STALE ON RATES: ai.google.dev still
+# does not resolve from this environment and cloud.google.com still 301s its
+# pricing paths to docs.cloud.google.com, which the proxy refuses with a 403, so
+# the per-token rates below are still carried on the October 19 first-party
+# confirmation. Everything this audit asserts about availability and about the
+# Carbon gate comes from search results quoting Google's own changelog, pricing
+# and model pages rather than from reading them.
 GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-4-argon": ModelConfig(
         model_identifier="models/gemini-4-argon",

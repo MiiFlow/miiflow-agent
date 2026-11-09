@@ -133,6 +133,55 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # widened, and a cross-provider price comparison drawn from all three is not
 # evidenced to the same standard in each.
 
+#
+# The NOVEMBER 9, 2026 audit read all three first-party pages again — pricing,
+# the models overview and model-deprecations — and changed no model, no price
+# and no limit. The lineup is unchanged: Fable 5.1, Opus 5.5, Sonnet 5.5 and
+# Haiku 5.5 are the current four, Haiku 5.5 (October 7) is still the newest,
+# Fable 5.1 is still the top tier a standard API key can reach, and there is
+# still no Fable 5.5. Every rate below still matches the published table on all
+# four columns, the overview still reports 1M context / 128K max output / Jun
+# 2026 cutoffs for the current four, and the deprecations table still lists all
+# twelve catalogued models Active with no deprecation date — Haiku 4.5
+# included, now TWENTY-FIVE DAYS past the floor its entry warns not to read as
+# a shutdown.
+#
+# WHAT THIS AUDIT DID CHANGE is two descriptions, and the correction came from a
+# SEPARATE TABLE on the pricing page that no earlier audit had read: fast mode
+# has its own section, and it prices THREE models, not one. Opus 5.5 at $8/$40
+# (which its entry already carried), and Opus 5 AND Opus 4.8 at $10/$50, both in
+# research preview. The Opus 5 entry described its fast mode as "2x the price"
+# without the figure and the Opus 4.8 entry said only "fast mode", so a reader
+# costing either had to derive the rate or guess whether one existed. Both now
+# state it.
+#
+# Three further facts from that section that no `*_cost_hint` can hold, recorded
+# once here rather than in three descriptions: fast-mode prices apply across the
+# FULL context window, including requests over 200K input tokens; the
+# prompt-caching and data-residency multipliers stack ON TOP of them; and fast
+# mode is not available on the Batch API at all. It is also FIRST-PARTY-ONLY
+# except for Opus 5.5, which Google Cloud (Anthropic managed) and Microsoft
+# Foundry also offer it on. BEDROCK HAS IT FOR NO MODEL, which is why the
+# Bedrock mirror in server/core/llms/bedrock.py mentions fast mode nowhere and
+# must not start — the two catalogs are otherwise kept in step model for
+# model, so this is a deliberate divergence rather than an omission to fix.
+#
+# THE TWO NOVEMBER DATES THAT ARE NOT OURS BOTH MOVED CLOSER AND NEITHER NEEDS
+# ACTION: claude-opus-4-5-20251101 is still Active on its "not sooner than
+# November 24, 2026" floor (fifteen days out, the nearest Anthropic date of any
+# kind, and a floor rather than a retirement), and claude-sonnet-4-5-20250929 is
+# still Deprecated for retirement on November 30, 2026. Neither is catalogued.
+# When the Opus 4.5 floor passes with the model still Active it will be the
+# second worked demonstration, after Haiku 4.5, that these floors are not
+# shutdown dates.
+#
+# THE HOST SITUATION IS UNCHANGED: platform.claude.com is still the only
+# provider documentation this environment can read, every openai.com host and
+# ai.google.dev still fail to resolve, and docs.cloud.google.com is still
+# refused by the proxy. This file therefore remains the best-sourced of the
+# three, and the OpenAI and Google catalogs are still carried on search-result
+# corroboration of their first-party pages.
+
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     # Ordered newest-first on purpose: `_resolve_model_name`'s third tier is a
     # SUBSTRING match, and "claude-fable-5" is a substring of every Fable 5.1
@@ -212,7 +261,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-5": ModelConfig(
         model_identifier="claude-opus-5",
         name="claude-opus-5",
-        description="Legacy — succeeded by Claude Opus 5.5 (September 22, 2026), which is both stronger and cheaper ($4/$20 vs $5/$25) and reads cached tokens at 5% of input rather than 10%, so this is kept for pinned workloads only. Released July 24, 2026. Always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (2.5x faster at 2x the price), structured outputs, and a safety fallback that routes to Opus 4.8. Thinking can still be disabled here at effort <= high, which Opus 5.5 rejects outright. 1M context window. Retirement not sooner than July 24, 2027.",
+        description="Legacy — succeeded by Claude Opus 5.5 (September 22, 2026), which is both stronger and cheaper ($4/$20 vs $5/$25) and reads cached tokens at 5% of input rather than 10%, so this is kept for pinned workloads only. Released July 24, 2026. Always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (2.5x faster at 2x the price — $10/$50 per 1M, research preview), structured outputs, and a safety fallback that routes to Opus 4.8. Thinking can still be disabled here at effort <= high, which Opus 5.5 rejects outright. 1M context window. Retirement not sooner than July 24, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -232,7 +281,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.8": ModelConfig(
         model_identifier="claude-opus-4-8",
         name="claude-opus-4.8",
-        description="Legacy — succeeded by Claude Opus 5 (July 24, 2026). Powerful reasoning and coding model with adaptive thinking, structured outputs, and fast mode; remains available and serves as Opus 5's safety fallback. 1M context window. Retirement not sooner than May 28, 2027.",
+        description="Legacy — succeeded by Claude Opus 5 (July 24, 2026). Powerful reasoning and coding model with adaptive thinking, structured outputs, and fast mode ($10/$50 per 1M, research preview — the same premium rate as Opus 5, against Opus 5.5's $8/$40); remains available and serves as Opus 5's safety fallback. 1M context window. Retirement not sooner than May 28, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,

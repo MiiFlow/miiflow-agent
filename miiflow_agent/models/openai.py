@@ -13,10 +13,33 @@ _REASONING_MODELS: set[str] = set()
 # GPT-5.x reasoning models (use max_completion_tokens, no temperature). GPT-5.6
 # Pro is an execution mode on these model ids, not a separate model slug.
 #
-# Deliberately absent: gpt-5.6-cyber ($12.50/$75). It is a purpose-trained
-# cybersecurity model gated behind OpenAI's Daybreak program — provisioned to
-# approved defenders, with no self-serve route — so it would 404 for every key
-# this catalog serves. Add it only if an org is onboarded to Daybreak.
+# Deliberately absent: THE CYBER TIER, which is now TWO models rather than one.
+# Both are purpose-trained cybersecurity models gated behind OpenAI's Daybreak
+# programme — provisioned to approved defenders, with no self-serve route — so
+# either would 404 for every key this catalog serves.
+#
+#   * gpt-5.6-cyber ($12.50/$75), the original.
+#   * gpt-6-cyber ($20 input / $2 cached input / $100 output, with cache writes
+#     at $25 for 30-minute retention and $50 for 12-hour), NEW at the
+#     November 9, 2026 audit. Announced November 5, 2026, built on GPT-6 Astra,
+#     and the first model OpenAI rates "Critical" for cybersecurity under its
+#     own preparedness framework — 48.5% on ExploitGym against GPT-5.6 Cyber's
+#     32.1%. It is reached as `gpt-6-cyber` over the RESPONSES API only, and no
+#     Batch, Flex or Priority rate is published for either cyber model.
+#
+# THE GATE IS TIGHTER than gpt-5.6-cyber's, which is why a published rate card
+# is not an add trigger here either: access needs Daybreak Red membership AND
+# separate per-model approval on top of it, plus identity verification, legal
+# attestations and IP allowlisting, and OpenAI says it will widen to all
+# Daybreak Red customers only over time. One costing trap worth stating because
+# the two ids share a base model: $20/$100 is DOUBLE plain Astra's $10/$50, so
+# pricing a cyber call off Astra's hints under-bills it by half — the same
+# shape as the GPT-6 Rosalind note below, where the multiple is 1.5x instead.
+#
+# ADD EITHER ONLY IF an org this catalog serves is onboarded to Daybreak — and
+# for gpt-6-cyber, approved for that model specifically — and confirm the rate
+# in that org's own console first: every figure above is search-result
+# corroboration of OpenAI's pricing page, which this environment cannot read.
 #
 # Also deliberately absent, and NEW at the November 4, 2026 audit:
 # GPT-6 ROSALIND RESEARCH (`gpt-6-rosalind`). This is the one OpenAI catalog
@@ -352,6 +375,56 @@ _GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
 # that the answer may be "extended" rather than "lapsed". The same caution does
 # not apply to gpt-6-sol, gpt-6-luna or gpt-6.1-terra, whose rates are
 # standard.
+#
+# THE NOVEMBER 9, 2026 AUDIT RESOLVED THE NOVEMBER 6 PREDICTION ABOVE, and the
+# answer is that the general-purpose half of it did not happen. The reporting was
+# real — The Information had next-generation Astra-, Sol- and Cyber-line models
+# as soon as Friday, November 6 — and ONE of the three landed: GPT-6 CYBER,
+# announced November 5, which is catalogued nowhere here because it is
+# Daybreak-gated (see the cyber-tier note above, which this audit rewrote to
+# cover it). The other two did not ship. There is still NO GPT-6.2 of any line:
+# no OpenAI announcement, no preview, no model id, no published price, and
+# November 6 passed without one. GPT-6.1 Terra (October 26) therefore remains
+# OpenAI's newest generally available model and GPT-6 Astra remains the
+# capability ceiling — so the sentence in Astra's entry saying GPT-6.1 Astra was
+# CANCELLED and not to hold migrations for it still stands. This audit went
+# looking specifically for the Astra successor that would have made it stale,
+# which is what the prediction above asked for, and did not find one.
+#
+# TWO LEAK ARTEFACTS TO NOT ACT ON, recorded because both look like evidence and
+# neither is. The name `gpt-6.2-sol` has been seen in a screenshot of GOOGLE
+# CLOUD'S QUOTA SETTINGS posted on X — a third-party console listing a string,
+# not OpenAI publishing an id. And one reseller (CometAPI) runs a GPT-6.2 Sol
+# product page quoting a November 5, 2026 release and $60 per 1M input, which
+# contradicts every other source, matches no OpenAI tier, and is a reseller's
+# markup page rather than a rate card. Neither is grounds for an entry: an id
+# this catalog cannot call is a 404, and a wrong price is worse than a missing
+# model.
+#
+# NO PRICE MOVED on any entry in the week to November 9. The rates were
+# re-corroborated against write-ups quoting OpenAI's pricing page, which still
+# shows gpt-6-astra at $10/$1/$50, gpt-6.1-terra at $1/$0.05/$5 and gpt-5.6-sol
+# at $4/$0.40/$20. That last one is the promotion tracked below: it is now
+# TWELVE DAYS from its "through at least November 21, 2026" date and still the
+# nearest date affecting a catalogued entry. One aggregator (modelpricing.ai)
+# already lists gpt-5.6-sol at the pre-promotion $5/$30 — a single source
+# contradicting both the official page and every other tracker, so it is NOT
+# evidence the promotion lapsed early, but it is the shape the real signal will
+# take, so weigh the next such claim against the official page rather than
+# against this file.
+#
+# ONE WATCH ITEM FOR THE NEXT AUDIT: OpenAI has a "Cyber at the Frontier"
+# livestream scheduled for NOVEMBER 12, 2026. Expect cyber-tier news rather than
+# a general-purpose model, which on this file's reasoning means another excluded
+# gated entry rather than a catalog addition — but check, because the GPT-6
+# Cyber announcement itself arrived exactly that way, five days before this
+# audit.
+#
+# THE EGRESS BLOCK HOLDS, unchanged: platform, developers and plain openai.com
+# all still fail to resolve from this environment, so this audit too worked from
+# search results quoting the official changelog, pricing and model pages.
+# Anthropic's platform.claude.com remains the only provider documentation
+# readable here.
 _GPT41_MODELS = {"gpt-4.1", "gpt-4.1-mini"}
 
 # OpenAI applies a request-wide surcharge once a 1.05M-context GPT-5 model's

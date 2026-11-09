@@ -1513,6 +1513,34 @@ ValueError: The actual error"""
         # Should preserve the actual error message
         assert "actual error" in result.lower() or "ValueError" in result
 
+    @pytest.mark.parametrize("message", [
+        "Inline the image as a data: URI",
+        "Headline over 30 chars: shorten the headline",
+        'File "hero.png" cannot be used; embed it instead',
+        "https://cdn.example.com/a^b.png: image is unavailable",
+        "The deadline is tomorrow; pipeline needs an online source",
+    ])
+    def test_preserves_validation_prose(self, message):
+        assert _sanitize_error_message(message) == message
+
+    def test_preserves_every_multiline_validation_reason(self):
+        message = "Cannot create artifact:\n- Inline the image as a data: URI\n- Headline over 30 chars"
+        assert _sanitize_error_message(message) == message.replace("\n", " ")
+
+    def test_drops_frame_source_and_caret_without_losing_reason(self):
+        message = 'Traceback (most recent call last):\n  File "secret.py", line 3, in run\n    secret_call()\n    ^^^^^^^^^^^^^\nValueError: Inline the image'
+        assert _sanitize_error_message(message) == "ValueError: Inline the image"
+
+    def test_javascript_stack_locations_do_not_remove_prose(self):
+        message = "Error: deadline expired\n    at run (/srv/job.js:12:4)\n    at /srv/main.js:7:2\nRetry online at the next deadline"
+        assert _sanitize_error_message(message) == "Error: deadline expired Retry online at the next deadline"
+
+    def test_traceback_only_does_not_restore_a_frame(self):
+        assert _sanitize_error_message('  File "secret.py", line 3') == "Unknown error occurred"
+
+    def test_prose_with_traceback_substrings_still_has_length_limit(self):
+        assert len(_sanitize_error_message("Inline " * 1000)) == 503
+
     def test_handles_empty_input(self):
         """Test handling of empty input."""
         assert _sanitize_error_message("") == "Unknown error occurred"

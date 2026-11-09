@@ -5,6 +5,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Set
 
@@ -288,41 +289,32 @@ def _sanitize_error_message(error_msg: str) -> str:
     if not error_msg:
         return "Unknown error occurred"
 
-    # Split by common stack trace indicators
-    lines = error_msg.split("\n")
+    # Match traceback syntax, never substrings in ordinary tool guidance such
+    # as "Inline the image", "Headline over 30 chars", or a URL with a caret.
     sanitized_lines = []
-
-    for line in lines:
-        # Skip lines that look like stack traces
-        if any(
-            indicator in line
-            for indicator in [
-                "Traceback (most recent call last)",
-                'File "',
-                "line ",
-                "  at ",
-                "Stack trace:",
-                "^",  # Often used to point to error location
-            ]
+    in_python_frame = False
+    for line in error_msg.splitlines():
+        stripped = line.strip()
+        if stripped in {"Traceback (most recent call last):", "Stack trace:"}:
+            in_python_frame = False
+            continue
+        if re.match(r'^\s*File "[^"\n]+", line \d+(?:, in .*)?$', line):
+            in_python_frame = True
+            continue
+        if re.fullmatch(r"[~^]+", stripped) or re.match(
+            r"^\s+at (?:.+ \()?[^\s]+:\d+(?::\d+)?\)?$", line
         ):
             continue
-
-        # Skip lines with only whitespace or technical markers
-        if not line.strip() or line.strip() in ["---", "==="]:
+        # Python traceback frames include indented source/caret lines before
+        # the unindented exception. Drop those only after a real frame header.
+        if in_python_frame and line[:1].isspace():
             continue
+        in_python_frame = False
+        if stripped and stripped not in {"---", "==="}:
+            sanitized_lines.append(stripped)
 
-        sanitized_lines.append(line.strip())
-
-    # If we filtered everything out, return the first line of the original
-    if not sanitized_lines:
-        return lines[0] if lines else "Unknown error occurred"
-
-    # Join and limit length
-    result = " ".join(sanitized_lines)
-    if len(result) > 500:
-        result = result[:500] + "..."
-
-    return result
+    result = " ".join(sanitized_lines) or "Unknown error occurred"
+    return result[:500] + "..." if len(result) > 500 else result
 
 
 def _coerce_dict_payload(value: Any) -> Optional[Dict[str, Any]]:

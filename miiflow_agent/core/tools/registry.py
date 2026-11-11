@@ -22,7 +22,7 @@ _TYPICAL_TOOL_SCHEMA_BYTES = 1500
 from .exceptions import ToolPreparationError, is_tool_validation_error, log_tool_failure
 from .function import FunctionTool
 from .http import HTTPTool
-from .schemas import ToolResult, ToolSchema
+from .schemas import ToolFailure, ToolResult, ToolSchema
 from .types import ToolType
 
 if TYPE_CHECKING:
@@ -1126,19 +1126,21 @@ class ToolRegistry:
 
             execution_time = time.time() - start_time
 
-            if resolved_name in self.execution_stats:
-                stats = self.execution_stats[resolved_name]
-                stats["total_time"] += execution_time
-                stats["successes"] += 1
-
-            return ToolResult(
+            outcome = ToolResult(
                 name=resolved_name,
                 input={"context": "<RunContext>", **kwargs},
                 output=result,
-                success=True,
                 execution_time=execution_time,
                 metadata={"execution_pattern": "first_param"},
             )
+            if isinstance(result, ToolFailure):
+                outcome.apply_failure(result)
+
+            if resolved_name in self.execution_stats:
+                stats = self.execution_stats[resolved_name]
+                stats["total_time"] += execution_time
+                stats["successes" if outcome.success else "failures"] += 1
+            return outcome
 
         except _CONTROL_FLOW_EXCS:
             raise

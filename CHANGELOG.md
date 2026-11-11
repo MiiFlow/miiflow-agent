@@ -4,6 +4,8 @@ All notable changes to miiflow-agent will be documented here.
 
 ## Unreleased
 
+- Context-aware tool calls now report an explicit `ToolFailure` as a failed invocation, including in registry statistics.
+
 - **Gemini streaming usage is no longer over-counted** (`core/stream_normalizer.py`): Gemini sends the running total in `usageMetadata` on every chunk, while every consumer sums `chunk.usage` across the stream. The prompt was therefore counted once per chunk and the output as the sum of its running totals, so streamed Gemini calls were recorded and billed several times over. The normalizer now emits per-chunk increments (reset per stream), so the sum is the real total; `step_streaming` and `answer_synthesis` accumulate instead of keeping the last chunk's value.
 - A host answer check's correction now tells the model its answer was withdrawn and must be written again in full (`core/react/step_streaming.py`, `ANSWER_WITHDRAWN_NOTE`). Before, a model told only to "answer, covering every item" pointed the user to its "previous message", which had been retracted and never shown.
 - Refresh direct xAI/Grok support with Grok 4.7, 4.6 and 4.3 catalog entries,

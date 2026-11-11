@@ -57,6 +57,23 @@ async def test_function_tool_converts_explicit_failure_to_result():
 
 
 @pytest.mark.asyncio
+async def test_context_tool_records_explicit_failure_and_preserves_payload():
+    async def write(ctx):
+        return ToolFailure(error="Write refused", output={"destination": ctx}, error_type="refused")
+
+    registry = ToolRegistry()
+    registry.register(FunctionTool(write))
+    result = await registry.execute_safe_with_context("write", "workspace")
+
+    assert not result.success
+    assert result.output == {"destination": "workspace"}
+    assert result.error == "Write refused"
+    assert result.metadata["error_type"] == "refused"
+    assert registry.get_stats()["write"]["failures"] == 1
+    assert registry.get_stats()["write"]["successes"] == 0
+
+
+@pytest.mark.asyncio
 async def test_host_can_opt_into_a_legacy_result_adapter():
     payload = {"error": "Not found", "error_type": "not_found"}
 

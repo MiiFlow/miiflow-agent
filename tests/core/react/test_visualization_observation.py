@@ -92,6 +92,26 @@ class TestVisualizationObservation:
         assert "success" not in observation.lower()
         assert VISUALIZATION_MARKER_CONTRACT not in observation
 
+    def test_the_model_is_not_told_to_wait_for_a_report_the_chat_makes_itself(self):
+        # Finishing the card continues the chat (by itself in the dashboard,
+        # or with the user's next message elsewhere), so "tell me when you're
+        # done" would ask the user for a step the product does for them.
+        observation = visualization_observation(ADD_PROMPT)
+        assert "Do not ask them to tell you" in observation
+        assert "will tell you" not in observation
+
+    def test_a_link_out_card_still_waits_for_the_user(self):
+        # A non-OAuth server connects on the Integrations page; nothing in the
+        # chat sees that happen. The server decides this once (`linksOut`).
+        link_out = {**ADD_PROMPT, "data": {**ADD_PROMPT["data"], "linksOut": True}}
+        observation = visualization_observation(link_out)
+        assert "will tell you" in observation
+        assert "Do not ask them to tell you" not in observation
+
+    def test_a_stored_header_card_without_links_out_still_waits(self):
+        old = {**ADD_PROMPT, "data": {**ADD_PROMPT["data"], "mcpAuthType": "headers"}}
+        assert "will tell you" in visualization_observation(old)
+
     def test_an_undeclared_or_ensure_card_keeps_the_blocked_wording(self):
         # Cards persisted before `intent` existed carry no such key, and the
         # replay path hands them to this helper.

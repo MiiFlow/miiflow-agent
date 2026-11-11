@@ -265,10 +265,20 @@ def visualization_observation(viz_data: Dict[str, Any]) -> str:
     data = viz_data.get("data") or {}
     provider_name = data.get("providerName") or "the provider"
     if data.get("intent") == "add":
+        # `linksOut` is decided where the card is built; cards stored before
+        # it existed carry only `mcpAuthType`.
+        links_out = data.get("linksOut", data.get("mcpAuthType") == "headers")
+        after = (
+            "It links to the Integrations page, so they will tell you when they "
+            "have connected it."
+            if links_out
+            else "Once they finish, the chat continues: by itself in the dashboard, "
+            "or with their next message. Do not ask them to tell you when it is done."
+        )
         return (
             f"{marker} A connect card for {provider_name} has been shown to the "
             f"user, as they asked. Nothing is connected yet — that happens only if "
-            f"they complete it, and they will tell you when they have. Any existing "
+            f"they complete it. {after} Any existing "
             f"{provider_name} connection still works and its tools remain usable. "
             f"Tell the user the card is there; do not send them elsewhere to connect."
         )

@@ -4,6 +4,8 @@ All notable changes to miiflow-agent will be documented here.
 
 ## Unreleased
 
+- MCP HTTP connections now accept an optional `MCPServerConfig.httpx_client_factory` to apply the host application’s outbound connection policy.
+
 - Context-aware tool calls now report an explicit `ToolFailure` as a failed invocation, including in registry statistics.
 
 - **Gemini streaming usage is no longer over-counted** (`core/stream_normalizer.py`): Gemini sends the running total in `usageMetadata` on every chunk, while every consumer sums `chunk.usage` across the stream. The prompt was therefore counted once per chunk and the output as the sum of its running totals, so streamed Gemini calls were recorded and billed several times over. The normalizer now emits per-chunk increments (reset per stream), so the sum is the real total; `step_streaming` and `answer_synthesis` accumulate instead of keeping the last chunk's value.

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from ..exceptions import MCPConnectionError, MCPTimeoutError
 
 if TYPE_CHECKING:
+    from mcp.shared._httpx_utils import McpHttpClientFactory
     from mcp import ClientSession
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ class MCPServerConfig:
     timeout: float = 30.0
     auto_reconnect: bool = True
     max_retries: int = 3
+    httpx_client_factory: McpHttpClientFactory | None = None
 
     def __post_init__(self):
         """Validate configuration based on transport type."""
@@ -605,7 +607,8 @@ class StreamableHTTPMCPConnection(MCPServerConnection):
             raise MCPConnectionError(
                 "MCP package not installed. Install with: pip install mcp"
             )
-        return streamablehttp_client(self.config.url, headers=self.config.headers)
+        kwargs = {"httpx_client_factory": self.config.httpx_client_factory} if self.config.httpx_client_factory else {}
+        return streamablehttp_client(self.config.url, headers=self.config.headers, **kwargs)
 
 
 class SSEMCPConnection(MCPServerConnection):
@@ -630,7 +633,8 @@ class SSEMCPConnection(MCPServerConnection):
             raise MCPConnectionError(
                 "MCP package not installed. Install with: pip install mcp"
             )
-        return sse_client(self.config.url, headers=self.config.headers)
+        kwargs = {"httpx_client_factory": self.config.httpx_client_factory} if self.config.httpx_client_factory else {}
+        return sse_client(self.config.url, headers=self.config.headers, **kwargs)
 
 
 def create_connection(config: MCPServerConfig) -> MCPServerConnection:

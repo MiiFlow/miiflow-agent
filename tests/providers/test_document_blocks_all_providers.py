@@ -94,7 +94,7 @@ def test_hosted_text_attachment_content_reaches_the_model(name):
     response.content = DOC_TEXT.encode("utf-8")
     response.raise_for_status = MagicMock()
 
-    with patch("httpx.get", return_value=response) as mock_get:
+    with patch("miiflow_agent.utils.public_http.get_media", return_value=response) as mock_get:
         payload = CONVERTERS[name](_txt_block())
 
     text = _all_text(payload)
@@ -115,7 +115,7 @@ def test_binary_file_is_reported_never_decoded_into_the_prompt(name):
     response.content = b"PK\x03\x04\x14\x00\x06\x00" + bytes(range(256)) * 400
     response.raise_for_status = MagicMock()
 
-    with patch("httpx.get", return_value=response):
+    with patch("miiflow_agent.utils.public_http.get_media", return_value=response):
         payload = CONVERTERS[name](_txt_block())
 
     text = _all_text(payload)
@@ -127,7 +127,7 @@ def test_binary_file_is_reported_never_decoded_into_the_prompt(name):
 @pytest.mark.parametrize("name", sorted(CONVERTERS))
 def test_unreachable_attachment_is_reported_not_dropped(name):
     """A fetch failure must be visible to the model, never silence."""
-    with patch("httpx.get", side_effect=RuntimeError("connection refused")):
+    with patch("miiflow_agent.utils.public_http.get_media", side_effect=RuntimeError("connection refused")):
         payload = CONVERTERS[name](_txt_block())
     text = _all_text(payload)
     assert "notes.txt" in text and "connection refused" in text

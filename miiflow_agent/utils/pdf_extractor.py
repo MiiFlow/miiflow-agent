@@ -7,7 +7,7 @@ import os
 import tempfile
 from typing import Dict, Any, Optional, List
 
-import httpx
+from .public_http import get_media, public_http_client
 import pymupdf
 
 from miiflow_agent.utils.url_validator import validate_external_url, URLSecurityError
@@ -33,7 +33,7 @@ def extract_pdf_text(pdf_data: str, use_ocr: bool = True, max_size_mb: int = 100
                 raise URLSecurityError(f"URL security check failed: {error_msg}")
             
             pdf_bytes = b''
-            with httpx.stream('GET', pdf_data, timeout=30, follow_redirects=False) as response:
+            with public_http_client(timeout=30) as client, client.stream("GET", pdf_data) as response:
                 response.raise_for_status()
                 
                 content_length = response.headers.get('content-length')
@@ -188,7 +188,8 @@ def extract_pdf_metadata(pdf_data: str) -> Dict[str, Any]:
         if pdf_data.startswith("data:application/pdf;base64,"):
             pdf_bytes = base64.b64decode(pdf_data.split(",")[1])
         else:
-            response = httpx.get(pdf_data, timeout=30)
+            response = get_media(pdf_data, timeout=30)
+            response.raise_for_status()
             pdf_bytes = response.content
         
         doc = pymupdf.open("pdf", pdf_bytes)

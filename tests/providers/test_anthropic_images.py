@@ -27,7 +27,7 @@ def test_all_image_sources_are_resized(tool_result, remote_url):
     content = [TextBlock(text="Screenshot"), ImageBlock(image_url=url)]
     message = Message.tool(content, "call_1") if tool_result else Message.user(content)
     client = object.__new__(AnthropicClient)
-    with patch("miiflow_agent.utils.image.httpx.Client") as http:
+    with patch("miiflow_agent.utils.image.public_http.public_http_client") as http:
         response = http.return_value.__enter__.return_value.get.return_value
         response.content = raw
         response.headers = {"content-type": "image/png"}
@@ -50,7 +50,7 @@ def test_all_image_sources_are_resized(tool_result, remote_url):
 def test_invalid_images_preserve_other_content_without_url_fallback(url, tool_result):
     content = [TextBlock(text="Useful result"), ImageBlock(image_url=url)]
     message = Message.tool(content, "call_1") if tool_result else Message.user(content)
-    with patch("miiflow_agent.utils.image.httpx.Client", side_effect=OSError("unavailable")):
+    with patch("miiflow_agent.utils.image.public_http.public_http_client", side_effect=OSError("unavailable")):
         result = object.__new__(AnthropicClient).convert_message_to_provider_format(message)
     blocks = result["content"][0]["content"] if tool_result else result["content"]
     assert blocks[0]["text"] == "Useful result"

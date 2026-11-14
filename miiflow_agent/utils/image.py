@@ -16,7 +16,7 @@ except ImportError:
     FILETYPE_AVAILABLE = False
 
 try:
-    import httpx
+    from . import public_http
 
     HTTPX_AVAILABLE = True
 except ImportError:
@@ -391,7 +391,7 @@ async def url_to_bytes_and_mimetype(
         "Accept-Encoding": "gzip, deflate, br",
     }
 
-    async with httpx.AsyncClient(
+    async with public_http.public_async_http_client(
         timeout=timeout, headers=headers, follow_redirects=True
     ) as client:
         response = await client.get(url)
@@ -436,7 +436,7 @@ def url_to_base64_and_mimetype(
             "Install with: pip install httpx"
         )
 
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+    with public_http.public_http_client(timeout=timeout, follow_redirects=True) as client:
         response = client.get(url)
         response.raise_for_status()
 

@@ -33,7 +33,7 @@ def image_bytes():
 @pytest.fixture
 def anthropic_client(image_bytes):
     client = AnthropicClient(model="claude-opus-4-7", api_key="test-key", timeout=30.0)
-    with patch("miiflow_agent.utils.image.httpx.Client") as http:
+    with patch("miiflow_agent.utils.image.public_http.public_http_client") as http:
         response = http.return_value.__enter__.return_value.get.return_value
         response.content = image_bytes
         response.headers = {"content-type": "image/png"}

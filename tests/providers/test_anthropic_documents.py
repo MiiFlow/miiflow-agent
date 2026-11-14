@@ -35,7 +35,7 @@ def test_hosted_txt_arrives_as_readable_text(client):
     response.content = DOC_TEXT.encode("utf-8")
     response.raise_for_status = MagicMock()
 
-    with patch("httpx.get", return_value=response) as mock_get:
+    with patch("miiflow_agent.utils.public_http.get_media", return_value=response) as mock_get:
         result = _convert(
             client,
             DocumentBlock(document_url=HOSTED_TXT, document_type="txt", filename="notes.txt"),
@@ -92,7 +92,7 @@ def test_inline_base64_txt_stays_a_document_block(client):
 
 def test_unreachable_txt_reports_instead_of_vanishing(client):
     """A fetch failure must say so in the payload, not drop the attachment."""
-    with patch("httpx.get", side_effect=RuntimeError("connection refused")):
+    with patch("miiflow_agent.utils.public_http.get_media", side_effect=RuntimeError("connection refused")):
         result = _convert(
             client,
             DocumentBlock(document_url=HOSTED_TXT, document_type="txt", filename="notes.txt"),

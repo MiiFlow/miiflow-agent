@@ -40,9 +40,9 @@ def fetch_document_text(
     """
     label = f" [{filename}]" if filename else ""
     try:
-        import httpx
+        from .public_http import get_media
 
-        response = httpx.get(document_url, timeout=timeout, follow_redirects=True)
+        response = get_media(document_url, timeout=timeout, follow_redirects=True)
         response.raise_for_status()
         content = response.content
         if looks_binary(content):

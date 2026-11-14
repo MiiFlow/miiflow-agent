@@ -57,12 +57,10 @@ class OllamaClient(ModelClient):
         # External URL - download and convert to base64
         try:
             import base64
-            async with aiohttp.ClientSession() as session:
-                async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
-                    if response.status != 200:
-                        raise ProviderError(f"Failed to download image from {image_url}: {response.status}", provider="ollama")
-                    image_bytes = await response.read()
-                    return base64.b64encode(image_bytes).decode('utf-8')
+            from ..utils.image import image_url_to_bytes
+
+            image_bytes, _ = await image_url_to_bytes(image_url, timeout=self.timeout)
+            return base64.b64encode(image_bytes).decode("ascii")
         except Exception as e:
             raise ProviderError(f"Error converting image URL to base64: {e}", provider="ollama")
     

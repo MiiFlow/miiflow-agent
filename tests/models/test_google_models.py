@@ -23,13 +23,30 @@ from miiflow_agent.models.google import (
 # figure to keep this test green is the one thing it must not cause.
 _CACHE_READ_RATIO = 0.1
 _CACHE_READ_RATIO_EXCEPTIONS: dict[str, float] = {
-    # Gemini 4 Argon is the first Google model here to break the 0.1x default,
-    # and it is a published figure, not a misread column: Vertex's global
-    # standard tier lists $2 input against $0.10 cached through November 30,
-    # 2026 and $4 against $0.20 from December 1 — 0.05x on both sides of the
-    # step-up, so the ratio survives the price change even though the rates do
-    # not. Google describes the same thing as "95% off" on the Gemini API.
+    # 0.05x IS THE WHOLE GEMINI 4 LINE, NOT AN ARGON QUIRK. Argon was the first
+    # Google model here to break the 0.1x default, and when Carbon and Hydrogen
+    # were catalogued on November 16, 2026 both arrived at the same ratio —
+    # so read this as "Gemini 4 reads cache at 5%, Gemini 3.x at 10%", and
+    # expect the next Gemini 4 model to need an entry here too.
+    #
+    # Each is a published figure rather than a misread column:
+    #   * gemini-4-argon  — $2 input against $0.10 cached through November 30,
+    #     2026, and $4 against $0.20 from December 1. 0.05x on both sides of the
+    #     step-up, so the RATIO survives the price change even though the rates
+    #     do not. Google describes the same thing as "95% off" on the Gemini API.
+    #   * gemini-4-carbon — same rates and the same December 1 step-up as
+    #     Argon, so the same ratio holds through it.
+    #   * gemini-4-hydrogen — $1.50 input against $0.075 cached, and these
+    #     are STANDARD rates with no announced step-up, so unlike the two above
+    #     this pair of numbers is not expected to move at all.
+    #
+    # Note the collision this test cannot see: Hydrogen's $0.075 cached rate is
+    # the same figure as gemini-3.8-flash's and gemini-3.6-flash's, but it is
+    # 0.05x of Hydrogen's $1.50 input and 0.1x of their $0.75. Identical cache
+    # rate, different ratio, different tier.
     "gemini-4-argon": 0.05,
+    "gemini-4-carbon": 0.05,
+    "gemini-4-hydrogen": 0.05,
 }
 
 
@@ -118,7 +135,8 @@ def test_routed_ids_still_report_sampling_params_as_ineffective():
 
 
 def test_sampling_params_are_dropped_from_gemini_3_6_onward():
-    for name in ("gemini-4-argon", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"):
+    for name in ("gemini-4-carbon", "gemini-4-hydrogen", "gemini-4-argon",
+                 "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"):
         assert supports_temperature(name) is False, name
     # The 3.1 pair are the last models here that a temperature actually
     # reaches; gemini-3.5-flash was the third until it was removed.
@@ -130,6 +148,66 @@ def test_every_model_uses_max_output_tokens():
     for name, config in GOOGLE_MODELS.items():
         assert config.token_param_name == "max_output_tokens", name
         assert get_token_param_name(name) == "max_output_tokens", name
+
+
+def test_gemini_4_carbon_is_catalogued_at_its_introductory_rate():
+    # Carbon went generally available on the PAID Gemini API on November 10,
+    # 2026, which is what four earlier audits were waiting for — it was
+    # Fairwind-gated before that, and a published rate card was deliberately
+    # NOT treated as grounds to catalogue it, because a priced id nobody can
+    # call is a 404 with a number attached. The rates below are the
+    # INTRODUCTORY tier and expire on the same date as Argon's: from
+    # December 1, 2026 Google charges $4 / $20 with cached input at $0.20. The
+    # first audit after November 30 must double all three on BOTH models.
+    config = GOOGLE_MODELS["gemini-4-carbon"]
+    assert config.model_identifier == "models/gemini-4-carbon"
+    assert (config.input_cost_hint, config.output_cost_hint) == (2.0, 10.0)
+    assert config.cache_read_cost_hint == 0.10
+
+
+def test_gemini_4_carbon_shares_argons_non_streaming_output_cap():
+    # Same three-number shape as Argon, same reason for carrying the smallest:
+    # GeminiClient's non-streaming path is a direct POST to
+    # `:generateContent`, which tops out at 32,768.
+    config = GOOGLE_MODELS["gemini-4-carbon"]
+    assert config.maximum_context_tokens == 1048576
+    assert config.maximum_output_tokens == 32768
+
+
+def test_gemini_4_hydrogen_carries_standard_not_introductory_rates():
+    # THE ONE GEMINI 4 MODEL WITH NO SCHEDULED STEP-UP. Argon and Carbon both
+    # double on December 1, 2026 and the 3.x Flash tier doubles on January 1,
+    # 2027; Hydrogen's $1.50/$7.50 is its standard price. The audit that
+    # finally doubles the dated rates must leave this entry alone, which is
+    # what this test exists to catch.
+    config = GOOGLE_MODELS["gemini-4-hydrogen"]
+    assert config.model_identifier == "models/gemini-4-hydrogen"
+    assert (config.input_cost_hint, config.output_cost_hint) == (1.50, 7.50)
+    assert config.cache_read_cost_hint == 0.075
+
+
+def test_gemini_4_hydrogen_allows_twice_the_output_of_carbon_and_argon():
+    # Hydrogen does NOT share the Gemini 4 non-streaming cap: Google caps each
+    # generation segment at 65,536 whether streaming or not and returns a
+    # continuation token past it, where Argon and Carbon stop a non-streaming
+    # response at 32,768. Assuming family uniformity here would halve the
+    # usable output of every Hydrogen call.
+    hydrogen = GOOGLE_MODELS["gemini-4-hydrogen"]
+    assert hydrogen.maximum_context_tokens == 1048576
+    assert hydrogen.maximum_output_tokens == 65536
+    for sibling in ("gemini-4-argon", "gemini-4-carbon"):
+        assert GOOGLE_MODELS[sibling].maximum_output_tokens == 32768, sibling
+
+
+def test_hydrogen_cache_rate_collides_with_the_flash_tier_at_a_different_ratio():
+    # $0.075 is the cached rate on Hydrogen AND on both 3.x Flash models, but
+    # it is 0.05x of Hydrogen's $1.50 input and 0.1x of their $0.75. The equal
+    # figures are a coincidence of two different tiers, so neither entry may be
+    # "corrected" to match the other.
+    hydrogen = GOOGLE_MODELS["gemini-4-hydrogen"]
+    flash = GOOGLE_MODELS["gemini-3.8-flash"]
+    assert hydrogen.cache_read_cost_hint == flash.cache_read_cost_hint
+    assert hydrogen.input_cost_hint == 2 * flash.input_cost_hint
 
 
 def test_gemini_4_argon_is_catalogued_at_its_introductory_rate():

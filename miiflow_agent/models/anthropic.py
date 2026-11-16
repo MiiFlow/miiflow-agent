@@ -22,8 +22,11 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 #
 # CACHE READS ARE NO LONGER A FLAT 10% OF INPUT, and the exceptions are not
 # derivable from the model's tier. Anthropic's pricing page now states three
-# tiers: 0.025x on Fable 5.1 / Mythos 5.1, 0.05x on Opus 5.5 AND Sonnet 5.5,
-# and 0.1x everywhere else. Sonnet 5.5 joined the 0.05x tier on October 7,
+# tiers: 0.025x on Fable 5.2 / Mythos 5.2 / Fable 5.1 / Mythos 5.1, 0.05x on
+# Opus 5.5 AND Sonnet 5.5, and 0.1x everywhere else. The cheapest tier grew by
+# two on November 9, 2026 when the 5.2 pair shipped into it; note that 0.025x
+# of Fable 5.2's lower $8 input is $0.20, so it undercuts Fable 5.1's $0.25
+# in absolute terms as well as matching it as a ratio. Sonnet 5.5 joined the 0.05x tier on October 7,
 # 2026 — a cut from $0.20 to $0.10 per 1M announced the same day Haiku 5.5
 # shipped, with base rates and cache WRITES unchanged — so a Sonnet 5.5 entry
 # carrying $0.20 bills cache reads at twice the published rate. Read each
@@ -182,22 +185,141 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # three, and the OpenAI and Google catalogs are still carried on search-result
 # corroboration of their first-party pages.
 
+# THE NOVEMBER 16, 2026 AUDIT ADDED A MODEL, the first catalog change to this
+# file in six weekly audits. CLAUDE FABLE 5.2 shipped November 9, 2026 and is
+# catalogued below as the new first entry. All three first-party pages were read
+# directly again — pricing, the models overview and the Fable 5.2 model page —
+# and the lineup Anthropic now calls current is Fable 5.2, Opus 5.5, Sonnet 5.5
+# and Haiku 5.5, with the overview's recommendation unchanged (start on Opus
+# 5.5; reach for Fable 5.2 when evals on Opus 5.5 at higher effort fall short).
+#
+# IT IS CHEAPER THAN THE MODEL IT REPLACES ON ALL FOUR COLUMNS, which is worth
+# stating because it inverts the usual direction and because every previous
+# audit's instinct was to expect a top-tier release to cost more: $8/$40 against
+# Fable 5.1's $10/$50, cache writes $10/$16 against $12.50/$20, cache reads
+# $0.20 against $0.25. Nothing about the older entries' rates moved — all twelve
+# previously catalogued models still match the published table exactly on base
+# input, cache writes, cache reads and output, and the deprecations table still
+# lists every one of them Active with no deprecation date.
+#
+# THE PREDICTION THIS FILE HAS CARRIED SINCE OCTOBER 26 IS SETTLED, and it was
+# settled the way the file said not to assume: five consecutive audits recorded
+# "still no Fable 5.5", and what arrived was a 5.2. Do not read the version
+# numbering as a roadmap.
+#
+# TWO THINGS ABOUT FABLE 5.2 THAT NO `*_cost_hint` CAN HOLD and that are not
+# obvious from its specs, both recorded here as well as in its description:
+#   * IT CANNOT RUN UNDER ZERO DATA RETENTION. Fable 5.2 requires 30-day data
+#     retention and is not available under ZDR unless Anthropic expressly
+#     authorizes it. No other model in this catalog carries that constraint, and
+#     ModelConfig has no field for it, so a ZDR-contracted organization reading
+#     only the structured fields would see a strictly-better model and migrate
+#     into a 400. Fable 5.1 stays catalogued partly for them.
+#   * ITS FAST MODE LAUNCHED WIDER THAN OPUS 5.5'S. $16/$80 on the Claude API,
+#     plus BOTH Google Cloud routes (Anthropic managed and Google managed, where
+#     Google sets its own price) and Microsoft Foundry on Anthropic-hosted
+#     deployments.
+#
+# THE FAST-MODE TABLE NOW PRICES FIVE MODELS, NOT THREE, and one of them changed
+# lifecycle state rather than price — which is the kind of move an audit that
+# only diffs numbers would miss. The table reads: Fable 5.2 and Mythos 5.2 at
+# $16/$80, Opus 5.5 at $8/$40, and Opus 5 / Opus 4.8 at $10/$50. Opus 5 is still
+# research preview, but FAST MODE ON OPUS 4.8 IS NOW DEPRECATED — the only
+# fast-mode tier so marked — while its rate stays published, so a reader costing
+# from the table alone would not notice. Both descriptions now say so. Bedrock
+# still has fast mode for NO model, so the Bedrock mirror in
+# server/core/llms/bedrock.py continues to mention it nowhere; that remains a
+# deliberate divergence from this file rather than an omission to fix.
+#
+# PARAMETER CONTRACT: unchanged in substance and now one model wider. Fable 5.2
+# matches the Opus 5.5 / Sonnet 5.5 / Fable 5.1 shape exactly — adaptive
+# thinking always on and not disablable, forced tool use (`tool_choice` of `any`
+# or `tool`) a 400, and `temperature` / `top_p` / `top_k` to be omitted — so it
+# needs no new set membership beyond `supports_temperature=False`, which
+# `_NO_TEMPERATURE_MODELS` derives automatically. API version 2026-10-21 still
+# removes the three sampling parameters for every model at once and still does
+# not affect this file, because the SDK pin keeps requests on 2023-06-01; read
+# `_NO_TEMPERATURE_MODELS` before raising that pin.
+#
+# THE TWO NOVEMBER DATES THAT ARE NOT OURS: claude-opus-4-5-20251101 is still
+# Active on its "not sooner than November 24, 2026" floor, now eight days out
+# and still the nearest Anthropic date of any kind; claude-sonnet-4-5-20250929
+# is still Deprecated for retirement on November 30, 2026. Neither is
+# catalogued. Haiku 4.5 is now THIRTY-TWO DAYS past its own floor and still
+# listed Active with no deprecation date, so the reasoning in its entry
+# continues to hold and the October 29 consumer-surface removal still has no API
+# counterpart.
+#
+# SOURCING: platform.claude.com remains the ONLY provider documentation this
+# environment can read, and the gap to the other two files widened again. Every
+# openai.com host still fails to resolve, and this audit additionally confirmed
+# that ai.google.dev, aistudio.google.com, docs.cloud.google.com, openrouter.ai
+# and every third-party aggregator tried also fail to resolve; cloud.google.com
+# resolves but serves the Vertex pricing path as a contentless shell. So this
+# file is first-party-verified and the OpenAI and Google catalogs are carried
+# entirely on search-result corroboration — do not present a cross-provider
+# price comparison drawn from all three as equally evidenced.
+
 ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     # Ordered newest-first on purpose: `_resolve_model_name`'s third tier is a
     # SUBSTRING match, and "claude-fable-5" is a substring of every Fable 5.1
-    # identifier. Fable 5.1 must be reached first or a Bedrock/Vertex spelling
-    # of it (`anthropic.claude-fable-5-1`) resolves to Fable 5 and gets Fable
-    # 5's capabilities and prices. The same collision exists one tier down:
+    # AND Fable 5.2 identifier. Both must be reached before Fable 5 or a
+    # Bedrock/Vertex spelling of either (`anthropic.claude-fable-5-2`,
+    # `global.anthropic.claude-fable-5-2`) resolves to Fable 5 and gets Fable
+    # 5's capabilities and prices. Fable 5.2 leads the dict for that reason.
+    # Note the two newer Fable ids do NOT collide with each other —
+    # "claude-fable-5-1" is not a substring of "claude-fable-5-2" — so only
+    # their position relative to plain Fable 5 matters.
+    #
+    # ONE COLLISION THIS ORDERING CREATES, UNREACHABLE TODAY AND WORTH KNOWING:
+    # "claude-fable-5-2" is itself a prefix of any DATED Fable 5 snapshot whose
+    # date begins with a 2 — `claude-fable-5-20260609` would resolve here to
+    # Fable 5.2 and be costed at $8/$40 with $0.20 cache reads instead of
+    # $10/$50 with $1.00, a 5x under-report on cached tokens. It is unreachable
+    # because Anthropic stopped dating model ids at the 4.6 generation: every
+    # Fable and Mythos id on the deprecations page is dateless, and the dated
+    # ids that remain (`claude-sonnet-4-5-20250929`,
+    # `claude-haiku-4-5-20251001`) all predate the Fable line. So no spelling
+    # Anthropic serves can hit it.
+    # WHAT WOULD MAKE IT REACHABLE is Anthropic dating a Fable id again, or a
+    # caller inventing a dated spelling of one. Neither can be fixed by
+    # reordering — any order that puts 5.2 before plain Fable 5 has this
+    # property, and putting Fable 5 first breaks the live case instead — so
+    # the fix would be anchoring the third tier rather than shuffling the dict.
+    # Recorded here so a future audit reads this as a known trade-off rather
+    # than rediscovering it as a mispricing. The same collision exists one tier down:
     # "claude-opus-5" is a substring of every Opus 5.5 identifier, so Opus 5.5
     # is listed above Opus 5, and "claude-sonnet-5" is a substring of every
     # Sonnet 5.5 identifier, so Sonnet 5.5 is listed above Sonnet 5. Getting
     # that order wrong is not cosmetic — it bills the newer model at the older
     # one's rates and tells callers thinking can be disabled with
     # `{"type": "disabled"}` on a model that 400s on it.
+    "claude-fable-5.2": ModelConfig(
+        model_identifier="claude-fable-5-2",
+        name="claude-fable-5.2",
+        description="Anthropic's newest and most capable widely released model (released November 9, 2026), for demanding reasoning and long-horizon agentic work: agent sessions that run for hours, multistep deep research, and analysis carried through to a finished document, spreadsheet or deck. It supersedes Fable 5.1 and is CHEAPER ON ALL FOUR COLUMNS, which is unusual for a top-tier release: $8/$40 against $10/$50, cache reads $0.20 against $0.25, 5-minute cache writes $10 against $12.50, 1-hour writes $16 against $20 — and Anthropic measures output up to 30% faster. Cache reads are 2.5% of input, the cheapest tier here, shared with Fable 5.1 and the Mythos twins; Opus 5.5 and Sonnet 5.5 read at 5% and the rest of the line at 10%. Always-on adaptive thinking that CANNOT be disabled (default effort high), structured outputs, 1M context window, 128K max output, Jun 2026 cutoff. Forced tool use (`tool_choice` of `any` or `tool`) returns a 400, so structured output must go through the native path, never the forced-`json_tool` fallback. Omit `temperature`, `top_p` and `top_k`. Fast mode runs at $16/$80 and is first-party plus both Google Cloud routes and Microsoft Foundry — a wider launch footprint than Opus 5.5 got. ONE DEPLOYMENT CONSTRAINT NO OTHER MODEL HERE HAS: it requires 30-day data retention and is NOT available under zero data retention unless Anthropic expressly authorizes it, so a ZDR-contracted org cannot call it at all and must stay on Fable 5.1. Claude Mythos 5.2 shares its specifications and pricing but is verification-gated, so Fable 5.2 is the top tier reachable with a standard API key. Retirement not sooner than November 9, 2027.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        # Must stay True: the tool-based JSON fallback in AnthropicClient forces
+        # `tool_choice`, which this model rejects outright.
+        supports_structured_outputs=True,
+        reasoning=True,
+        maximum_context_tokens=1000000,
+        maximum_output_tokens=128000,
+        token_param_name="max_tokens",
+        supports_temperature=False,
+        input_cost_hint=8.0,
+        output_cost_hint=40.0,
+        cache_read_cost_hint=0.20,  # 0.025x input — the Fable 5.2 / Mythos 5.2 rate
+        cache_write_cost_hint=10.0,  # 1.25x input (5-min TTL); $16 at 1h
+    ),
     "claude-fable-5.1": ModelConfig(
         model_identifier="claude-fable-5-1",
         name="claude-fable-5.1",
-        description="Anthropic's most capable widely released model (released September 1, 2026), for demanding reasoning, long-horizon agentic coding, multistep research, and document/spreadsheet/slide work. Same input and output prices as Fable 5, with cache reads at a quarter of the rate ($0.25 vs $1.00 per 1M) — 2.5% of input, the cheapest cache-read tier here; Opus 5.5 and Sonnet 5.5 read at 5% and the rest of the line at 10% — which Anthropic estimates at ~25% lower cost on typical token-billed workloads and up to ~45% on highly agentic ones. Always-on adaptive thinking (default effort high), structured outputs, 1M context window. Forced tool use is NOT supported: it returns an error, so structured output must go through the native path, never the forced-`json_tool` fallback. Claude Mythos 5.1 shares its specifications and pricing but is invitation-only (Project Glasswing), so Fable 5.1 is the top tier reachable with a standard API key. No longer Anthropic's newest model — Opus 5.5 shipped September 22, 2026 and Sonnet 5.5 on September 28 — but still the most capable one, and the model to reach for when evals on Opus 5.5 at higher effort fall short. Retirement not sooner than September 1, 2027.",
+        description="Legacy — succeeded by Claude Fable 5.2 (November 9, 2026), which is both stronger and cheaper on every column ($8/$40 against the $10/$50 below, cache reads $0.20 against $0.25, cache writes $10 against $12.50), so new work belongs there and this is kept for pinned workloads only. Released September 1, 2026 for demanding reasoning, long-horizon agentic coding, multistep research, and document/spreadsheet/slide work. IT IS STILL THE RIGHT TARGET FOR ONE THING FABLE 5.2 CANNOT DO: run under zero data retention. Fable 5.2 requires 30-day retention unless Anthropic expressly authorizes otherwise, so a ZDR-contracted organization has to stay here — that, not capability or price, is the reason this entry is not merely historical. Cache reads are 2.5% of input ($0.25 vs Fable 5's $1.00), a tier it shares with Fable 5.2 and the Mythos twins; Opus 5.5 and Sonnet 5.5 read at 5% and the rest of the line at 10%. Always-on adaptive thinking (default effort high), structured outputs, 1M context window. Forced tool use is NOT supported: it returns an error, so structured output must go through the native path, never the forced-`json_tool` fallback. Claude Mythos 5.1 shares its specifications and pricing but is invitation-only (Project Glasswing). Retirement not sooner than September 1, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -219,7 +341,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-fable-5": ModelConfig(
         model_identifier="claude-fable-5",
         name="claude-fable-5",
-        description="Legacy — succeeded by Claude Fable 5.1 (September 1, 2026), which carries the same specifications and per-token price but bills cache reads at a quarter of the rate, so this is kept for pinned workloads only. Generally available since June 9, 2026 (API access was briefly suspended June 12–July 1, 2026 under a US export-control directive and has since been restored). Always-on adaptive thinking, structured outputs, 1M context window. Retirement not sooner than June 9, 2027.",
+        description="Legacy — two generations behind: Fable 5.1 (September 1, 2026) matched its specifications and per-token price while billing cache reads at a quarter of the rate, and Fable 5.2 (November 9, 2026) is now cheaper than both ($8/$40, cache reads $0.20), so new work belongs on 5.2 and this is kept for pinned workloads only. Generally available since June 9, 2026 (API access was briefly suspended June 12–July 1, 2026 under a US export-control directive and has since been restored). Always-on adaptive thinking, structured outputs, 1M context window. Retirement not sooner than June 9, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -239,7 +361,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-5.5": ModelConfig(
         model_identifier="claude-opus-5-5",
         name="claude-opus-5.5",
-        description="Anthropic's newest Opus (released September 22, 2026) and the recommended default for most workloads, built for long-running agentic coding and knowledge work. Undercuts Opus 5 on price ($4/$20 vs $5/$25) while beating it, and reads cached tokens at 5% of input ($0.20 vs $0.50 per 1M). Sonnet 5.5 joined it at 5% when Anthropic cut that model's cache reads on October 7, 2026, so the 5% tier is now Opus 5.5 and Sonnet 5.5; the rest of the line reads at 10% — Fable 5 included, since only Fable 5.1 and Mythos 5.1 are cheaper at 2.5%. Always-on adaptive thinking that CANNOT be disabled: `thinking: {\"type\": \"disabled\"}` is a 400 at every effort level, unlike Opus 5 where it is rejected only at xhigh/max. Default effort is `medium`, not `high` — a request that omits `effort` runs one level lower than it did on Opus 5. Forced tool use is NOT supported (it returns an error), so structured output must go through the native path, never the forced-`json_tool` fallback. All five effort levels, structured outputs, 1M context window, 128K max output. Fast mode runs at $8/$40. The first of the Claude 5.5 family, which is now complete and catalogued in full here: Sonnet 5.5 shipped September 28, 2026 and Haiku 5.5 on October 7, 2026. Note the effort default still differs from Sonnet 5.5, which defaults to high; Haiku 5.5 shares this model's `medium` default. Retirement not sooner than September 22, 2027.",
+        description="Anthropic's newest Opus (released September 22, 2026) and the recommended default for most workloads, built for long-running agentic coding and knowledge work. Undercuts Opus 5 on price ($4/$20 vs $5/$25) while beating it, and reads cached tokens at 5% of input ($0.20 vs $0.50 per 1M). Sonnet 5.5 joined it at 5% when Anthropic cut that model's cache reads on October 7, 2026, so the 5% tier is now Opus 5.5 and Sonnet 5.5; the rest of the line reads at 10% — Fable 5 included, since only the Fable and Mythos 5.1 and 5.2 pairs are cheaper at 2.5%. Note that Fable 5.2's reads land at the SAME $0.20 per 1M as this model even though its input costs twice as much ($8 against $4): a lower ratio on a higher base, so neither model's cache reads are cheaper than the other's in absolute terms. Always-on adaptive thinking that CANNOT be disabled: `thinking: {\"type\": \"disabled\"}` is a 400 at every effort level, unlike Opus 5 where it is rejected only at xhigh/max. Default effort is `medium`, not `high` — a request that omits `effort` runs one level lower than it did on Opus 5. Forced tool use is NOT supported (it returns an error), so structured output must go through the native path, never the forced-`json_tool` fallback. All five effort levels, structured outputs, 1M context window, 128K max output. Fast mode runs at $8/$40. The first of the Claude 5.5 family, which is now complete and catalogued in full here: Sonnet 5.5 shipped September 28, 2026 and Haiku 5.5 on October 7, 2026. Note the effort default still differs from Sonnet 5.5, which defaults to high; Haiku 5.5 shares this model's `medium` default. Retirement not sooner than September 22, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -261,7 +383,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-5": ModelConfig(
         model_identifier="claude-opus-5",
         name="claude-opus-5",
-        description="Legacy — succeeded by Claude Opus 5.5 (September 22, 2026), which is both stronger and cheaper ($4/$20 vs $5/$25) and reads cached tokens at 5% of input rather than 10%, so this is kept for pinned workloads only. Released July 24, 2026. Always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (2.5x faster at 2x the price — $10/$50 per 1M, research preview), structured outputs, and a safety fallback that routes to Opus 4.8. Thinking can still be disabled here at effort <= high, which Opus 5.5 rejects outright. 1M context window. Retirement not sooner than July 24, 2027.",
+        description="Legacy — succeeded by Claude Opus 5.5 (September 22, 2026), which is both stronger and cheaper ($4/$20 vs $5/$25) and reads cached tokens at 5% of input rather than 10%, so this is kept for pinned workloads only. Released July 24, 2026. Always-on adaptive thinking with an xhigh reasoning-effort mode, a Fast Mode (up to 2.5x faster at 2x the price — $10/$50 per 1M, still research preview; Opus 4.8's equivalent is now deprecated), structured outputs, and a safety fallback that routes to Opus 4.8. Thinking can still be disabled here at effort <= high, which Opus 5.5 rejects outright. 1M context window. Retirement not sooner than July 24, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -281,7 +403,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-opus-4.8": ModelConfig(
         model_identifier="claude-opus-4-8",
         name="claude-opus-4.8",
-        description="Legacy — succeeded by Claude Opus 5 (July 24, 2026). Powerful reasoning and coding model with adaptive thinking, structured outputs, and fast mode ($10/$50 per 1M, research preview — the same premium rate as Opus 5, against Opus 5.5's $8/$40); remains available and serves as Opus 5's safety fallback. 1M context window. Retirement not sooner than May 28, 2027.",
+        description="Legacy — succeeded by Claude Opus 5 (July 24, 2026). Powerful reasoning and coding model with adaptive thinking, structured outputs, and fast mode ($10/$50 per 1M — the same premium rate as Opus 5, against Opus 5.5's $8/$40 and Fable 5.2's $16/$80). ITS FAST MODE IS NOW DEPRECATED: Anthropic's pricing page moved it from research preview to deprecated, the only fast-mode tier so marked, so do not build new fast-mode work on this id even though the rate is still published. The model itself remains available and serves as Opus 5's safety fallback. 1M context window. Retirement not sooner than May 28, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -341,7 +463,7 @@ ANTHROPIC_MODELS: Dict[str, ModelConfig] = {
     "claude-sonnet-5.5": ModelConfig(
         model_identifier="claude-sonnet-5-5",
         name="claude-sonnet-5.5",
-        description="Anthropic's current Sonnet (released September 28, 2026) and the best combination of speed and intelligence, succeeding Sonnet 5 at the same base rates ($2/$10, cache writes $2.50) and now UNDER it on cache reads: Anthropic cut this model's cache reads from $0.20 to $0.10 per 1M on October 7, 2026 — 0.05x input — a tier it shares only with Opus 5.5, where Sonnet 5 and every other model here reads at 0.1x and only Fable 5.1 (with Mythos 5.1) is cheaper at 0.025x. It is no longer Anthropic's newest model: Haiku 5.5 shipped October 7, 2026. Anthropic measures output more than 30% faster and up to 30% lower cost per task than Sonnet 5, from the speed and from fewer tool calls; strongest on well-scoped everyday work, bug fixes, and polished documents, slides and spreadsheets. Same tokenizer as Sonnet 5, so identical text bills the same token count. Adaptive thinking on by default, DEFAULT EFFORT high (Opus 5.5 defaults to medium), all five effort levels, 1M context window, 128K max output. Three parameter changes from Sonnet 5, each a 400: `thinking: {\"type\": \"disabled\"}` is rejected and replaced by `thinking: {\"type\": \"between_tools\"}`, which is accepted ONLY at low/medium/high effort and takes no other field; manual `budget_tokens` thinking is rejected; and forced tool use (`tool_choice` of `any` or `tool`) is rejected, so structured output must go through the native path rather than the forced-`json_tool` fallback. Effort levels are recalibrated — an effort sweep carried over from Sonnet 5 does not produce the same amount of thinking. Prompt caching needs only a 512-token prefix here, against 1,024 on Sonnet 5. Its thinking blocks are bound to the model, the conversation and the account, so keep histories append-only. On Amazon Bedrock, structured outputs (including strict tool use) are NOT available for this model. Retirement not sooner than September 28, 2027.",
+        description="Anthropic's current Sonnet (released September 28, 2026) and the best combination of speed and intelligence, succeeding Sonnet 5 at the same base rates ($2/$10, cache writes $2.50) and now UNDER it on cache reads: Anthropic cut this model's cache reads from $0.20 to $0.10 per 1M on October 7, 2026 — 0.05x input — a tier it shares only with Opus 5.5, where Sonnet 5 and every other model here reads at 0.1x and only the Fable line (5.1 and 5.2, with their Mythos twins) is cheaper at 0.025x. It is no longer Anthropic's newest model: Haiku 5.5 shipped October 7, 2026. Anthropic measures output more than 30% faster and up to 30% lower cost per task than Sonnet 5, from the speed and from fewer tool calls; strongest on well-scoped everyday work, bug fixes, and polished documents, slides and spreadsheets. Same tokenizer as Sonnet 5, so identical text bills the same token count. Adaptive thinking on by default, DEFAULT EFFORT high (Opus 5.5 defaults to medium), all five effort levels, 1M context window, 128K max output. Three parameter changes from Sonnet 5, each a 400: `thinking: {\"type\": \"disabled\"}` is rejected and replaced by `thinking: {\"type\": \"between_tools\"}`, which is accepted ONLY at low/medium/high effort and takes no other field; manual `budget_tokens` thinking is rejected; and forced tool use (`tool_choice` of `any` or `tool`) is rejected, so structured output must go through the native path rather than the forced-`json_tool` fallback. Effort levels are recalibrated — an effort sweep carried over from Sonnet 5 does not produce the same amount of thinking. Prompt caching needs only a 512-token prefix here, against 1,024 on Sonnet 5. Its thinking blocks are bound to the model, the conversation and the account, so keep histories append-only. On Amazon Bedrock, structured outputs (including strict tool use) are NOT available for this model. Retirement not sooner than September 28, 2027.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -560,6 +682,7 @@ ANTHROPIC_PARAMETERS: list[ParameterConfig] = [
         default_value=4096,
         min_value=1,
         max_value={
+            "claude-fable-5.2": 128000,
             "claude-fable-5.1": 128000,
             "claude-fable-5": 128000,
             "claude-opus-5.5": 128000,
@@ -606,6 +729,7 @@ def prompt_length_multiplier(model: str, prompt_tokens: Optional[int] = None) ->
 # there, and Haiku 4.5 is extended-thinking ONLY (it 400s on adaptive), so both
 # stay out of this set and keep the parameter.
 _NO_EXTENDED_THINKING = {
+    "claude-fable-5.2",
     "claude-fable-5.1",
     "claude-fable-5",
     "claude-opus-5.5",
@@ -662,8 +786,15 @@ _BETWEEN_TOOLS_REJECTED_AT_EFFORT = frozenset({"xhigh", "max"})
 # `max_tokens` for text alone and gets `stop_reason=max_tokens` with no text.
 # Opus 5.5 belongs here and NOT in the effort-gated set below: Anthropic
 # documents `thinking: {"type": "disabled"}` as a 400 on it at every effort
-# level, where Opus 5 rejects it only at xhigh/max.
+# level, where Opus 5 rejects it only at xhigh/max. Fable 5.2 joined on
+# November 16, 2026 for the same reason as the rest of the Fable line: its
+# model page states adaptive thinking is always on and cannot be turned off.
+# EVERY new Fable or Opus 5.5-class model has to be added here by hand — the
+# set cannot be derived from ModelConfig, which has no always-on-thinking
+# field, so a model omitted from it is silently told thinking can be
+# disabled and returns no text.
 _THINKING_ON_BY_DEFAULT_LOCKED = {
+    "claude-fable-5.2",
     "claude-fable-5.1",
     "claude-fable-5",
     "claude-opus-5.5",
@@ -698,6 +829,7 @@ EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 # caller may configure, so one config survives a model swap and the per-model
 # projection happens at request time (see `effort_levels`).
 _EFFORT_LEVELS_BY_MODEL: Dict[str, tuple] = {
+    "claude-fable-5.2": EFFORT_LEVELS,
     "claude-fable-5.1": EFFORT_LEVELS,
     "claude-fable-5": EFFORT_LEVELS,
     "claude-opus-5.5": EFFORT_LEVELS,

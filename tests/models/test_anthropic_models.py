@@ -91,6 +91,96 @@ class TestFable51Contract:
         )
 
 
+class TestFable52ResolutionIsNotShadowedByItsPredecessors:
+    """`claude-fable-5` is a substring of every Fable 5.2 identifier too."""
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "claude-fable-5.2",
+            "claude-fable-5-2",
+            "anthropic.claude-fable-5-2",
+            # Bedrock publishes this model with a `global.` prefix, which no
+            # other Claude model here carries. It must still resolve.
+            "global.anthropic.claude-fable-5-2",
+        ],
+    )
+    def test_every_spelling_resolves_to_fable_52(self, spelling):
+        assert _resolve_model_name(spelling) == "claude-fable-5.2"
+
+    def test_fable_52_is_ordered_before_fable_5(self):
+        # The substring tier walks the catalog in insertion order, so plain
+        # Fable 5 must come last of the three or it swallows both newer ids and
+        # bills them at $10/$50 with 10% cache reads.
+        keys = list(ANTHROPIC_MODELS)
+        assert keys.index("claude-fable-5.2") < keys.index("claude-fable-5")
+
+    def test_fable_52_and_51_do_not_shadow_each_other(self):
+        # Neither id is a substring of the other, so their relative order is
+        # free — asserted so a future reorder is not "fixed" by swapping them
+        # under the mistaken belief that it matters.
+        assert _resolve_model_name("claude-fable-5-1") == "claude-fable-5.1"
+        assert _resolve_model_name("claude-fable-5-2") == "claude-fable-5.2"
+
+
+class TestFable52Contract:
+    def test_it_undercuts_fable_51_on_every_column(self):
+        # The unusual part of this release: a new top-tier model that is
+        # CHEAPER than the one it replaces, on all four published rates. A
+        # regression that copied Fable 5.1's numbers across would over-bill
+        # every request, so each is pinned against its predecessor.
+        new = ANTHROPIC_MODELS["claude-fable-5.2"]
+        old = ANTHROPIC_MODELS["claude-fable-5.1"]
+        assert (new.input_cost_hint, new.output_cost_hint) == (8.0, 40.0)
+        assert (new.cache_read_cost_hint, new.cache_write_cost_hint) == (0.20, 10.0)
+        for field in (
+            "input_cost_hint",
+            "output_cost_hint",
+            "cache_read_cost_hint",
+            "cache_write_cost_hint",
+        ):
+            assert getattr(new, field) < getattr(old, field), field
+
+    def test_cache_reads_are_the_cheapest_tier(self):
+        # 2.5% of input, the Fable/Mythos tier. Opus 5.5 and Sonnet 5.5 read at
+        # 5% and everything else at 10%.
+        config = ANTHROPIC_MODELS["claude-fable-5.2"]
+        assert config.cache_read_cost_hint == pytest.approx(
+            config.input_cost_hint * 0.025
+        )
+
+    def test_thinking_is_on_and_cannot_be_turned_off(self):
+        # Always-on adaptive thinking per the model page. Omitting it from
+        # _THINKING_ON_BY_DEFAULT_LOCKED would tell callers thinking can be
+        # disabled, and they would budget max_tokens for text alone.
+        assert thinks_by_default("claude-fable-5.2")
+        assert thinking_disable_param("claude-fable-5.2") is None
+
+    def test_structured_outputs_stay_native(self):
+        # Forced tool use is a 400 here, and the tool-based JSON fallback
+        # forces `tool_choice` — so False would fail every schema request
+        # rather than merely loosen the schema.
+        assert supports_structured_outputs("claude-fable-5.2")
+
+    def test_sampling_parameters_are_refused(self):
+        assert not supports_temperature("claude-fable-5.2")
+
+    def test_all_five_effort_levels_are_accepted(self):
+        assert effort_levels("claude-fable-5.2") == (
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        )
+
+    def test_window_and_output_match_the_current_lineup(self):
+        config = ANTHROPIC_MODELS["claude-fable-5.2"]
+        assert config.maximum_context_tokens == 1_000_000
+        assert config.maximum_output_tokens == 128_000
+        assert config.token_param_name == "max_tokens"
+
+
 class TestOpus55ResolutionIsNotShadowedByItsPredecessor:
     """`claude-opus-5` is a substring of every Opus 5.5 identifier."""
 
@@ -467,6 +557,7 @@ class TestSamplingParametersAgainstTheSdkPin:
     @pytest.mark.parametrize(
         "model",
         [
+            "claude-fable-5.2",
             "claude-fable-5.1",
             "claude-fable-5",
             "claude-opus-5.5",

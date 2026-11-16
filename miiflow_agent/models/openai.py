@@ -425,6 +425,63 @@ _GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
 # search results quoting the official changelog, pricing and model pages.
 # Anthropic's platform.claude.com remains the only provider documentation
 # readable here.
+# THE NOVEMBER 16, 2026 AUDIT CHANGED NO MODEL AND NO PRICE IN THIS FILE, and
+# the two other provider catalogs in this package BOTH gained models in the same
+# window — Claude Fable 5.2 on November 9 and Gemini 4 Carbon and Gemini 4
+# Hydrogen on November 10 and 12. OpenAI shipped no generally available model in
+# that week. GPT-6.1 Terra (October 26) is still OpenAI's newest GA model, GPT-6
+# Astra is still the capability ceiling, and the cancelled-GPT-6.1-Astra
+# sentence in Astra's entry still stands. There is still no GPT-6.2 of any line.
+#
+# THE NOVEMBER 12 WATCH ITEM THE LAST AUDIT SET IS RESOLVED, and it resolved the
+# way that audit predicted: OpenAI's "Cyber at the Frontier" livestream shipped
+# PRODUCTS, NOT AN API MODEL. The announcements were Daybreak Red Team (agentic
+# penetration testing, early-access waitlist, no published pricing), Daybreak
+# Defense Factory (investigates findings and drafts patches for human review),
+# and Daybreak for Frontline Defenders, a $1B subsidised-access initiative. None
+# of them is a model id and none of them is callable with an API key, so none
+# belongs here. GPT-6 Cyber, announced a week earlier on November 5, is what
+# they run on, and it stays excluded on the Daybreak-gating reasoning recorded
+# at the top of this file.
+#
+# ONE UNVERIFIED CLAIM FROM THAT EVENT, NOT TO ACT ON: one security-press report
+# describes an UNRELEASED cyber model scoring 77.0% on ExploitGym, against GPT-6
+# Cyber's 48.5%. No OpenAI announcement, no id, no price, no availability. It is
+# the same shape as the `gpt-6.2-sol` quota-screenshot artefact recorded above:
+# a number without a callable model behind it. Record, do not catalogue.
+#
+# NO PRICE MOVED on any entry in the week to November 16; the rates were
+# re-corroborated against write-ups quoting OpenAI's pricing page, which still
+# shows gpt-6-astra at $10/$1/$50, gpt-6.1-terra at $1/$0.05/$5 and gpt-5.6-sol
+# at $4/$0.40/$20. THE GPT-5.6 SOL PROMOTION IS NOW FIVE DAYS FROM ITS
+# "through at least November 21, 2026" FLOOR and is the nearest date affecting
+# anything in this file. Its entry below now spells out what to do when the date
+# passes, and the short version is: nothing, on the calendar alone. The floor is
+# a commitment to hold the price until then, not a commitment to raise it after,
+# and OpenAI publishes no post-promotional rate — so the hints change when a new
+# rate is OBSERVED, not when November 21 arrives. This is the same distinction
+# the Anthropic file draws about retirement floors, where Haiku 4.5 is now
+# thirty-two days past its own floor and still Active and still priced.
+#
+# THE NEXT DATE AFTER THAT IS JANUARY 14, 2027: gpt-4.1 and gpt-4.1-mini leave
+# the API, replacement gpt-6-luna, re-confirmed on OpenAI's deprecations page in
+# this audit along with the GPT-4o pair and the rule that fine-tunes follow
+# their base model's date. Also re-confirmed and NOT ours: OpenAI shuts down
+# Agent Builder, the Evals platform and the v1/prompts API on November 30, 2026
+# — platform surfaces, not models, so no entry here is affected. gpt-5.4-nano's
+# April 1, 2027 removal is unchanged.
+#
+# THE EGRESS BLOCK HOLDS AND IS NOW THE WIDEST IT HAS BEEN: platform.openai.com,
+# developers.openai.com and plain openai.com all still fail to resolve, and this
+# audit additionally confirmed that every third-party aggregator it tried
+# (openrouter.ai, models.litellm.ai, artificialanalysis.ai, nhimg.org) and even
+# en.wikipedia.org fail to resolve too. So this catalog is carried entirely on
+# search-result corroboration of OpenAI's own changelog, pricing and
+# deprecations pages, with no first-party page read directly. Anthropic's
+# platform.claude.com remains the ONLY provider documentation readable from this
+# environment, which is why the Anthropic catalog in this package is verified to
+# a standard this one and the Google one are not.
+
 _GPT41_MODELS = {"gpt-4.1", "gpt-4.1-mini"}
 
 # OpenAI applies a request-wide surcharge once a 1.05M-context GPT-5 model's
@@ -609,7 +666,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.6-sol": ModelConfig(
         model_identifier="gpt-5.6-sol",
         name="gpt-5.6-sol",
-        description="Legacy — succeeded by GPT-6 Astra (September 3, 2026) as OpenAI's flagship and then undercut by GPT-6 Sol (September 22, 2026), which is both stronger and half the price ($2/$10 vs $4/$20). Kept for pinned workloads only; there is no longer a cost argument for it. The highest-intelligence tier of the GPT-5.6 family, built for complex coding, reasoning, and long-horizon agentic work. 1M context window. Available in the API as gpt-5.6-sol (alias: gpt-5.6). Its $4/$20 rate is itself promotional — an August 21, 2026 cut from $5/$30, running through at least November 21, 2026 — so the gap to GPT-6 Sol may widen when it lapses. OpenAI has announced no API deprecation date for the GPT-5.6 family.",
+        description="Legacy — succeeded by GPT-6 Astra (September 3, 2026) as OpenAI's flagship and then undercut by GPT-6 Sol (September 22, 2026), which is both stronger and half the price ($2/$10 vs $4/$20). Kept for pinned workloads only; there is no longer a cost argument for it. The highest-intelligence tier of the GPT-5.6 family, built for complex coding, reasoning, and long-horizon agentic work. 1M context window. Available in the API as gpt-5.6-sol (alias: gpt-5.6). Its $4/$20 rate is itself promotional — an August 21, 2026 cut from $5/$30 — AND THAT PROMOTION IS NOW FIVE DAYS FROM ITS STATED FLOOR of November 21, 2026, the nearest date affecting any entry in this file. Two things to hold separately when it passes. OpenAI's own pricing page commits only to \"at least\" that date and publishes NO post-promotional rate, so the floor lapsing is not itself a price change and this entry's hints must not be edited on the calendar alone — they change when a new published rate is observed. Separately, a SINGLE source reports a customer email putting the end at November 30, 2026 with $5/$30 returning that day; that article says the email is its only evidence, public docs verify only November 21, and no other tracker corroborates it, so it is recorded here as the shape the real signal will take rather than as the date. If the rate does revert to $5/$30 this model becomes more expensive than GPT-6 Astra's input tier for a fraction of its capability, and the case for keeping the entry at all is worth re-opening. OpenAI has announced no API deprecation date for the GPT-5.6 family.",
         support_images=True,
         support_files=True,
         support_streaming=True,

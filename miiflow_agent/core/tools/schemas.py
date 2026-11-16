@@ -1,5 +1,6 @@
 """Data classes for tool schemas and results."""
 
+import json
 from typing import Any, Dict, List, Optional, Generic
 from dataclasses import dataclass, field
 
@@ -161,12 +162,29 @@ class ToolFailure(Generic[ResultType]):
     contain fields such as ``status``, ``error`` or ``success`` as domain data.
     Returning this wrapper is the unambiguous way to say that the *invocation*
     failed while optionally preserving a structured payload for diagnostics.
+
+    ``refusal`` marks a tool that ran and answered with its own failure (a
+    validation error, a missing record, a permission it lacks, a composite
+    write that stopped at a step): what was asked was not done, so the result
+    is unsuccessful, but the tool is not broken. Its ``output`` is its answer
+    and is what the model reads, and the step does not enter the recovery
+    ladder (which exists for tools that crash).
+
+    ``partial`` marks a failure after which some of what was asked WAS done
+    (a composite write that created a budget and a campaign, then stopped at
+    the ad group): still unsuccessful, but not "nothing changed". A record of
+    what changed (``DispatchLedgerEntry.partial``) counts it; the output says
+    what. A tool that can stop part-way should say so here: a host may infer
+    it from a payload convention, but a writer that reports progress any
+    other way is otherwise recorded as having changed nothing.
     """
 
     error: str
     output: Optional[ResultType] = None
     error_type: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    refusal: bool = False
+    partial: bool = False
 
 
 @dataclass
@@ -195,7 +213,29 @@ class ToolResult(Generic[ResultType]):
         self.metadata.update(failure.metadata)
         if failure.error_type:
             self.metadata.setdefault("error_type", failure.error_type)
+        if failure.refusal:
+            self.metadata["refusal"] = True
+        if failure.partial:
+            self.metadata["partial"] = True
         return self
+
+    def output_text(self) -> str:
+        """The output as a transcript carries it: a string as is, anything
+        else as JSON (what the model reads of a success or a refusal)."""
+        if isinstance(self.output, str):
+            return self.output
+        return json.dumps(self.output, default=str)
+
+    @property
+    def is_refusal(self) -> bool:
+        """The tool ran and declined (``ToolFailure.refusal``): unsuccessful,
+        but its output is its answer and the tool is not malfunctioning."""
+        return not self.success and self.metadata.get("refusal") is True
+
+    @property
+    def is_partial(self) -> bool:
+        """Unsuccessful, but some of what was asked was done (``ToolFailure.partial``)."""
+        return not self.success and self.metadata.get("partial") is True
     
     @property
     def is_success(self) -> bool:

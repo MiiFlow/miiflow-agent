@@ -482,6 +482,7 @@ class ApprovalResumeFlow:
                     raw_output = None
                     raw_error = None
                     outcome = None
+                    partial = False
                     try:
                         import inspect
 
@@ -494,6 +495,7 @@ class ApprovalResumeFlow:
                             outcome = await outcome
                         if hasattr(outcome, "success"):
                             success = bool(getattr(outcome, "success", False))
+                            partial = getattr(outcome, "is_partial", False) is True
                             out = getattr(outcome, "output", None)
                             err = getattr(outcome, "error", None)
                             raw_output = out
@@ -509,6 +511,7 @@ class ApprovalResumeFlow:
                             )
                         else:
                             success = bool((outcome or {}).get("success", True))
+                            partial = (outcome or {}).get("partial") is True
                             raw_output = (outcome or {}).get("output")
                             raw_error = (outcome or {}).get("error")
                             raw_obs = (outcome or {}).get("observation")
@@ -553,6 +556,7 @@ class ApprovalResumeFlow:
                         error=str(raw_error) if raw_error else None,
                         produced_by_path=raised_by_path or ["root"],
                         source="resume",
+                        partial=partial,
                     )
                     child_observation_ref = _recorded.ref
                     observation = _recorded.observation
@@ -683,6 +687,7 @@ class ApprovalResumeFlow:
         raw_output = None
         raw_error = None
         result = None
+        partial = False
         try:
             # Deterministic approval resumes can park before the model loop starts.
             # Open a transcript step and show execution before awaiting the tool.
@@ -699,7 +704,14 @@ class ApprovalResumeFlow:
                 tool_name, inputs, context=context
             )
             success = getattr(result, "success", True)
-            if not success:
+            partial = getattr(result, "is_partial", False) is True
+            if not success and getattr(result, "is_refusal", False) is True:
+                # Declined, not crashed: the model reads the tool's own answer
+                # (as for any refusal); `success` stays False.
+                raw_error = getattr(result, "error", None)
+                raw_output = result.output
+                observation = result.output_text()
+            elif not success:
                 raw_error = getattr(result, "error", None)
                 observation = (
                     "Tool execution failed: "
@@ -754,6 +766,7 @@ class ApprovalResumeFlow:
             raw_output=raw_output,
             error=str(raw_error) if raw_error else None,
             source="resume",
+            partial=partial,
         )
         approved_observation_ref = _recorded.ref
         observation = _recorded.observation

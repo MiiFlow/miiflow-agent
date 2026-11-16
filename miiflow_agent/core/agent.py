@@ -841,7 +841,12 @@ class Agent(Generic[Deps, Result]):
             context.messages.append(
                 Message(
                     role=MessageRole.TOOL,
-                    content=str(observation.output) if observation.success else observation.error,
+                    # A refusal's answer is its output, as on the ReAct path.
+                    content=(
+                        str(observation.output)
+                        if observation.success or getattr(observation, "is_refusal", False) is True
+                        else observation.error
+                    ),
                     tool_call_id=tool_call.id if hasattr(tool_call, "id") else tool_call.get("id"),
                 )
             )

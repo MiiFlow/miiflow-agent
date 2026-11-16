@@ -38,10 +38,13 @@ class ToolInvocation:
     is_validation_error: bool = False
     # Trusted executor signal: a bounded wait returned a nonterminal status.
     pending_wait: bool = False
+    # The tool ran and declined (`ToolResult.is_refusal`): no error (its
+    # answer is the observation, outside the recovery ladder), not a success.
+    refusal: bool = False
 
     @property
     def is_success(self) -> bool:
-        return self.error is None
+        return self.error is None and not self.refusal
 
 
 @dataclass
@@ -154,6 +157,7 @@ class ReActStep:
                     # synthesized invocation would look ref-less.
                     observation_ref=self.metadata.get("observation_ref"),
                     pending_wait=bool(self.metadata.get("pending_wait")),
+                    refusal=bool(self.metadata.get("refusal")),
                 )
             ]
         return []

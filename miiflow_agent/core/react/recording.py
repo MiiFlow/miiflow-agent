@@ -160,6 +160,7 @@ class OutcomeRecording:
         produced_by_path: Optional[List[str]] = None,
         source: str = "react",
         is_validation_error: bool = False,
+        partial: bool = False,
     ) -> RecordedObservation:
         """Single seam for a finalized tool call: persist the canonical
         observation via the adapter sink (awaited inline — see
@@ -264,6 +265,7 @@ class OutcomeRecording:
                     DispatchLedgerEntry(
                         kind="tool_call",
                         success=bool(success),
+                        partial=bool(partial) and not success,
                         digest=make_ledger_digest(observation or ""),
                         observation_ref=ref,
                         produced_at=time.time(),

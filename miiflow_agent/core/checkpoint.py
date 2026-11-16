@@ -272,6 +272,9 @@ class DispatchLedgerEntry:
 
     kind: str  # "dispatch" | "tool_call"
     success: bool = True
+    # An unsuccessful call that still changed something (``ToolResult.is_partial``):
+    # a record of what changed counts it, a record of what succeeded does not.
+    partial: bool = False
     digest: str = ""
     observation_ref: Optional[str] = None
     produced_at: float = 0.0
@@ -298,6 +301,7 @@ class DispatchLedgerEntry:
         return {
             "kind": self.kind,
             "success": self.success,
+            "partial": self.partial,
             "digest": make_ledger_digest(self.digest),
             "observation_ref": self.observation_ref,
             "produced_at": self.produced_at,
@@ -324,6 +328,7 @@ class DispatchLedgerEntry:
         return cls(
             kind=data["kind"],
             success=bool(data.get("success", True)),
+            partial=bool(data.get("partial", False)),
             digest=make_ledger_digest(str(digest or "")),
             observation_ref=data.get("observation_ref"),
             produced_at=float(data.get("produced_at", 0.0) or 0.0),

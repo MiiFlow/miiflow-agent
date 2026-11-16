@@ -115,6 +115,27 @@ class FunctionTool:
 
         return validated
 
+    def result_of(
+        self,
+        output: Any,
+        *,
+        name: str,
+        inputs: Dict[str, Any],
+        execution_time: float,
+        metadata: Dict[str, Any],
+    ) -> ToolResult:
+        """What a call that returned ``output`` produced: the host's
+        ``result_adapter`` applied, and a ``ToolFailure`` made the result's
+        failure. The one rule for every path that runs this tool's function
+        (``acall`` and ``ToolRegistry.execute_safe_with_context``)."""
+        if self.result_adapter is not None:
+            output = self.result_adapter(output)
+        result = ToolResult(name=name, input=inputs, execution_time=execution_time, metadata=metadata)
+        if isinstance(output, ToolFailure):
+            return result.apply_failure(output)
+        result.output = output
+        return result
+
     async def acall(self, **kwargs) -> ToolResult:
         """Async execute the function with safe error handling."""
         start_time = time.time()
@@ -157,26 +178,12 @@ class FunctionTool:
             else:
                 raise ToolExecutionError(f"Unsupported function type: {self.function_type}")
 
-            if self.result_adapter is not None:
-                result = self.result_adapter(result)
-
-            execution_time = time.time() - start_time
-
-            if isinstance(result, ToolFailure):
-                return ToolResult(
-                    name=self.name,
-                    input=validated_inputs,
-                    execution_time=execution_time,
-                    metadata={"function_type": self.function_type.value},
-                ).apply_failure(result)
-
-            return ToolResult(
+            return self.result_of(
+                result,
                 name=self.name,
-                input=validated_inputs,
-                output=result,
-                success=True,
-                execution_time=execution_time,
-                metadata={"function_type": self.function_type.value}
+                inputs=validated_inputs,
+                execution_time=time.time() - start_time,
+                metadata={"function_type": self.function_type.value},
             )
 
         except _CONTROL_FLOW_EXCS:

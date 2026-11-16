@@ -43,6 +43,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_refusal(result: Any) -> bool:
+    """`ToolResult.is_refusal`, for results built by stand-ins without it."""
+    return getattr(result, "is_refusal", False) is True
+
+
 async def _artifact_preview_blocks(context, data) -> list:
     """Images of the rendered pages, so the model sees the document it made.
 
@@ -380,6 +385,13 @@ class ToolActionHandler:
                 )
                 if resolved:
                     step.observation = resolved
+            elif _is_refusal(result):
+                # The tool declined: its payload is its answer and it is not
+                # broken, so no step error (that is the recovery ladder's).
+                step.observation, state.pending_llm_blocks = await self.process_result(
+                    result.output, state, step.action, context
+                )
+                step.metadata["refusal"] = True
             else:
                 # Sanitize error message for LLM consumption
                 sanitized_error = _sanitize_error_message(result.error)
@@ -420,6 +432,7 @@ class ToolActionHandler:
                         (getattr(result, "execution_time", 0) or 0) * 1000
                     ),
                     is_validation_error=bool(_result_meta.get("is_validation_error")),
+                    partial=getattr(result, "is_partial", False) is True,
                 )
                 observation_ref = recorded.ref
                 # Everything downstream (the event, the TOOL message appended
@@ -1070,7 +1083,8 @@ class ToolActionHandler:
                 inv.observation = inv.error
                 continue
 
-            if not result.success:
+            inv.refusal = _is_refusal(result)
+            if not result.success and not inv.refusal:
                 sanitized = _sanitize_error_message(result.error or "Unknown error")
                 inv.error = result.error
                 inv.observation = f"Tool execution failed: {sanitized}"
@@ -1121,14 +1135,16 @@ class ToolActionHandler:
                     tool_name=inv.name,
                     inputs=inv.inputs,
                     observation=inv.observation,
-                    success=inv.error is None,
+                    success=inv.is_success,
                     tool_call_id=inv.tool_call_id,
                     raw_output=getattr(result, "output", None),
-                    error=str(inv.error) if inv.error else None,
+                    # A refusal's own message, as the single-tool path records it.
+                    error=str(inv.error or (result.error if inv.refusal else "") or "") or None,
                     execution_time_ms=int(
                         (getattr(result, "execution_time", 0) or 0) * 1000
                     ),
                     is_validation_error=bool(getattr(inv, "is_validation_error", False)),
+                    partial=getattr(result, "is_partial", False) is True,
                 )
                 observation_ref = recorded.ref
                 # Phase 5 appends `inv.observation` as this call's TOOL
@@ -1145,7 +1161,7 @@ class ToolActionHandler:
                         state.current_step,
                         inv.observation,
                         inv.name,
-                        inv.error is None,
+                        inv.is_success,
                         tool_call_id=inv.tool_call_id,
                         observation_ref=observation_ref,
                         background_task_id=(_result_meta.get("background_handoff") or {}).get("id"),

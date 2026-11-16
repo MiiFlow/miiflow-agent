@@ -359,6 +359,42 @@ def test_approved_mutation_status_failed_steers_reporting_turn():
     asyncio.run(go())
 
 
+def test_a_refused_approved_write_is_a_failure_read_as_its_own_answer():
+    """2026-11-15: an approved write the tool declined ({"error", "error_type"}
+    through the host's adapter) is reported FAILED, and the model reads the
+    tool's own payload, not only its message."""
+    from miiflow_agent.core.tools import ToolFailure, ToolResult
+
+    async def go():
+        reg = _FakeRegistry(["microsoft_ads_mutate"])
+        payload = {"error": "Edit 1: needs a match type", "error_type": "invalid_document"}
+        result = ToolResult(name="microsoft_ads_mutate", input={}).apply_failure(
+            ToolFailure(error=payload["error"], output=payload, refusal=True)
+        )
+        ex = _FakeExecutor(reg, result=result)
+        orch = _orch(ex)
+        messages = [Message(role=MessageRole.TOOL, content="placeholder", tool_call_id="X")]
+        deps = {
+            "pending_approved_action": {
+                "tool_name": "microsoft_ads_mutate",
+                "tool_call_id": "X",
+                "inputs": {"operation": "add_campaign_negative_keywords"},
+            }
+        }
+        ctx = SimpleNamespace(deps=deps, messages=messages)
+        state = SimpleNamespace(current_step=1, is_running=True, final_answer="", failure_metadata=None)
+
+        await ReActOrchestrator._execute_pending_approved_action(orch, ctx, state)
+
+        assert "invalid_document" in messages[0].content
+        assert "Tool execution failed" not in messages[0].content
+        assert "FAILED" in messages[-1].content
+        observation_events = [e for e in orch.event_bus.events if e.event_type == ReActEventType.OBSERVATION]
+        assert observation_events[-1].data["success"] is False
+
+    asyncio.run(go())
+
+
 def test_child_approved_mutation_status_failed_steers_reporting_turn():
     async def go():
         ex = _FakeExecutor(_FakeRegistry([]))

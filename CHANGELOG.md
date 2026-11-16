@@ -4,6 +4,7 @@ All notable changes to miiflow-agent will be documented here.
 
 ## Unreleased
 
+- **Context-aware tool calls apply the tool's `result_adapter`** (`ToolRegistry.execute_safe_with_context`), as `FunctionTool.acall` always did; before, a host's result rule ran only for tools that take no context. New `ToolFailure(refusal=True)` / `ToolResult.is_refusal`: a tool that ran and declined is unsuccessful in every record (ledger, observation, events, approval resume), while the model reads its payload as before and the step does not enter the recovery ladder. `ToolFailure(partial=True)` / `ToolResult.is_partial` / `DispatchLedgerEntry.partial`: a failure after which some of what was asked was done (a composite write that stopped part-way) stays unsuccessful but is recorded as having changed something. `Agent` (no ReAct) shows the model a refusal's output, as the ReAct loop does.
 - MCP HTTP connections now accept an optional `MCPServerConfig.httpx_client_factory` to apply the host application’s outbound connection policy.
 
 - Context-aware tool calls now report an explicit `ToolFailure` as a failed invocation, including in registry statistics.

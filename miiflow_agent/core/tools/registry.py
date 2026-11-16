@@ -1124,17 +1124,17 @@ class ToolRegistry:
                 kwargs["context"] = context
                 return await self.execute_safe(tool_name, **kwargs)
 
+            # The result rule `FunctionTool.acall` applies (the host's
+            # result adapter, then an explicit failure): a context-taking
+            # tool's soft error is its failure too.
             execution_time = time.time() - start_time
-
-            outcome = ToolResult(
+            outcome = tool.result_of(
+                result,
                 name=resolved_name,
-                input={"context": "<RunContext>", **kwargs},
-                output=result,
+                inputs={"context": "<RunContext>", **kwargs},
                 execution_time=execution_time,
                 metadata={"execution_pattern": "first_param"},
             )
-            if isinstance(result, ToolFailure):
-                outcome.apply_failure(result)
 
             if resolved_name in self.execution_stats:
                 stats = self.execution_stats[resolved_name]

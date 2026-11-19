@@ -4,8 +4,11 @@ import pytest
 
 from miiflow_agent.models.google import (
     GOOGLE_MODELS,
+    THINKING_LEVELS,
     get_token_param_name,
     supports_temperature,
+    thinking_level_for,
+    thinking_levels,
 )
 
 # Google's standard context-caching multiplier: a cache read costs a tenth of
@@ -241,3 +244,77 @@ def test_fairwind_gated_cyber_variants_stay_out_of_the_catalog():
     # only to Google's Fairwind programme, so they would fail for every key
     # this catalog serves — Argon's own GA does not bring its cyber sibling in.
     assert not any("cyber" in name for name in GOOGLE_MODELS)
+
+
+# --- thinking levels ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", sorted(GOOGLE_MODELS))
+def test_every_catalogued_model_declares_its_thinking_levels(name):
+    # A model missing here gets no thinkingLevel sent, which on 3.1 Pro or
+    # Hydrogen means full-depth thinking whatever `effort` says.
+    levels = thinking_levels(name)
+    assert levels, f"{name} has no thinking levels"
+    assert set(levels) <= set(THINKING_LEVELS)
+    assert list(levels) == sorted(levels, key=THINKING_LEVELS.index)
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        # What Kopperfield's panel reader calls: the preview id resolves to
+        # 3.1 Pro, which has no `minimal`.
+        ("gemini-3.1-pro-preview", ("low", "medium", "high")),
+        ("models/gemini-3.1-pro", ("low", "medium", "high")),
+        ("GEMINI-4-ARGON", ("low", "medium", "high")),
+        # Routed ids take the scale of the model that answers them.
+        ("gemini-3.7-flash", ("low", "medium", "high")),
+        ("gemini-3.5-flash", ("minimal", "low", "medium", "high")),
+        # Release suffixes name the same model, routed ids included.
+        ("gemini-3.1-pro-001", ("low", "medium", "high")),
+        ("gemini-4-argon-latest", ("low", "medium", "high")),
+        ("gemini-3.1-pro-preview-customtools", ("low", "medium", "high")),
+        ("gemini-3.5-flash-preview-09-2026", ("minimal", "low", "medium", "high")),
+    ],
+)
+def test_thinking_levels_resolve_aliases_previews_and_routed_ids(model, expected):
+    assert thinking_levels(model) == expected
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        # Contains a catalog name but takes only minimal/high: a substring
+        # match would hand it `low`, which is a 400.
+        "gemini-3.1-flash-lite-image",
+        "gemini-9-unknown",
+        "",
+    ],
+)
+def test_uncatalogued_models_have_no_thinking_levels(model):
+    assert thinking_levels(model) == ()
+
+
+def test_only_hydrogen_takes_xhigh_and_minimal_stays_off_pro_and_gemini_4():
+    takes_xhigh = {name for name in GOOGLE_MODELS if "xhigh" in thinking_levels(name)}
+    assert takes_xhigh == {"gemini-4-hydrogen"}
+    for name in ("gemini-3.1-pro", "gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon",
+                 "gemini-4-hydrogen"):
+        assert "minimal" not in thinking_levels(name)
+
+
+@pytest.mark.parametrize(
+    "model, effort, expected",
+    [
+        ("gemini-3.1-pro", "medium", "medium"),
+        ("gemini-3.1-pro", "minimal", "low"),  # below the scale: its floor
+        ("gemini-3.1-pro", "none", "low"),
+        ("gemini-3.6-flash", "none", "minimal"),
+        ("gemini-3.1-pro", "xhigh", None),  # above the scale: not sent
+        ("gemini-3.1-pro", "max", None),
+        ("gemini-9-unknown", "low", None),  # uncatalogued: not sent
+        ("gemini-3.1-pro", None, None),
+    ],
+)
+def test_thinking_level_for_maps_effort_onto_the_scale(model, effort, expected):
+    assert thinking_level_for(model, effort) == expected

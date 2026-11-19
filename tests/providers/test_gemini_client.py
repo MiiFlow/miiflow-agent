@@ -607,3 +607,153 @@ class TestGeminiClient:
         # Should have /models/gemini-3.8-flash NOT /models/models/gemini-3.8-flash
         assert "/models/gemini-3.8-flash:" in url
         assert "/models/models/" not in url
+
+
+# --- effort -> thinkingLevel -------------------------------------------------
+
+
+def _capture_post_body(client, messages, **kwargs):
+    """Run a non-streaming call and return the JSON body it POSTed."""
+    import asyncio
+
+    sent = {}
+
+    async def mock_post(url, json=None, headers=None):
+        sent["body"] = json
+        return _mock_httpx_response(_make_rest_response(text="ok"))
+
+    mock_http = AsyncMock()
+    mock_http.post = mock_post
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=False)
+    with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
+        asyncio.run(client.achat(messages, **kwargs))
+    return sent["body"]
+
+
+def _gemini(**kwargs):
+    from miiflow_agent.providers.gemini_client import GeminiClient
+
+    return GeminiClient(api_key="test-key", **kwargs)
+
+
+from miiflow_agent.providers.gemini_client import _warn_effort_not_sent  # noqa: E402
+
+
+class TestGeminiEffort:
+    """`effort` from an assistant's model_config (a constructor kwarg, as on
+    AnthropicClient and OpenAIClient) becomes `thinkingConfig.thinkingLevel`."""
+
+    def test_configured_effort_is_sent_as_thinking_level(self, sample_messages):
+        body = _capture_post_body(
+            _gemini(model="gemini-3.1-pro-preview", effort="low"), sample_messages
+        )
+        assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+
+    def test_no_effort_sends_no_thinking_config(self, sample_messages):
+        body = _capture_post_body(_gemini(model="gemini-3.1-pro-preview"), sample_messages)
+        assert "thinkingConfig" not in body["generationConfig"]
+
+    def test_thinking_level_rides_alongside_a_json_schema(self, sample_messages):
+        schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+        body = _capture_post_body(
+            _gemini(model="gemini-3.1-pro-preview", effort="medium"),
+            sample_messages,
+            json_schema=schema,
+        )
+        config = body["generationConfig"]
+        assert config["thinkingConfig"] == {"thinkingLevel": "medium"}
+        assert config["responseMimeType"] == "application/json"
+
+    @pytest.mark.parametrize(
+        "model, effort",
+        [
+            ("gemini-4-argon", "xhigh"),  # only Hydrogen takes xhigh
+            ("gemini-3.1-pro", "max"),  # a Claude level left by a model swap
+            ("gemini-9-unknown", "low"),  # uncatalogued: scale unknown
+        ],
+    )
+    def test_a_level_above_the_scale_is_dropped_with_a_warning(
+        self, sample_messages, caplog, model, effort
+    ):
+        _warn_effort_not_sent.cache_clear()
+        with caplog.at_level("WARNING", logger="miiflow_agent.providers.gemini_client"):
+            client = _gemini(model=model, effort=effort)
+        body = _capture_post_body(client, sample_messages)
+        assert "thinkingConfig" not in body["generationConfig"]
+        assert f"effort={effort!r}" in caplog.text
+
+    @pytest.mark.parametrize(
+        "model, effort, sent",
+        [
+            # Dropping these would run 3.1 Pro at its default, `high`: the
+            # opposite of what was asked. The lowest level is the nearest.
+            ("gemini-3.1-pro-preview", "minimal", "low"),
+            ("gemini-3.1-pro-preview", "none", "low"),
+            ("gemini-3.1-flash-lite", "none", "minimal"),
+        ],
+    )
+    def test_a_level_below_the_scale_is_sent_as_the_lowest(
+        self, sample_messages, model, effort, sent
+    ):
+        body = _capture_post_body(_gemini(model=model, effort=effort), sample_messages)
+        assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": sent}
+
+    def test_a_dropped_effort_warns_once_per_model_and_level(self, caplog):
+        _warn_effort_not_sent.cache_clear()
+        with caplog.at_level("WARNING", logger="miiflow_agent.providers.gemini_client"):
+            for _ in range(3):
+                _gemini(model="gemini-3.1-pro", effort="max")
+        assert caplog.text.count("effort='max'") == 1
+
+    def test_thinking_disabled_sends_the_lowest_level_over_the_configured_one(
+        self, sample_messages
+    ):
+        client = _gemini(model="gemini-3.1-pro-preview", effort="high")
+        body = _capture_post_body(client, sample_messages, thinking_disabled=True)
+        assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+        # The next call without it is back at the configured level.
+        body = _capture_post_body(client, sample_messages)
+        assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "high"}
+
+    def test_thinking_disabled_reaches_gemini_through_llm_client(self, sample_messages):
+        # LLMClient strips control kwargs a provider does not handle; Gemini
+        # now handles this one, so it must survive the strip.
+        from miiflow_agent.core.client import LLMClient
+
+        kwargs = {"thinking_disabled": True}
+        LLMClient(_gemini(model="gemini-3.1-pro"))._strip_control_kwargs(kwargs)
+        assert kwargs == {"thinking_disabled": True}
+
+    def test_unknown_effort_name_is_refused(self):
+        with pytest.raises(ValueError, match="effort must be one of"):
+            _gemini(model="gemini-3.1-pro", effort="hihg")
+
+    def test_effort_overrides_call_is_accepted_and_not_forwarded(self, sample_messages):
+        client = _gemini(model="gemini-4-hydrogen", effort="xhigh", effort_overrides_call=True)
+        body = _capture_post_body(client, sample_messages)
+        assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "xhigh"}
+
+    @pytest.mark.asyncio
+    async def test_streaming_sends_the_same_thinking_level(self, sample_messages):
+        client = _gemini(model="gemini-3.1-pro-preview", effort="low")
+        sse = f"data: {json.dumps(_make_rest_response(text='ok', finish_reason='STOP'))}"
+
+        async def aiter_lines():
+            yield sse
+
+        stream_resp = MagicMock()
+        stream_resp.status_code = 200
+        stream_resp.aiter_lines = aiter_lines
+        stream_resp.__aenter__ = AsyncMock(return_value=stream_resp)
+        stream_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock(return_value=stream_resp)
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("miiflow_agent.providers.gemini_client.httpx.AsyncClient", return_value=mock_http):
+            [c async for c in client.astream_chat(sample_messages)]
+
+        body = mock_http.stream.call_args.kwargs["json"]
+        assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}

@@ -10,12 +10,48 @@ No SDK import is needed — `httpx` handles everything.
 import asyncio
 import base64
 import json
+import logging
 import re
+from functools import lru_cache
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import httpx
 
-from ..models.google import supports_temperature
+from ..models.anthropic import EFFORT_LEVELS as _ANTHROPIC_EFFORT_LEVELS
+from ..models.google import (
+    THINKING_LEVELS,
+    supports_temperature,
+    thinking_level_for,
+    thinking_levels,
+)
+from ..models.openai import REASONING_EFFORT_VALUES as _OPENAI_EFFORT_VALUES
+
+logger = logging.getLogger(__name__)
+
+# Every `effort` name a provider client in this package accepts (xAI's levels
+# are a subset of OpenAI's). GeminiClient takes any of them and maps each onto
+# the model's thinking scale (`models.google.thinking_level_for`), so an
+# assistant's `effort` survives a model swap: `max` set for Claude is dropped
+# here, not a construction error. Derived rather than copied, so a level added
+# to another provider never turns into a ValueError on Gemini. A value outside
+# the union is a typo and is refused.
+_KNOWN_EFFORT_NAMES = frozenset(_OPENAI_EFFORT_VALUES) | set(_ANTHROPIC_EFFORT_LEVELS) | set(
+    THINKING_LEVELS
+)
+
+
+@lru_cache(maxsize=256)
+def _warn_effort_not_sent(model: str, effort: str) -> None:
+    """Once per process for each (model, effort): clients are built per turn,
+    and an assistant left on `max` after a swap from Claude would otherwise
+    log this on every one."""
+    levels = thinking_levels(model)
+    logger.warning(
+        "Not sending effort=%r to %s as a thinking level; it runs at its default (%s)",
+        effort,
+        model,
+        f"it accepts {levels}" if levels else "its thinking levels are not catalogued",
+    )
 
 
 def _sanitize_tool_name_for_gemini(name: str) -> str:
@@ -193,6 +229,21 @@ class GeminiClient(ModelClient):
                 "google-genai is required for Gemini. Install with: pip install google-genai"
             )
 
+        # The thinking depth for every request this client sends, sent as
+        # `thinkingConfig.thinkingLevel`. Same delivery path and name as
+        # `AnthropicClient.effort` and `OpenAIClient.effort` -- a model_config
+        # key spread into the constructor -- so an assistant's `effort` means
+        # the same thing on every provider. Before, the base class absorbed it
+        # and every request ran at the model's default, which on 3.1 Pro is
+        # `high`: full-depth thinking before the first output token.
+        effort = kwargs.pop("effort", None) or None
+        if effort is not None and effort not in _KNOWN_EFFORT_NAMES:
+            raise ValueError(f"effort must be one of {sorted(_KNOWN_EFFORT_NAMES)}, got {effort!r}")
+        self.effort: Optional[str] = effort
+        # Accepted for parity with OpenAIClient. There is no per-call channel
+        # here, so the configured effort always applies.
+        kwargs.pop("effort_overrides_call", None)
+
         super().__init__(
             model=model, api_key=api_key, timeout=timeout, max_retries=max_retries, **kwargs
         )
@@ -207,6 +258,39 @@ class GeminiClient(ModelClient):
 
         # Tool name mapping: sanitized_name -> original_name
         self._tool_name_mapping: Dict[str, str] = {}
+
+        self._thinking_level: Optional[str] = self._resolve_thinking_level()
+
+    def _resolve_thinking_level(self) -> Optional[str]:
+        """The `thinkingLevel` to send, or None to leave the model's default.
+
+        Resolved once: the model is fixed for the client's life. The mapping
+        is `models.google.thinking_level_for`: on the scale as is, below it to
+        the lowest level, above it (or on an uncatalogued model) not sent.
+        Not sending is logged at WARNING, unlike Anthropic's DEBUG: on 3.1 Pro
+        the default is the most expensive level, so a dropped `effort` is a
+        latency regression someone should be able to find.
+        """
+        if not self.effort:
+            return None
+        level = thinking_level_for(self.model, self.effort)
+        if level is None:
+            _warn_effort_not_sent(self.model, self.effort)
+        return level
+
+    def _request_thinking_level(self, kwargs: Dict[str, Any]) -> Optional[str]:
+        """The level for one request: the model's lowest when the caller
+        passes ``thinking_disabled=True``, else the configured one.
+
+        ``thinking_disabled`` is the provider-neutral "no thinking" switch
+        (context compression, the eval judge). Gemini 3 has no off switch,
+        and leaving the field out would think at the default -- `high` on
+        3.1 Pro -- so the lowest level is the nearest thing. Popped so it
+        never reaches anything else.
+        """
+        if kwargs.pop("thinking_disabled", False):
+            return thinking_level_for(self.model, "none") or self._thinking_level
+        return self._thinking_level
 
     # ------------------------------------------------------------------
     # REST API URL builders
@@ -242,6 +326,7 @@ class GeminiClient(ModelClient):
         temperature: float,
         max_tokens: Optional[int],
         json_schema: Optional[Dict[str, Any]] = None,
+        thinking_level: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build generationConfig in REST format.
 
@@ -249,14 +334,17 @@ class GeminiClient(ModelClient):
         parameters (Gemini 3.6 Flash / 3.5 Flash-Lite and later). Those models
         accept the field and ignore it, so sending it never errors — it just
         puts a value on the wire that reads as configuration and controls
-        nothing. Thinking depth is `thinking_level` on that generation, which
-        this client does not send yet.
+        nothing. Thinking depth is `thinkingLevel`: ``thinking_level``, which
+        `achat` and `astream_chat` both take from `_request_thinking_level`,
+        so the two paths think at the same depth.
         """
         config: Dict[str, Any] = {
             "maxOutputTokens": max_tokens or 8192,
         }
         if supports_temperature(self.model):
             config["temperature"] = temperature
+        if thinking_level:
+            config["thinkingConfig"] = {"thinkingLevel": thinking_level}
         if json_schema:
             config["responseMimeType"] = "application/json"
             config["responseSchema"] = normalize_json_schema(json_schema, SchemaMode.GEMINI_COMPAT)
@@ -675,7 +763,12 @@ class GeminiClient(ModelClient):
                     provider="gemini",
                 )
 
-            gen_config = self._build_generation_config_rest(temperature, max_tokens, json_schema)
+            gen_config = self._build_generation_config_rest(
+                temperature,
+                max_tokens,
+                json_schema,
+                thinking_level=self._request_thinking_level(kwargs),
+            )
             rest_tools = self._build_tools_rest(tools) if tools else None
             body = self._build_rest_request_body(
                 gemini_messages, gen_config, rest_tools, system_instruction
@@ -744,7 +837,12 @@ class GeminiClient(ModelClient):
                     provider="gemini",
                 )
 
-            gen_config = self._build_generation_config_rest(temperature, max_tokens, json_schema)
+            gen_config = self._build_generation_config_rest(
+                temperature,
+                max_tokens,
+                json_schema,
+                thinking_level=self._request_thinking_level(kwargs),
+            )
             rest_tools = self._build_tools_rest(tools) if tools else None
             body = self._build_rest_request_body(
                 gemini_messages, gen_config, rest_tools, system_instruction

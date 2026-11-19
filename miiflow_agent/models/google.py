@@ -1,6 +1,7 @@
 """Google Gemini model configurations."""
 
-from typing import Dict
+import re
+from typing import Dict, Optional
 
 from .base import ModelConfig, ParameterConfig, ParameterType
 
@@ -12,7 +13,8 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # while changing nothing. Only 3.1 Pro and 3.1 Flash-Lite still honour them;
 # Gemini 3.5 Flash used to be the third, and its removal (see below) leaves the
 # 3.1 pair as the last models here that a temperature actually reaches. Google's replacement knob is `thinking_level`, which
-# GeminiClient does not send yet. Note the scale itself changed: 3.8 Flash
+# GeminiClient sends from its `effort` (see `thinking_levels` below for the
+# per-model scale). Note the scale itself changed: 3.8 Flash
 # documents LOW/MEDIUM/HIGH with MEDIUM as the default, dropping the `minimal`
 # level the earlier generations offered, and Gemini 4 Argon keeps that scale —
 # `minimal`, `xhigh` and `max` are all a 400 there.
@@ -760,3 +762,100 @@ def supports_temperature(model: str) -> bool:
     if model_lower.removeprefix("models/") in _NO_SAMPLING_PARAMS:
         return False
     return True
+
+
+# Thinking depth: `generationConfig.thinkingConfig.thinkingLevel`, which
+# GeminiClient sends from its `effort`. The scale is NOT uniform, and a level a
+# model does not take is a 400, not a no-op:
+#   * `minimal` exists only on 3.6 Flash and the Flash-Lite models; 3.1 Pro,
+#     3.8 Flash and every Gemini 4 model reject it.
+#   * `xhigh` exists only on Gemini 4 Hydrogen.
+#   * The DEFAULT differs too, which is why sending a level matters: 3.1 Pro
+#     and Hydrogen default to `high`, Argon, Carbon, 3.8 Flash and 3.6 Flash to
+#     `medium`, the Flash-Lite models to `minimal`. A request that omits the
+#     level on 3.1 Pro thinks at full depth before its first output token.
+# Sources: Google's "Controlling thinking" page (levels-supported table, read
+# November 19, 2026) for 3.1 Pro, 3.1/3.5 Flash-Lite, 3.6 and 3.8 Flash and
+# Argon; the Carbon and Hydrogen entries above (their launch notes) for those
+# two. Keep the keys in step with `GOOGLE_MODELS`:
+# `test_every_catalogued_model_declares_its_thinking_levels` fails otherwise.
+_THINKING_LEVELS_BY_MODEL: Dict[str, tuple] = {
+    "gemini-4-carbon": ("low", "medium", "high"),
+    "gemini-4-hydrogen": ("low", "medium", "high", "xhigh"),
+    "gemini-4-argon": ("low", "medium", "high"),
+    "gemini-3.8-flash": ("low", "medium", "high"),
+    "gemini-3.6-flash": ("minimal", "low", "medium", "high"),
+    "gemini-3.5-flash-lite": ("minimal", "low", "medium", "high"),
+    "gemini-3.1-pro": ("low", "medium", "high"),
+    "gemini-3.1-flash-lite": ("minimal", "low", "medium", "high"),
+}
+
+# Every level any Gemini model takes, in rising order.
+THINKING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
+
+# Ids Google deprecated and silently routes to another model (see the removal
+# note above): a request naming one is answered by the target, so the target's
+# scale is the one that applies.
+_ROUTED_MODEL_IDS = {
+    "gemini-3.7-flash": "gemini-3.8-flash",
+    "gemini-3.5-flash": "gemini-3.6-flash",
+}
+
+
+# A release suffix on a catalogued (or routed) id: `-preview`, `-preview-<tag>`
+# (`gemini-3.1-pro-preview`, `gemini-3.5-flash-preview-09-2026`), `-latest`,
+# or a three-digit version (`-001`). Each names the same model, so it takes
+# that model's thinking scale. A suffix that names a DIFFERENT model is not
+# here: `gemini-3.1-flash-lite-image` takes only `minimal` and `high`.
+_RELEASE_SUFFIX = re.compile(r"-(?:preview(?:-[0-9a-z-]+)?|latest|\d{3})$")
+
+
+def _catalog_name(model: str) -> Optional[str]:
+    """The catalog entry a request for ``model`` is answered by, or None.
+
+    Matches the alias, the ``models/...`` identifier, a routed id, and any of
+    those with a release suffix (`_RELEASE_SUFFIX`). Deliberately not a
+    substring match, unlike `supports_temperature`: a wrong scale here is a
+    400, not a silently ignored field.
+    """
+    name = (model or "").lower().removeprefix("models/")
+    for candidate in (name, _RELEASE_SUFFIX.sub("", name)):
+        if candidate in GOOGLE_MODELS:
+            return candidate
+        if candidate in _ROUTED_MODEL_IDS:
+            return _ROUTED_MODEL_IDS[candidate]
+    return None
+
+
+def thinking_levels(model: str) -> tuple:
+    """The `thinkingLevel` values ``model`` accepts, or ``()`` when the
+    catalog does not know the model (the level is then not sent)."""
+    return _THINKING_LEVELS_BY_MODEL.get(_catalog_name(model) or "", ())
+
+
+# Effort names that ask for less thinking than any Gemini scale starts at:
+# OpenAI's `none`, and `minimal` on a model whose floor is `low` (3.1 Pro,
+# 3.8 Flash, every Gemini 4 model). Dropping them would leave the model at its
+# DEFAULT, which on 3.1 Pro and Hydrogen is `high` -- the opposite of what was
+# asked -- so they go to the model's lowest level instead.
+_BELOW_THE_SCALE = ("none", "minimal")
+
+
+def thinking_level_for(model: str, effort: Optional[str]) -> Optional[str]:
+    """The `thinkingLevel` GeminiClient sends for ``effort`` on ``model``, or
+    None to send none (the model then runs at its default).
+
+    An effort on the model's scale is sent as is. One below the scale
+    (`_BELOW_THE_SCALE`) is sent as the model's lowest level. Anything else --
+    a level above the scale (`xhigh` on 3.1 Pro, Claude's `max`), or any
+    level on an uncatalogued model -- is not sent: raising it to the top level
+    would be a cost nobody asked for, and the default is never above `high`.
+    """
+    levels = thinking_levels(model)
+    if not effort or not levels:
+        return None
+    if effort in levels:
+        return effort
+    if effort in _BELOW_THE_SCALE:
+        return levels[0]
+    return None

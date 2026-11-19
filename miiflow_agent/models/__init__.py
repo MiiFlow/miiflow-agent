@@ -22,6 +22,8 @@ from .deepseek import get_token_param_name as deepseek_get_token_param_name
 from .google import GOOGLE_MODELS, GOOGLE_PARAMETERS
 from .google import get_token_param_name as google_get_token_param_name
 from .google import supports_temperature as google_supports_temperature
+from .google import thinking_level_for as google_thinking_level_for
+from .google import thinking_levels as google_thinking_levels
 
 # Groq
 from .groq import GROQ_MODELS, GROQ_PARAMETERS
@@ -72,6 +74,8 @@ __all__ = [
     "GOOGLE_PARAMETERS",
     "google_get_token_param_name",
     "google_supports_temperature",
+    "google_thinking_level_for",
+    "google_thinking_levels",
     # Groq
     "GROQ_MODELS",
     "GROQ_PARAMETERS",

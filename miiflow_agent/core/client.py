@@ -400,7 +400,7 @@ class LLMClient:
     # Only the providers listed handle them; every other provider forwards
     # unknown kwargs into its SDK call (Mistral) or its options map (Ollama),
     # so they must be dropped here rather than trusted to be ignored.
-    _PROVIDERS_HANDLING_THINKING_DISABLED = frozenset({"anthropic", "bedrock"})
+    _PROVIDERS_HANDLING_THINKING_DISABLED = frozenset({"anthropic", "bedrock", "gemini"})
 
     def _strip_control_kwargs(self, kwargs: Dict[str, Any]) -> None:
         """Remove control kwargs the bound provider does not understand.

@@ -4996,4 +4996,4 @@ pdf = ["PyMuPDF"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "f47be13b6037a7fb21944e7440ecb076feadba329ebcc0545f888db9900c07df"
+content-hash = "8b7139af679514ce27870c376a25a65795cf3b89ccc61b14c065c9e2b2ade1dd"

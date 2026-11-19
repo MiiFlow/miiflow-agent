@@ -637,7 +637,7 @@ def _gemini(**kwargs):
     return GeminiClient(api_key="test-key", **kwargs)
 
 
-from miiflow_agent.providers.gemini_client import _warn_effort_not_sent  # noqa: E402
+from miiflow_agent.models.effort import warn_effort_not_sent as _warn_effort_not_sent  # noqa: E402
 
 
 class TestGeminiEffort:
@@ -677,7 +677,7 @@ class TestGeminiEffort:
         self, sample_messages, caplog, model, effort
     ):
         _warn_effort_not_sent.cache_clear()
-        with caplog.at_level("WARNING", logger="miiflow_agent.providers.gemini_client"):
+        with caplog.at_level("WARNING", logger="miiflow_agent.models.effort"):
             client = _gemini(model=model, effort=effort)
         body = _capture_post_body(client, sample_messages)
         assert "thinkingConfig" not in body["generationConfig"]
@@ -701,7 +701,7 @@ class TestGeminiEffort:
 
     def test_a_dropped_effort_warns_once_per_model_and_level(self, caplog):
         _warn_effort_not_sent.cache_clear()
-        with caplog.at_level("WARNING", logger="miiflow_agent.providers.gemini_client"):
+        with caplog.at_level("WARNING", logger="miiflow_agent.models.effort"):
             for _ in range(3):
                 _gemini(model="gemini-3.1-pro", effort="max")
         assert caplog.text.count("effort='max'") == 1
@@ -725,9 +725,20 @@ class TestGeminiEffort:
         LLMClient(_gemini(model="gemini-3.1-pro"))._strip_control_kwargs(kwargs)
         assert kwargs == {"thinking_disabled": True}
 
-    def test_unknown_effort_name_is_refused(self):
-        with pytest.raises(ValueError, match="effort must be one of"):
-            _gemini(model="gemini-3.1-pro", effort="hihg")
+    def test_an_unknown_stored_effort_is_dropped_not_refused(self, sample_messages, caplog):
+        # Before GeminiClient sent a level, any stored value was ignored, and
+        # the server does not validate it on write. Refusing one would make an
+        # assistant that worked yesterday fail every turn.
+        _warn_effort_not_sent.cache_clear()
+        with caplog.at_level("WARNING", logger="miiflow_agent.models.effort"):
+            client = _gemini(model="gemini-3.1-pro", effort="auto")
+        body = _capture_post_body(client, sample_messages)
+        assert "thinkingConfig" not in body["generationConfig"]
+        assert "no provider knows that level" in caplog.text
+
+    def test_a_stored_effort_is_normalised(self, sample_messages):
+        body = _capture_post_body(_gemini(model="gemini-3.1-pro", effort=" Medium "), sample_messages)
+        assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
 
     def test_effort_overrides_call_is_accepted_and_not_forwarded(self, sample_messages):
         client = _gemini(model="gemini-4-hydrogen", effort="xhigh", effort_overrides_call=True)

@@ -3,6 +3,7 @@
 import re
 from typing import Dict, Optional
 
+from .effort import normalize_effort
 from .base import ModelConfig, ParameterConfig, ParameterType
 
 # All Gemini models use max_output_tokens.
@@ -802,12 +803,14 @@ _ROUTED_MODEL_IDS = {
 }
 
 
-# A release suffix on a catalogued (or routed) id: `-preview`, `-preview-<tag>`
-# (`gemini-3.1-pro-preview`, `gemini-3.5-flash-preview-09-2026`), `-latest`,
-# or a three-digit version (`-001`). Each names the same model, so it takes
-# that model's thinking scale. A suffix that names a DIFFERENT model is not
-# here: `gemini-3.1-flash-lite-image` takes only `minimal` and `high`.
-_RELEASE_SUFFIX = re.compile(r"-(?:preview(?:-[0-9a-z-]+)?|latest|\d{3})$")
+# A release suffix on a catalogued (or routed) id: `-preview`, a dated preview
+# (`-preview-09-2026`, `-preview-05-06`), `-preview-customtools` (3.1 Pro with
+# a tool-use tuning, same scale), `-latest`, or a three-digit version (`-001`).
+# Each names the same model, so it takes that model's thinking scale. Any
+# other tag is left unmatched on purpose, because a suffix can name a
+# DIFFERENT model with its own scale: `gemini-3.1-flash-lite-image` takes only
+# `minimal` and `high`, and a `-preview-tts` would be another model again.
+_RELEASE_SUFFIX = re.compile(r"-(?:preview(?:-\d{2}-\d{2,4}|-customtools)?|latest|\d{3})$")
 
 
 def _catalog_name(model: str) -> Optional[str]:
@@ -852,6 +855,9 @@ def thinking_level_for(model: str, effort: Optional[str]) -> Optional[str]:
     would be a cost nobody asked for, and the default is never above `high`.
     """
     levels = thinking_levels(model)
+    # The shared normalisation (`models.effort`), so a stored "Medium" maps
+    # to what GeminiClient sends.
+    effort = normalize_effort(effort)
     if not effort or not levels:
         return None
     if effort in levels:

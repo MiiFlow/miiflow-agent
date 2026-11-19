@@ -36,9 +36,9 @@ from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import OpenAIStreamNormalizer
 from ..core.streaming import StreamChunk
 from ..utils.document_text import document_to_text
+from ..models.effort import normalize_effort, warn_effort_not_sent
 from ..models.openai import (
     get_token_param_name,
-    REASONING_EFFORT_VALUES,
     normalize_model_name,
     reasoning_effort_levels,
     requires_responses_api,
@@ -157,12 +157,11 @@ class OpenAIClient(ModelClient):
         # constructor — so an assistant's `effort` means the same thing on
         # either provider. Before this was popped here, the base class absorbed
         # it and every OpenAI turn silently ran at the API default.
-        effort = kwargs.pop("effort", None) or None
-        if effort is not None and effort not in REASONING_EFFORT_VALUES:
-            raise ValueError(
-                f"effort must be one of {REASONING_EFFORT_VALUES}, got {effort!r}"
-            )
-        self.effort: Optional[str] = effort
+        # Normalised and never refused (`models.effort`): a stored value is
+        # configuration the server does not validate, so an unknown one is
+        # dropped with a warning in `_with_configured_effort`, as on every
+        # other provider, rather than failing every turn.
+        self.effort: Optional[str] = normalize_effort(kwargs.pop("effort", None))
         # True makes `effort` beat a call's own `reasoning_effort` (as an
         # AnthropicClient's effort always does — it has no per-call channel).
         # Set by an evaluation pin: a model compared at `@high` must run at
@@ -412,13 +411,12 @@ class OpenAIClient(ModelClient):
         if kwargs.get("reasoning_effort") is not None and not self.effort_overrides_call:
             return kwargs
         levels = reasoning_effort_levels(self.model)
+        if not levels:
+            # A model with no effort setting: skipped silently, as on every
+            # provider, so one config is shared across model swaps.
+            return kwargs
         if self.effort not in levels:
-            logger.debug(
-                "Dropping effort=%r for %s: model accepts %s",
-                self.effort,
-                self.model,
-                levels,
-            )
+            warn_effort_not_sent("openai", self.model, self.effort, levels)
             return kwargs
         return {**kwargs, "reasoning_effort": self.effort}
 

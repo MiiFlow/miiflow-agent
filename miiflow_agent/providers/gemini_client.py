@@ -12,47 +12,18 @@ import base64
 import json
 import logging
 import re
-from functools import lru_cache
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import httpx
 
-from ..models.anthropic import EFFORT_LEVELS as _ANTHROPIC_EFFORT_LEVELS
 from ..models.google import (
-    THINKING_LEVELS,
     supports_temperature,
     thinking_level_for,
     thinking_levels,
 )
-from ..models.openai import REASONING_EFFORT_VALUES as _OPENAI_EFFORT_VALUES
+from ..models.effort import normalize_effort, warn_effort_not_sent
 
 logger = logging.getLogger(__name__)
-
-# Every `effort` name a provider client in this package accepts (xAI's levels
-# are a subset of OpenAI's). GeminiClient takes any of them and maps each onto
-# the model's thinking scale (`models.google.thinking_level_for`), so an
-# assistant's `effort` survives a model swap: `max` set for Claude is dropped
-# here, not a construction error. Derived rather than copied, so a level added
-# to another provider never turns into a ValueError on Gemini. A value outside
-# the union is a typo and is refused.
-_KNOWN_EFFORT_NAMES = frozenset(_OPENAI_EFFORT_VALUES) | set(_ANTHROPIC_EFFORT_LEVELS) | set(
-    THINKING_LEVELS
-)
-
-
-@lru_cache(maxsize=256)
-def _warn_effort_not_sent(model: str, effort: str) -> None:
-    """Once per process for each (model, effort): clients are built per turn,
-    and an assistant left on `max` after a swap from Claude would otherwise
-    log this on every one."""
-    levels = thinking_levels(model)
-    logger.warning(
-        "Not sending effort=%r to %s as a thinking level; it runs at its default (%s)",
-        effort,
-        model,
-        f"it accepts {levels}" if levels else "its thinking levels are not catalogued",
-    )
-
 
 def _sanitize_tool_name_for_gemini(name: str) -> str:
     """Sanitize tool name to match Gemini's function name requirements.
@@ -236,10 +207,10 @@ class GeminiClient(ModelClient):
         # the same thing on every provider. Before, the base class absorbed it
         # and every request ran at the model's default, which on 3.1 Pro is
         # `high`: full-depth thinking before the first output token.
-        effort = kwargs.pop("effort", None) or None
-        if effort is not None and effort not in _KNOWN_EFFORT_NAMES:
-            raise ValueError(f"effort must be one of {sorted(_KNOWN_EFFORT_NAMES)}, got {effort!r}")
-        self.effort: Optional[str] = effort
+        # Normalised and never refused (`models.effort`), as on every
+        # provider: a stored "Medium" means `medium`, and an unknown value is
+        # dropped with a warning when the level is resolved below.
+        self.effort: Optional[str] = normalize_effort(kwargs.pop("effort", None))
         # Accepted for parity with OpenAIClient. There is no per-call channel
         # here, so the configured effort always applies.
         kwargs.pop("effort_overrides_call", None)
@@ -267,7 +238,8 @@ class GeminiClient(ModelClient):
         Resolved once: the model is fixed for the client's life. The mapping
         is `models.google.thinking_level_for`: on the scale as is, below it to
         the lowest level, above it (or on an uncatalogued model) not sent.
-        Not sending is logged at WARNING, unlike Anthropic's DEBUG: on 3.1 Pro
+        Not sending is warned once, as on every provider (`models.effort`).
+        Unlike the others, an empty (uncatalogued) scale warns too: on 3.1 Pro
         the default is the most expensive level, so a dropped `effort` is a
         latency regression someone should be able to find.
         """
@@ -275,7 +247,7 @@ class GeminiClient(ModelClient):
             return None
         level = thinking_level_for(self.model, self.effort)
         if level is None:
-            _warn_effort_not_sent(self.model, self.effort)
+            warn_effort_not_sent("gemini", self.model, self.effort, thinking_levels(self.model))
         return level
 
     def _request_thinking_level(self, kwargs: Dict[str, Any]) -> Optional[str]:

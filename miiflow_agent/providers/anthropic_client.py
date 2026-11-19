@@ -18,8 +18,8 @@ from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from ..core.stream_normalizer import AnthropicStreamNormalizer, extract_mcp_result_text
 from ..core.streaming import StreamChunk
 from ..core import wire_shape
+from ..models.effort import normalize_effort, warn_effort_not_sent
 from ..models.anthropic import (
-    EFFORT_LEVELS,
     effort_levels,
     supports_native_mcp,
     supports_structured_outputs,
@@ -66,12 +66,10 @@ class AnthropicClient(ModelClient):
         # way `max_tokens` does — from the assistant's stored model_config, which
         # is spread into the client constructor — and an unhandled key there
         # would otherwise be absorbed silently by the base class.
-        effort = kwargs.pop("effort", None)
-        if effort is not None and effort not in EFFORT_LEVELS:
-            raise ValueError(
-                f"effort must be one of {EFFORT_LEVELS}, got {effort!r}"
-            )
-        self.effort: Optional[str] = effort
+        # Normalised and never refused (`models.effort`): an unknown or
+        # off-scale value is dropped with a warning in `_apply_effort`, as on
+        # every other provider, rather than failing every turn.
+        self.effort: Optional[str] = normalize_effort(kwargs.pop("effort", None))
         # Accepted for parity with OpenAIClient: a configured effort here
         # already overrides the call (`_apply_effort` writes it over any
         # `output_config.effort`), so there is nothing to switch.
@@ -119,9 +117,10 @@ class AnthropicClient(ModelClient):
         """Set `output_config.effort` when configured and the model accepts it.
 
         Merged into an existing `output_config` (structured outputs use the
-        same object for `format`) rather than replacing it. Silently skipped
+        same object for `format`) rather than replacing it. Skipped silently
         on models that would 400 on the parameter, so one config can be
-        shared across model swaps.
+        shared across model swaps; a level off the model's scale, or a name no
+        provider knows, is not sent and is warned once (`models.effort`).
 
         The per-model level list matters as much as per-model support: `xhigh`
         is newer than `max`, so Opus 4.6 and Sonnet 4.6 accept `max` and 400 on
@@ -135,12 +134,7 @@ class AnthropicClient(ModelClient):
         if not levels:
             return
         if self.effort not in levels:
-            logger.debug(
-                "Dropping effort=%r for %s: model accepts %s",
-                self.effort,
-                self.model,
-                levels,
-            )
+            warn_effort_not_sent("anthropic", self.model, self.effort, tuple(levels))
             return
         output_config = request_params.get("output_config")
         if not isinstance(output_config, dict):

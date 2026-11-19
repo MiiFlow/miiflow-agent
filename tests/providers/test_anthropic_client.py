@@ -672,9 +672,25 @@ class TestEffort:
             assert "output_config" not in kwargs
             assert "effort" not in kwargs
 
-    def test_invalid_effort_is_rejected_at_construction(self):
-        with pytest.raises(ValueError):
-            AnthropicClient(model="claude-sonnet-5", api_key="test-key", effort="turbo")
+    @pytest.mark.asyncio
+    async def test_an_unknown_stored_effort_is_dropped_not_refused(
+        self, sample_messages, mock_anthropic_response
+    ):
+        # Stored model_config is not validated on write: refusing it here
+        # failed every turn of the assistant (see models.effort).
+        client = AnthropicClient(model="claude-sonnet-5", api_key="test-key", effort="turbo")
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = mock_anthropic_response
+            await client.achat(sample_messages)
+            assert "output_config" not in mock_create.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_a_stored_effort_is_normalised(self, sample_messages, mock_anthropic_response):
+        client = AnthropicClient(model="claude-sonnet-5", api_key="test-key", effort=" Medium ")
+        with patch.object(client.client.messages, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = mock_anthropic_response
+            await client.achat(sample_messages)
+            assert mock_create.call_args.kwargs["output_config"] == {"effort": "medium"}
 
     @pytest.mark.asyncio
     async def test_xhigh_is_dropped_on_a_model_that_only_reaches_max(

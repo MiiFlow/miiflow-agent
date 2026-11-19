@@ -13,6 +13,7 @@ from .anthropic import effort_levels as anthropic_effort_levels
 from .anthropic import supports_structured_outputs as anthropic_supports_structured_outputs
 from .anthropic import supports_thinking as anthropic_supports_thinking
 from .base import ModelConfig, ParameterConfig, ParameterType
+from .effort import known_effort_names, normalize_effort
 
 # DeepSeek
 from .deepseek import DEEPSEEK_MODELS, DEEPSEEK_PARAMETERS
@@ -62,6 +63,8 @@ __all__ = [
     "OPENAI_PARAMETERS",
     "openai_get_token_param_name",
     "openai_reasoning_effort_levels",
+    "normalize_effort",
+    "known_effort_names",
     "openai_supports_temperature",
     # Anthropic
     "ANTHROPIC_MODELS",

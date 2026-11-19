@@ -20,6 +20,7 @@ from ..core.message import Message, MessageRole
 from ..core.metrics import TokenCount
 from ..core.stream_normalizer import OpenAIStreamNormalizer
 from ..core.streaming import StreamChunk
+from ..models.effort import normalize_effort, warn_effort_not_sent
 from ..models.xai import reasoning_effort_levels
 from ..core.schema_normalizer import SchemaMode, normalize_json_schema
 from .openai_client import OpenAIClient
@@ -34,7 +35,8 @@ class XAIClient(ModelClient):
 
     def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
         super().__init__(model=model, api_key=api_key, **kwargs)
-        self.effort = kwargs.get("effort")
+        # Normalised and never refused (`models.effort`), as on every provider.
+        self.effort = normalize_effort(kwargs.get("effort"))
         self.effort_overrides_call = kwargs.get("effort_overrides_call", False)
         self.provider_name = "xai"
         base_url = kwargs.get("base_url") or "https://api.x.ai/v1"
@@ -94,13 +96,9 @@ class XAIClient(ModelClient):
         ):
             if self.effort in levels:
                 kwargs = {**kwargs, "reasoning_effort": self.effort}
-            else:
-                logger.debug(
-                    "Dropping effort=%r for %s: model accepts %s",
-                    self.effort,
-                    self.model,
-                    levels,
-                )
+            elif levels:
+                # A model with no effort setting is skipped silently.
+                warn_effort_not_sent("xai", self.model, self.effort, levels)
         effort = kwargs.get("reasoning_effort")
         if effort is not None and levels and effort not in levels:
             raise ValueError(

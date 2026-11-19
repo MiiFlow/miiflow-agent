@@ -519,9 +519,26 @@ class TestConfiguredEffort:
 
         assert "reasoning" not in mock_create.call_args.kwargs
 
-    def test_unknown_effort_is_rejected_at_construction(self):
-        with pytest.raises(ValueError, match="effort must be one of"):
-            OpenAIClient(model="gpt-6-luna", api_key="test-key", effort="extreme")
+    @pytest.mark.asyncio
+    async def test_an_unknown_stored_effort_is_dropped_not_refused(self, sample_messages):
+        # Stored model_config is not validated on write: refusing it here
+        # failed every turn of the assistant (see models.effort).
+        client = OpenAIClient(model="gpt-6.1-sol", api_key="test-key", effort="extreme")
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _responses_response()
+            await client.achat(sample_messages, tools=self._TOOLS)
+
+        assert "reasoning" not in mock_create.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_a_stored_effort_is_normalised(self, sample_messages):
+        client = OpenAIClient(model="gpt-6.1-sol", api_key="test-key", effort=" High ")
+        assert client.effort == "high"
+        with patch.object(client.client.responses, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _responses_response()
+            await client.achat(sample_messages, tools=self._TOOLS)
+
+        assert mock_create.call_args.kwargs["reasoning"] == {"effort": "high"}
 
 
 class TestOpenAIRequestMapping:

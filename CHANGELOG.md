@@ -4,6 +4,15 @@ All notable changes to miiflow-agent will be documented here.
 
 ## Unreleased
 
+## [2.0.1] - 2026-11-19
+
+**A stored `effort` reads the same on every provider and never fails a turn.** 2.0.0 made `GeminiClient` honour `effort`, but each provider client still read the key its own way: Anthropic and OpenAI refused an unknown name with `ValueError`, case-sensitively, Gemini did too, and xAI dropped it silently. The server does not validate `model_config.effort` on write. So a stored `"auto"` or `"Medium"` failed every turn on three providers. The server takes this package by path, so this reached the server when Gemini's `effort` support merged, before 2.0.0 was released.
+
+### Fixed
+- **One reading of a configured `effort` for every client (`models/effort.py`, `providers/anthropic_client.py`, `providers/openai_client.py`, `providers/gemini_client.py`, `providers/xai_client.py`)**: new `normalize_effort` trims and lower-cases the value, so `" Medium "` is `medium`, and treats a blank value as unset. A configured effort is never refused. A level the model doesn't take, or a name no provider knows, is not sent, so the model runs at its default, and `warn_effort_not_sent` logs this at WARNING once per provider, model and level. Before, Anthropic, OpenAI and xAI logged it at DEBUG. A model with no effort setting at all skips it silently on every provider except Gemini, where an empty scale means uncatalogued. `normalize_effort` and `known_effort_names` are exported from `miiflow_agent.models`. An explicit per-call `reasoning_effort` is outside this contract: `XAIClient` still raises on an unsupported one.
+- **`thinking_level_for` uses the same normalisation (`models/google.py`)**, so the level reported for a stored `"Medium"` is the one `GeminiClient` sends.
+- **Only release suffixes resolve to a catalogued Gemini model (`models/google.py`)**: the preview suffix matched any `-preview-<tag>`, so a different model such as `gemini-3.6-flash-preview-tts` took 3.6 Flash's thinking scale. Now only these match: a dated preview (`-preview-09-2026`), `-preview-customtools`, `-preview`, `-latest` and `-NNN`.
+
 ## [2.0.0] - 2026-11-19
 
 **A major version for what 1.x consumers can no longer resolve or call.** Python 3.10 is dropped, thirteen retired Gemini and Grok ids leave the catalog, `arize-phoenix` leaves the extras, core `tiktoken` and `structlog` floors move past the ranges 1.x accepted, and media fetches refuse private hosts. No public function or class was removed. **Read the migration notes below before upgrading.** It also adds Gemini thinking levels and OpenAI reasoning effort from an assistant's `effort`, cross-turn OpenAI prompt caching, eight new models, and a fix for Gemini streaming usage counted several times over.

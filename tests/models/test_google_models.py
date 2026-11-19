@@ -287,6 +287,9 @@ def test_thinking_levels_resolve_aliases_previews_and_routed_ids(model, expected
         # Contains a catalog name but takes only minimal/high: a substring
         # match would hand it `low`, which is a 400.
         "gemini-3.1-flash-lite-image",
+        # A preview tag that is not a date or `customtools` may be another
+        # model with its own scale.
+        "gemini-3.6-flash-preview-tts",
         "gemini-9-unknown",
         "",
     ],
@@ -314,6 +317,7 @@ def test_only_hydrogen_takes_xhigh_and_minimal_stays_off_pro_and_gemini_4():
         ("gemini-3.1-pro", "max", None),
         ("gemini-9-unknown", "low", None),  # uncatalogued: not sent
         ("gemini-3.1-pro", None, None),
+        ("gemini-3.1-pro", " Medium ", "medium"),  # a stored value, normalised
     ],
 )
 def test_thinking_level_for_maps_effort_onto_the_scale(model, effort, expected):

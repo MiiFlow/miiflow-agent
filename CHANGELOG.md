@@ -4,6 +4,9 @@ All notable changes to miiflow-agent will be documented here.
 
 ## Unreleased
 
+### Changed
+- **Python floor is 3.11.5 (`pyproject.toml`)**, up from 3.11.0. Every soupsieve release clear of the 2026 selector advisories (GHSA-mmhr-3c5m-f64f, GHSA-6655-6qjp-jx7x, GHSA-7g44-g9rc-x53w) requires 3.11.5, so with a 3.11.0 floor the `examples` and `all` extras resolved soupsieve 2.10 on 3.11. 3.11.0–3.11.4 are 2022–2023 patch releases, and the server already requires 3.11.5.
+
 ## [2.0.1] - 2026-11-19
 
 **A stored `effort` reads the same on every provider and never fails a turn.** 2.0.0 made `GeminiClient` honour `effort`, but each provider client still read the key its own way: Anthropic and OpenAI refused an unknown name with `ValueError`, case-sensitively, Gemini did too, and xAI dropped it silently. The server does not validate `model_config.effort` on write. So a stored `"auto"` or `"Medium"` failed every turn on three providers. The server takes this package by path, so this reached the server when Gemini's `effort` support merged, before 2.0.0 was released.

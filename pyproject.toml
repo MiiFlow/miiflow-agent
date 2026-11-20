@@ -25,7 +25,11 @@ classifiers = [
 # Floor 3.11: Pillow 13 (the first release without the 2026 decoder
 # advisories still open against 12.x) dropped 3.10, which reaches end of life
 # in October 2026. The server runs 3.11. (Earlier: 3.9 -> 3.10 for openai 2.x.)
-python = ">=3.11,<3.13"
+# Floor 3.11.5: every soupsieve release without the 2026 selector ReDoS and
+# recursion advisories (3.0.2+, GHSA-mmhr-3c5m-f64f fixed in 4.0.0) requires
+# 3.11.5, so a 3.11.0-3.11.4 floor locks a vulnerable soupsieve. The server
+# already requires 3.11.5.
+python = ">=3.11.5,<3.13"
 # 2.x: the only documented breaking change in v2.0.0 is
 # ResponseFunctionToolCallOutputItem.output / ResponseCustomToolCallOutput.output
 # widening from `str` to `str | list[...]`. This package never reads those

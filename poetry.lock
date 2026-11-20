@@ -371,15 +371,15 @@ files = [
 
 [[package]]
 name = "beautifulsoup4"
-version = "4.14.3"
+version = "4.15.0"
 description = "Screen-scraping library"
 optional = true
 python-versions = ">=3.7.0"
 groups = ["main"]
 markers = "extra == \"all\" or extra == \"examples\""
 files = [
-    {file = "beautifulsoup4-4.14.3-py3-none-any.whl", hash = "sha256:0918bfe44902e6ad8d57732ba310582e98da931428d231a5ecb9e7c703a735bb"},
-    {file = "beautifulsoup4-4.14.3.tar.gz", hash = "sha256:6292b1c5186d356bba669ef9f7f051757099565ad9ada5dd630bd9de5fa7fb86"},
+    {file = "beautifulsoup4-4.15.0-py3-none-any.whl", hash = "sha256:d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9"},
+    {file = "beautifulsoup4-4.15.0.tar.gz", hash = "sha256:288e3ca7d54b06f2ac191970bc275c1939cb46d450b255bf6718b04aa37ab4f7"},
 ]
 
 [package.dependencies]
@@ -4321,28 +4321,15 @@ files = [
 
 [[package]]
 name = "soupsieve"
-version = "2.10"
-description = "A modern CSS selector implementation for Beautiful Soup."
-optional = true
-python-versions = ">=3.10"
-groups = ["main"]
-markers = "python_version == \"3.11\" and (extra == \"all\" or extra == \"examples\")"
-files = [
-    {file = "soupsieve-2.10-py3-none-any.whl", hash = "sha256:8596eb8967d744174820280fa62b4542a2e955bfaccca73ed8a13c6eb8e9b502"},
-    {file = "soupsieve-2.10.tar.gz", hash = "sha256:49e9380d7d2905463583bafe285e818c7366a9ed7b3aee221c1ac79c905d8bc0"},
-]
-
-[[package]]
-name = "soupsieve"
-version = "3.0.3"
+version = "4.1.2"
 description = "A modern CSS selector implementation for Beautiful Soup."
 optional = true
 python-versions = ">=3.11.5"
 groups = ["main"]
-markers = "python_version == \"3.12\" and (extra == \"all\" or extra == \"examples\")"
+markers = "extra == \"all\" or extra == \"examples\""
 files = [
-    {file = "soupsieve-3.0.3-py3-none-any.whl", hash = "sha256:fa30e3ba4809cb81ce1f3209f2fbe3e779fc445f0439bc147a0d7c4601743f21"},
-    {file = "soupsieve-3.0.3.tar.gz", hash = "sha256:7dcf6022eed0399eb9934a75e020148f7a2024c37b7dfcd3cf2c5505d69c364e"},
+    {file = "soupsieve-4.1.2-py3-none-any.whl", hash = "sha256:96b4115212a3abee1f572d62da706cca090b088cb5effa278db5702122e63a2c"},
+    {file = "soupsieve-4.1.2.tar.gz", hash = "sha256:c6539a2638f26991463527337e39d630e3cbb86d024f52282a510535b8a7e09f"},
 ]
 
 [[package]]
@@ -4995,5 +4982,5 @@ pdf = ["PyMuPDF"]
 
 [metadata]
 lock-version = "2.1"
-python-versions = ">=3.11,<3.13"
-content-hash = "8b7139af679514ce27870c376a25a65795cf3b89ccc61b14c065c9e2b2ade1dd"
+python-versions = ">=3.11.5,<3.13"
+content-hash = "5ca57f4a95f78eb86a863a5728d6ce74e09364d45095afbae3a2f4e2272978e3"

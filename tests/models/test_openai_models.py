@@ -2,8 +2,11 @@
 
 import pytest
 
+from tests.utils.assertions import assert_output_cap_map_matches_catalog
+
 from miiflow_agent.models.openai import (
     OPENAI_MODELS,
+    OPENAI_PARAMETERS,
     get_long_context_pricing_multipliers,
     get_parameters_for_model,
     get_token_param_name,
@@ -451,3 +454,124 @@ def test_reasoning_effort_levels_follow_the_fast_variant():
     assert reasoning_effort_levels("gpt-6-sol-fast") == reasoning_effort_levels("gpt-6-sol")
     assert "none" not in reasoning_effort_levels("gpt-6.1-sol")
     assert reasoning_effort_levels("gpt-4.1") == ()
+
+
+class TestGpt62:
+    """GPT-6.2 Astra and Sol, generally available November 17, 2026.
+
+    Two traps here, and they pull in opposite directions. Astra's is the
+    price: it is the first top-tier OpenAI release in this catalog that is
+    CHEAPER than the model it supersedes on every column, so an audit that
+    assumes "newer flagship costs more" writes the wrong hints. Sol's is the
+    opposite — its rates are IDENTICAL to `gpt-6.1-sol`'s, so the entry looks
+    like a duplicate and the temptation is to treat the swap as cosmetic.
+    Both share Astra's effort scale rather than the one belonging to the tier
+    whose name Sol carries.
+    """
+
+    @pytest.mark.parametrize("model", ["gpt-6.2-astra", "gpt-6.2-sol"])
+    @pytest.mark.parametrize("suffix", ["", "-fast", "-2026-11-17"])
+    def test_every_spelling_answers_the_same(self, model, suffix):
+        spelling = f"{model}{suffix}"
+        assert is_gpt6_model(spelling)
+        assert not supports_temperature(spelling)
+        assert get_token_param_name(spelling) == "max_completion_tokens"
+        assert tools_require_responses_api(spelling)
+        assert get_long_context_pricing_multipliers(spelling, 300_000) == (2.0, 1.5)
+        assert get_long_context_pricing_multipliers(spelling, 272_000) == (1.0, 1.0)
+        assert unsupported_request_params(spelling) == {
+            "logprobs",
+            "prompt_cache_retention",
+            "temperature",
+            "top_logprobs",
+            "top_p",
+        }
+
+    @pytest.mark.parametrize("model", ["gpt-6.2-astra", "gpt-6.2-sol"])
+    def test_effort_scale_is_astras_for_both(self, model):
+        # Unlike GPT-6.1, the 6.2 tier is uniform: both models reject `none`
+        # and `minimal`. Sol inheriting GPT-6 Sol's scale here would put a 400
+        # behind a UI dropdown, and would also claim Chat Completions can call
+        # function tools on it.
+        assert _parameter(model, "reasoning_effort").options == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        assert "none" in _parameter("gpt-6-sol", "reasoning_effort").options
+
+    @pytest.mark.parametrize("model", ["gpt-6.2-astra", "gpt-6.2-sol"])
+    def test_pro_mode_is_not_offered(self, model):
+        # `reasoning.mode` is documented on GPT-5.6, Astra and GPT-6 Sol/Luna,
+        # and on neither 6.1 nor 6.2. Note the newest model in the catalog
+        # therefore offers no pro mode while the model it supersedes does.
+        assert "reasoning_mode" not in _parameter_names(model)
+        assert "reasoning_mode" in _parameter_names("gpt-6-astra")
+
+    def test_astra_undercuts_the_astra_it_supersedes_on_every_column(self):
+        new, old = OPENAI_MODELS["gpt-6.2-astra"], OPENAI_MODELS["gpt-6-astra"]
+        assert (new.input_cost_hint, new.output_cost_hint) == (8.0, 40.0)
+        assert new.input_cost_hint < old.input_cost_hint
+        assert new.output_cost_hint < old.output_cost_hint
+        assert new.cache_read_cost_hint < old.cache_read_cost_hint
+        assert new.cache_write_cost_hint < old.cache_write_cost_hint
+
+    def test_sol_is_priced_exactly_like_the_sol_it_supersedes(self):
+        # Pinned because the gain is capability, not rate: a costing model
+        # built on 6.1 Sol carries over unchanged, and a reviewer who "fixes"
+        # one of these numbers to make the newer model look dearer is wrong.
+        new, old = OPENAI_MODELS["gpt-6.2-sol"], OPENAI_MODELS["gpt-6.1-sol"]
+        for field in (
+            "input_cost_hint",
+            "output_cost_hint",
+            "cache_read_cost_hint",
+            "cache_write_cost_hint",
+        ):
+            assert getattr(new, field) == getattr(old, field), field
+
+    @pytest.mark.parametrize("model", ["gpt-6.2-astra", "gpt-6.2-sol"])
+    def test_cached_input_is_five_percent_of_input(self, model):
+        # The GPT-6.2 tier reads cache at 5% of input, like GPT-6.1 and unlike
+        # the GPT-6 tier's 10%. Costing Astra off the 10% ratio overstates its
+        # cached tokens 2x.
+        config = OPENAI_MODELS[model]
+        assert config.cache_read_cost_hint == pytest.approx(config.input_cost_hint * 0.05)
+        assert config.cache_write_cost_hint == pytest.approx(config.input_cost_hint * 1.25)
+
+    def test_there_is_no_62_terra_or_luna(self):
+        # The 6.2 release covered Astra and Sol only; either id would 404.
+        assert "gpt-6.2-terra" not in OPENAI_MODELS
+        assert "gpt-6.2-luna" not in OPENAI_MODELS
+
+
+def test_output_cap_maps_cover_every_catalogued_model():
+    """Both OpenAI maps, reasoning and non-reasoning, against the catalog.
+
+    The reasoning map's `default` is 100000, BELOW every model here, so a
+    model left out of it is capped 28K short of its real 128K ceiling and
+    `load_llm_models` persists that. Nothing else fails when a key is missing,
+    which is how `gpt-6.2-astra` and `gpt-6.2-sol` were first added without
+    one. The `max_tokens` map (the gpt-4.1 pair) is checked too, because
+    splitting the catalog by `token_param_name` and only guarding one half
+    would leave the other half exactly as unguarded as before.
+
+    The shared helper carries the reasoning; `tests/utils/assertions.py` also
+    records which provider maps are NOT covered.
+    """
+    reasoning = {
+        name: config
+        for name, config in OPENAI_MODELS.items()
+        if get_token_param_name(name) == "max_completion_tokens"
+    }
+    standard = {
+        name: config
+        for name, config in OPENAI_MODELS.items()
+        if get_token_param_name(name) == "max_tokens"
+    }
+    assert reasoning and standard, "expected both halves of the catalog to be populated"
+    assert_output_cap_map_matches_catalog(
+        reasoning, OPENAI_PARAMETERS, "max_completion_tokens"
+    )
+    assert_output_cap_map_matches_catalog(standard, OPENAI_PARAMETERS, "max_tokens")

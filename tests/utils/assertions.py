@@ -78,3 +78,54 @@ def assert_response_valid(response, check_usage: bool = True) -> None:
         assert hasattr(response, 'usage'), "Response missing usage"
         if response.usage:
             assert response.usage.total_tokens > 0, "Usage tokens should be > 0"
+
+
+def assert_output_cap_map_matches_catalog(models, parameters, field_name: str) -> None:
+    """Every catalogued model declares its own output cap, never the fallback.
+
+    Each provider module keeps a hand-written per-model ``max_value`` map
+    beside its catalog, and every one of those maps has a ``default`` that
+    matches no model. A model added to the catalog but left out of the map
+    inherits that default; `ImportLLMModelsFromProviders.read_value` falls back
+    to it and `load_llm_models` writes it to the `LLMModel` row as the model's
+    real limit. NOTHING FAILS when that happens, which is how two GPT-6.2
+    entries shipped briefly capped at 100,000 against their real 128,000.
+
+    The defaults miss in BOTH directions, so the symptom is provider-specific:
+    OpenAI's 100000 and Anthropic's 8192 are below their catalogues and
+    TRUNCATE answers, while Google's 65536 is above Carbon's and Argon's 32768
+    and OVER-ADVERTISES, turning requests the UI permits into provider 400s.
+    Either way the number is wrong and silent, which is why this is a test
+    rather than a comment.
+
+    Shared rather than copied per module so that adding a provider is the only
+    thing a future audit has to get right — near-identical copies of this body
+    in each provider's test module were what let Groq be left out. Groq is the
+    one provider in this package NOT checked here, because its map already
+    diverges; `test_groq_output_cap_map_still_diverges_exactly_as_recorded` in
+    `tests/models/test_output_cap_coverage.py` pins that divergence and records
+    what finishing it requires.
+
+    Args:
+        models: the provider's catalog, ``{name: ModelConfig}``.
+        parameters: the provider's ``ParameterConfig`` list.
+        field_name: the token parameter whose ``max_value`` map to check
+            (``max_tokens``, ``max_completion_tokens`` or
+            ``max_output_tokens``).
+    """
+    parameter = next(p for p in parameters if p.field_name == field_name)
+    limits = parameter.max_value
+    assert isinstance(limits, dict), (
+        f"{field_name} carries no per-model map, so every model shares one "
+        f"bound: {limits!r}"
+    )
+    for name, config in models.items():
+        assert name in limits, (
+            f"{name} is in the catalog but not in the {field_name} map, so it "
+            f"inherits the {limits.get('default')!r} default against its real "
+            f"{config.maximum_output_tokens}"
+        )
+        assert limits[name] == config.maximum_output_tokens, (
+            f"{name}: {field_name} map says {limits[name]}, catalog says "
+            f"{config.maximum_output_tokens}"
+        )

@@ -2,8 +2,11 @@
 
 import pytest
 
+from tests.utils.assertions import assert_output_cap_map_matches_catalog
+
 from miiflow_agent.models.google import (
     GOOGLE_MODELS,
+    GOOGLE_PARAMETERS,
     THINKING_LEVELS,
     get_token_param_name,
     supports_temperature,
@@ -42,6 +45,12 @@ _CACHE_READ_RATIO_EXCEPTIONS: dict[str, float] = {
     #   * gemini-4-hydrogen — $1.50 input against $0.075 cached, and these
     #     are STANDARD rates with no announced step-up, so unlike the two above
     #     this pair of numbers is not expected to move at all.
+    #   * gemini-4-neon — $3 input against $0.15 cached, catalogued
+    #     November 23, 2026. STANDARD rates, no step-up, and no long-context
+    #     surcharge, so like Hydrogen this pair is not expected to move. It is
+    #     the fourth Gemini 4 model to arrive at 0.05x, which is what the note
+    #     above predicted, so the "Gemini 4 reads cache at 5%" reading now has
+    #     four independent confirmations rather than three.
     #
     # Note the collision this test cannot see: Hydrogen's $0.075 cached rate is
     # the same figure as gemini-3.8-flash's and gemini-3.6-flash's, but it is
@@ -49,6 +58,7 @@ _CACHE_READ_RATIO_EXCEPTIONS: dict[str, float] = {
     # rate, different ratio, different tier.
     "gemini-4-argon": 0.05,
     "gemini-4-carbon": 0.05,
+    "gemini-4-neon": 0.05,
     "gemini-4-hydrogen": 0.05,
 }
 
@@ -298,11 +308,17 @@ def test_uncatalogued_models_have_no_thinking_levels(model):
     assert thinking_levels(model) == ()
 
 
-def test_only_hydrogen_takes_xhigh_and_minimal_stays_off_pro_and_gemini_4():
+def test_only_hydrogen_and_neon_take_xhigh_and_minimal_stays_off_pro_and_gemini_4():
+    # `xhigh` is NOT a Gemini 4 family trait and this assertion is the guard
+    # against assuming it is: Hydrogen and Neon take it, Carbon and Argon
+    # return a 400 on it. Neon is the one most likely to be got wrong, because
+    # it is DERIVED FROM CARBON and still follows Hydrogen here — so a reviewer
+    # reasoning from lineage rather than from the model guide would put it on
+    # Carbon's three-level scale and silently drop a level the model accepts.
     takes_xhigh = {name for name in GOOGLE_MODELS if "xhigh" in thinking_levels(name)}
-    assert takes_xhigh == {"gemini-4-hydrogen"}
+    assert takes_xhigh == {"gemini-4-hydrogen", "gemini-4-neon"}
     for name in ("gemini-3.1-pro", "gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon",
-                 "gemini-4-hydrogen"):
+                 "gemini-4-neon", "gemini-4-hydrogen"):
         assert "minimal" not in thinking_levels(name)
 
 
@@ -322,3 +338,16 @@ def test_only_hydrogen_takes_xhigh_and_minimal_stays_off_pro_and_gemini_4():
 )
 def test_thinking_level_for_maps_effort_onto_the_scale(model, effort, expected):
     assert thinking_level_for(model, effort) == expected
+
+
+def test_max_output_tokens_map_covers_every_catalogued_model():
+    """This map fails the OPPOSITE way round from Anthropic's and OpenAI's,
+    and it is the dangerous direction: `default` is 65536 while Carbon and
+    Argon cap a non-streaming response at 32768, so a model of that kind
+    added without a key is advertised ABOVE its real ceiling and requests the
+    UI permits come back as provider 400s rather than as short answers. The
+    shared helper carries the rest of the reasoning.
+    """
+    assert_output_cap_map_matches_catalog(
+        GOOGLE_MODELS, GOOGLE_PARAMETERS, "max_output_tokens"
+    )

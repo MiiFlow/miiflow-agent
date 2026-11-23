@@ -9,8 +9,11 @@ thinks, so the caller's `max_tokens` is silently shared with a thinking block.
 
 import pytest
 
+from tests.utils.assertions import assert_output_cap_map_matches_catalog
+
 from miiflow_agent.models.anthropic import (
     ANTHROPIC_MODELS,
+    ANTHROPIC_PARAMETERS,
     _resolve_model_name,
     effort_levels,
     prompt_length_multiplier,
@@ -573,3 +576,14 @@ class TestSamplingParametersAgainstTheSdkPin:
         # These 400 on a non-default value under 2023-06-01 and on any value
         # under 2026-10-21, so this half of the contract is version-independent.
         assert supports_temperature(model) is False, model
+
+
+def test_max_tokens_map_covers_every_catalogued_model():
+    """This map is the worst instance in the package: `default` is 8192 while
+    every entry except Haiku 4.5 declares 128000, so a model added to
+    `ANTHROPIC_MODELS` without a key here is capped about 120K short. The
+    shared helper carries the rest of the reasoning.
+    """
+    assert_output_cap_map_matches_catalog(
+        ANTHROPIC_MODELS, ANTHROPIC_PARAMETERS, "max_tokens"
+    )

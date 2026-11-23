@@ -40,6 +40,7 @@ from .base import ModelConfig, ParameterConfig, ParameterType
 # parameters do not take effect", which is a superset of the catalog.
 _NO_SAMPLING_PARAMS = {
     "gemini-4-carbon",
+    "gemini-4-neon",
     "gemini-4-hydrogen",
     "gemini-4-argon",
     "gemini-3.8-flash",
@@ -463,14 +464,76 @@ _NO_SAMPLING_PARAMS = {
 # day out) and November 19 (gemini-3.6-flash leaving the Agent Platform only)
 # both remain not-ours, for the reasons recorded above.
 #
-# SOURCING IS WORSE THAN EVER AND THESE TWO ENTRIES ARE THE LEAST
-# FIRST-PARTY-VERIFIED IN THIS FILE. The per-token rates on the older entries
+# NOVEMBER 23, 2026 AUDIT — GEMINI 4 NEON, and the Gemini 4 line is now FOUR
+# models in six weeks. Released November 18, 2026, generally available with no
+# preview period, and it slots BETWEEN Carbon and Hydrogen rather than above or
+# below the pair: Google's own model guide describes it as finishing faster with
+# fewer output tokens than Carbon while handling harder reasoning than Hydrogen.
+# So the tier order in this catalog is now Carbon > Neon > Hydrogen, with Argon
+# legacy beside Carbon.
+#
+# THE ONE THING MOST LIKELY TO BE GOT WRONG ABOUT NEON'S PRICE, because the
+# answer flips on a fixed date: $3/$15 is MORE expensive than Carbon through
+# November 30, 2026 and CHEAPER than Carbon from December 1, 2026. Carbon is on
+# introductory $2/$10 through November 30 and steps up to $4/$20; Neon's $3/$15
+# is STANDARD with no step-up announced and no long-context surcharge, flat
+# across the full window. An audit that reads "mid tier" as "cheaper than the
+# frontier model" is therefore WRONG through November 30, 2026 and RIGHT from
+# December 1, 2026 — and a costing comparison written before that date goes
+# stale on it without any price moving on Neon at all. Cached input is $0.15, i.e. 0.05x input, the same ratio Carbon,
+# Argon and Hydrogen use.
+#
+# NEON IS DERIVED FROM CARBON BUT DOES NOT INHERIT CARBON'S CONTRACT, and both
+# departures follow HYDROGEN instead, which is the opposite of what "adapted
+# from Carbon" suggests:
+#   * FOUR thinking levels (LOW/MEDIUM/HIGH/XHIGH) defaulting to HIGH, where
+#     Carbon documents three defaulting to MEDIUM and 400s on `xhigh`. A sweep
+#     ported from Carbon under-uses the scale; one ported to Carbon 400s.
+#   * Non-streaming max output 65,536, not Carbon's 32,768.
+# Like Carbon and Argon it is PAID-TIER ONLY — Google's pricing page states
+# plainly that Neon is not available on the Free tier — so Hydrogen remains the
+# only Gemini 4 model with a Gemini API free tier. Context caching is implicit
+# only, with a 4,096-token minimum and no explicit cache to pin.
+#
+# ONE FIGURE HERE IS CONTESTED and the catalog takes the conservative reading:
+# MAX OUTPUT. Most write-ups give a default synchronous cap of 65,536, which is
+# what this entry carries and what matches Hydrogen; one quotes the Agent
+# Platform guide saying the output limit is settable between 32,768 and
+# 1,048,576 with 1,048,576 as the default, which would be a different shape
+# again from every other model in this file. 65,536 is carried because it is
+# the figure the majority of sources report AND the one this catalog's
+# convention asks for — the ceiling a single plain non-streaming POST reaches,
+# which is the path `GeminiClient.chat()` takes. If the 1,048,576 default is
+# real it affects long decode, not that path. Re-check against a first-party
+# table when one is reachable.
+#
+# WHAT DID NOT CHANGE at this audit: no price moved on any previously
+# catalogued model, no catalogued model gained a deprecation or retirement
+# date, and Google has announced nothing against Carbon, Hydrogen, Argon or the
+# 3.x entries alongside this release. December 1, 2026 is still the nearest
+# date affecting catalogued entries — now 8 days out — and it still affects
+# Argon AND Carbon only, NOT Neon and NOT Hydrogen, both of which are on
+# standard rates. The Flash tier's January 1, 2027 step-up (3.8 Flash and
+# 3.6 Flash) is 39 days out.
+#
+# STILL DELIBERATELY ABSENT: no Neon cyber-permissive variant has surfaced, but
+# if one does it gets the same treatment as `gemini-4-carbon-cyber-permissive`
+# and `gemini-3.8-flash-cyber` above — Fairwind-gated, so it would 404 for
+# every key this catalog serves.
+#
+# SOURCING IS WORSE THAN EVER AND THESE THREE ENTRIES (Carbon, Neon, Hydrogen)
+# ARE THE LEAST FIRST-PARTY-VERIFIED IN THIS FILE. The per-token rates on the older entries
 # are still carried on the October 19 first-party confirmation, now four weeks
-# stale. For Carbon and Hydrogen nothing first-party was read at all:
+# stale. For Carbon, Neon and Hydrogen nothing first-party was read at all:
 # ai.google.dev, aistudio.google.com, docs.cloud.google.com and openrouter.ai
 # all fail to resolve from this environment, and cloud.google.com resolves but
-# serves the Vertex pricing path as a contentless shell. Every figure in the two
-# new entries rests on multiple independent search results quoting Google's own
+# serves the Vertex pricing path as a contentless shell and 301s both the
+# model-list and the model-guide paths to the unreachable
+# docs.cloud.google.com. Re-confirmed at the November 23, 2026 audit, where the
+# one Google-hosted Neon page that exists
+# (`.../gemini-enterprise-agent-platform/models/guides/gemini-4-neon`) could be
+# reached only as a search-result quotation. Every figure in the three
+# newest entries rests on multiple independent search results quoting Google's own
 # pricing page, changelog and Agent Platform model guides, cross-checked for
 # agreement: $2/$10 and $1.50/$7.50 were each corroborated by several
 # unrelated sources, and the max-output and thinking-level details come from
@@ -484,7 +547,7 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
     "gemini-4-carbon": ModelConfig(
         model_identifier="models/gemini-4-carbon",
         name="gemini-4-carbon",
-        description="Google's frontier model and the strongest thing in this catalog (announced October 28, 2026, generally available on the paid Gemini API November 10, 2026), built for coding and cybersecurity. It displaces Gemini 4 Argon as the model to pick for hard reasoning, long-horizon agentic work and coding; keep Argon for pinned workloads and Gemini 4 Hydrogen for latency- and cost-sensitive volume. FOUR AUDITS CARRIED IT AS UNCALLABLE — launch access was Google's Fairwind programme and US government pre-release testers only — and that gate has now opened exactly as the Argon precedent predicted. It is PAID-TIER ONLY: there is no Gemini API free tier for it, unlike Hydrogen. PRICING IS INTRODUCTORY AND STEPS UP, on the same date as Argon's: $2/$10 per 1M input/output tokens with cached input at $0.10 through November 30, 2026, then $4/$20 with cached input at $0.20 from December 1, 2026 — the hints here are the introductory tier, so costing after that date doubles. 1M token context window shared by input, thinking AND output. Max output follows Argon's three-number shape and this catalog carries the smallest for the same reason: 32,768 on a non-streaming direct-HTTP request, 65,536 when streaming, and 1,048,576 only through long decode, where max_output_tokens is set above the cap and `continuation_token` is followed across requests. This client's non-streaming path is a direct HTTP POST, so 32,768 is the ceiling a plain call here reaches. Thinking depth is thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); `minimal`, `xhigh` and `max` all 400, and thinking_budget is a hard 400 rather than ignored, as on Argon. Sampling parameters are accepted and silently ignored. Structured outputs, function calling and multimodal (text, image, video, audio, PDF) input are supported; context caching is implicit only. A `gemini-4-carbon-cyber-permissive` variant exists at the post-introductory $4/$20 with thinking defaulting to HIGH, but it is Fairwind-gated and is deliberately not catalogued here.",
+        description="Google's frontier model and the strongest thing in this catalog (announced October 28, 2026, generally available on the paid Gemini API November 10, 2026), built for coding and cybersecurity. It displaces Gemini 4 Argon as the model to pick for hard reasoning, long-horizon agentic work and coding; keep Argon for pinned workloads, Gemini 4 Neon for work that wants most of this model's reasoning with fewer output tokens, and Gemini 4 Hydrogen for latency- and cost-sensitive volume. It is no longer Google's newest model — Hydrogen shipped November 12 and Neon, which is derived from this model, on November 18, 2026 — but it is still the strongest thing in this catalog. NOTE THE PRICE ORDER INVERTS ON DECEMBER 1, 2026: Neon's standard $3/$15 is above this model's introductory $2/$10 today and below the $4/$20 it steps up to, so from that date the frontier model is the expensive one again and Neon becomes the cheaper mid tier. FOUR AUDITS CARRIED IT AS UNCALLABLE — launch access was Google's Fairwind programme and US government pre-release testers only — and that gate has now opened exactly as the Argon precedent predicted. It is PAID-TIER ONLY: there is no Gemini API free tier for it, unlike Hydrogen. PRICING IS INTRODUCTORY AND STEPS UP, on the same date as Argon's: $2/$10 per 1M input/output tokens with cached input at $0.10 through November 30, 2026, then $4/$20 with cached input at $0.20 from December 1, 2026 — the hints here are the introductory tier, so costing after that date doubles. 1M token context window shared by input, thinking AND output. Max output follows Argon's three-number shape and this catalog carries the smallest for the same reason: 32,768 on a non-streaming direct-HTTP request, 65,536 when streaming, and 1,048,576 only through long decode, where max_output_tokens is set above the cap and `continuation_token` is followed across requests. This client's non-streaming path is a direct HTTP POST, so 32,768 is the ceiling a plain call here reaches. Thinking depth is thinking_level (LOW/MEDIUM/HIGH, default MEDIUM); `minimal`, `xhigh` and `max` all 400, and thinking_budget is a hard 400 rather than ignored, as on Argon. Sampling parameters are accepted and silently ignored. Structured outputs, function calling and multimodal (text, image, video, audio, PDF) input are supported; context caching is implicit only. A `gemini-4-carbon-cyber-permissive` variant exists at the post-introductory $4/$20 with thinking defaulting to HIGH, but it is Fairwind-gated and is deliberately not catalogued here.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -503,10 +566,36 @@ GOOGLE_MODELS: Dict[str, ModelConfig] = {
         output_cost_hint=10.0,
         cache_read_cost_hint=0.10,  # 0.05x input; $0.20 from December 1, 2026
     ),
+    "gemini-4-neon": ModelConfig(
+        model_identifier="models/gemini-4-neon",
+        name="gemini-4-neon",
+        description="Google's newest model (released November 18, 2026, generally available with no preview period) and the Gemini 4 MID TIER: it sits between Carbon and Hydrogen, not above or below the pair — Google describes it as finishing faster with fewer output tokens than Carbon while handling harder reasoning than Hydrogen. Derived from Gemini 4 Carbon. It is NOT the capability ceiling: Carbon still is, and hard long-horizon work belongs there. THE PRICE COMPARISON AGAINST CARBON FLIPS ON DECEMBER 1, 2026 and this is the single thing most likely to be got wrong here: $3/$15 per 1M input/output tokens (output includes thinking tokens) with cached input at $0.15 is MORE expensive than Carbon's introductory $2/$10 today, and CHEAPER than the $4/$20 Carbon steps up to on December 1 — so \"the mid tier is cheaper than the frontier model\" is FALSE through November 30, 2026 and TRUE from December 1, 2026, without any price moving on this entry. These rates are STANDARD: no introductory period, no announced step-up, and NO long-context surcharge — flat across the full window, so unlike the OpenAI catalog there is no threshold to re-cost past. Cached input is 0.05x input, the same ratio as Carbon, Argon and Hydrogen. PAID TIER ONLY: Google's pricing page states plainly that Neon is not available on the Free tier, so Hydrogen remains the only Gemini 4 model with one. 1M token context window (1,048,576) shared by input, thinking AND output. TWO DEPARTURES FROM THE CARBON IT IS DERIVED FROM, and both follow HYDROGEN instead, which is the opposite of what the lineage suggests. First, thinking depth is thinking_level with FOUR levels — LOW/MEDIUM/HIGH/XHIGH, default HIGH — where Carbon documents three defaulting to MEDIUM and 400s on `xhigh`; so an effort sweep ported from Carbon under-uses this scale, one ported to Carbon fails, and a request that omits the level thinks harder and costs more here than the same request on Carbon. `minimal` is a 400. Second, max output is 65,536 on a plain non-streaming request rather than Carbon's 32,768 — THIS FIGURE IS CONTESTED: most sources give 65,536 as the default synchronous cap and one quotes Google's Agent Platform guide saying the limit is settable between 32,768 and 1,048,576 with 1,048,576 the default. 65,536 is carried because it is both the majority figure and this catalog's convention (the ceiling one plain non-streaming POST reaches, which is the path this client's `chat()` takes); if the 1,048,576 default is real it governs long decode, not that path. Sampling parameters are accepted and silently ignored. Structured outputs, function calling and multimodal (text, image, video, audio, PDF) input are supported; context caching is implicit only, with a 4,096-token minimum and no explicit cache to pin. Google has announced no deprecation for Carbon, Hydrogen or Argon alongside this release.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        supports_structured_outputs=False,
+        reasoning=True,
+        maximum_context_tokens=1048576,
+        # 65,536, following Hydrogen rather than the Carbon this model is
+        # derived from, whose non-streaming ceiling is 32,768. See the
+        # contested-figure note in this entry's description and in the
+        # November 23, 2026 audit note above GOOGLE_MODELS.
+        maximum_output_tokens=65536,
+        token_param_name="max_output_tokens",
+        supports_temperature=False,
+        input_cost_hint=3.0,
+        output_cost_hint=15.0,
+        # 0.05x input. STANDARD rate: no step-up, unlike Argon and Carbon
+        # (December 1, 2026) and the 3.x Flash tier (January 1, 2027), so the
+        # audit that doubles those dated rates must leave this entry alone.
+        cache_read_cost_hint=0.15,
+    ),
     "gemini-4-hydrogen": ModelConfig(
         model_identifier="models/gemini-4-hydrogen",
         name="gemini-4-hydrogen",
-        description="Google's newest model (released November 12, 2026) and the Gemini 4 Flash tier: the right default here for latency- and cost-sensitive volume, replacing Gemini 3.8 Flash, which Google names it the upgrade path from. It is NOT the capability ceiling — Gemini 4 Carbon is, and Argon sits between them — but it is the only Gemini 4 model with a rate-limited FREE TIER on the Gemini API, which neither Carbon nor Argon has. $1.50/$7.50 per 1M input/output tokens (output includes thinking tokens) with cached input at $0.075. TWO PRICING TRAPS, both the kind this file has been caught by before. First, those rates are STANDARD, not introductory: Hydrogen has no announced step-up, unlike Argon (December 1, 2026) and the 3.x Flash tier (January 1, 2027) — so an audit that doubles dated rates must not touch this entry. Second, $1.50/$7.50 is exactly what 3.8 Flash's introductory $0.75/$3.75 BECOMES on January 1, 2027, and also exactly 3.8 Flash's batch-rate twin doubled, so the two tiers' numbers collide from several directions; Hydrogen costs 2x today's 3.8 Flash and the same as 3.8 Flash from January. 1M token context window (1,048,576) shared by input, thinking and output. MAX OUTPUT DIFFERS FROM ARGON AND CARBON AND IS HIGHER: a single segment stops at 65,536 output tokens whether streaming or not — there is no 32,768 non-streaming cap here — and beyond that Google returns a CONTINUATION finish reason with a continuation token, which long decode follows to reach 1,048,576 minus input; a max_output_tokens above 1,048,576 is a 400. So 65,536 is the ceiling a plain non-streaming call here reaches, twice what Carbon and Argon allow. Thinking depth is thinking_level with FOUR levels — LOW/MEDIUM/HIGH/XHIGH, default HIGH — which is a double departure from Argon and Carbon: those two default to MEDIUM and reject `xhigh`, so an effort sweep carried over from either does not map, and a request that omits thinking_level thinks harder and costs more here than the same request on Argon. `minimal` is a 400. Sampling parameters are accepted and silently ignored. Structured outputs, function calling and multimodal (text, image, video, audio, PDF) input are supported; context caching is implicit only, with no explicit cache to pin.",
+        description="The Gemini 4 Flash tier (released November 12, 2026): the right default here for latency- and cost-sensitive volume, replacing Gemini 3.8 Flash, which Google names it the upgrade path from. NO LONGER Google's newest model — Gemini 4 Neon shipped November 18, 2026 — and not the capability ceiling either: Carbon is, Neon is the mid tier between the two of them, and Argon sits legacy beside Carbon. What this model still is, uniquely, is the ONLY Gemini 4 model with a rate-limited FREE TIER on the Gemini API; Carbon, Neon and Argon are all paid-tier only. $1.50/$7.50 per 1M input/output tokens (output includes thinking tokens) with cached input at $0.075. TWO PRICING TRAPS, both the kind this file has been caught by before. First, those rates are STANDARD, not introductory: Hydrogen has no announced step-up, unlike Argon (December 1, 2026) and the 3.x Flash tier (January 1, 2027) — so an audit that doubles dated rates must not touch this entry. Second, $1.50/$7.50 is exactly what 3.8 Flash's introductory $0.75/$3.75 BECOMES on January 1, 2027, and also exactly 3.8 Flash's batch-rate twin doubled, so the two tiers' numbers collide from several directions; Hydrogen costs 2x today's 3.8 Flash and the same as 3.8 Flash from January. 1M token context window (1,048,576) shared by input, thinking and output. MAX OUTPUT DIFFERS FROM ARGON AND CARBON AND IS HIGHER: a single segment stops at 65,536 output tokens whether streaming or not — there is no 32,768 non-streaming cap here — and beyond that Google returns a CONTINUATION finish reason with a continuation token, which long decode follows to reach 1,048,576 minus input; a max_output_tokens above 1,048,576 is a 400. So 65,536 is the ceiling a plain non-streaming call here reaches, twice what Carbon and Argon allow. Thinking depth is thinking_level with FOUR levels — LOW/MEDIUM/HIGH/XHIGH, default HIGH — which is a double departure from Argon and Carbon: those two default to MEDIUM and reject `xhigh`, so an effort sweep carried over from either does not map, and a request that omits thinking_level thinks harder and costs more here than the same request on Argon. `minimal` is a 400. Sampling parameters are accepted and silently ignored. Structured outputs, function calling and multimodal (text, image, video, audio, PDF) input are supported; context caching is implicit only, with no explicit cache to pin.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -697,6 +786,9 @@ GOOGLE_PARAMETERS: list[ParameterConfig] = [
             # Carbon shares Argon's non-streaming cap; Hydrogen does NOT —
             # it allows 65,536 on both paths, which is also the `default`.
             "gemini-4-carbon": 32768,
+            # Neon follows Hydrogen rather than the Carbon it is derived from:
+            # 65,536 on both paths. See its entry for the conflict behind this.
+            "gemini-4-neon": 65536,
             "gemini-4-hydrogen": 65536,
             "gemini-3.8-flash": 65536,
             "gemini-3.6-flash": 65536,
@@ -770,18 +862,25 @@ def supports_temperature(model: str) -> bool:
 # model does not take is a 400, not a no-op:
 #   * `minimal` exists only on 3.6 Flash and the Flash-Lite models; 3.1 Pro,
 #     3.8 Flash and every Gemini 4 model reject it.
-#   * `xhigh` exists only on Gemini 4 Hydrogen.
-#   * The DEFAULT differs too, which is why sending a level matters: 3.1 Pro
-#     and Hydrogen default to `high`, Argon, Carbon, 3.8 Flash and 3.6 Flash to
-#     `medium`, the Flash-Lite models to `minimal`. A request that omits the
-#     level on 3.1 Pro thinks at full depth before its first output token.
+#   * `xhigh` exists only on Gemini 4 Hydrogen and Gemini 4 Neon — NOT on
+#     Carbon, even though Neon is derived from Carbon.
+#   * The DEFAULT differs too, which is why sending a level matters: 3.1 Pro,
+#     Hydrogen and Neon default to `high`, Argon, Carbon, 3.8 Flash and 3.6
+#     Flash to `medium`, the Flash-Lite models to `minimal`. A request that
+#     omits the level on 3.1 Pro thinks at full depth before its first output
+#     token.
 # Sources: Google's "Controlling thinking" page (levels-supported table, read
 # November 19, 2026) for 3.1 Pro, 3.1/3.5 Flash-Lite, 3.6 and 3.8 Flash and
-# Argon; the Carbon and Hydrogen entries above (their launch notes) for those
-# two. Keep the keys in step with `GOOGLE_MODELS`:
+# Argon; the Carbon, Neon and Hydrogen entries above (their launch notes) for
+# those three. Keep the keys in step with `GOOGLE_MODELS`:
 # `test_every_catalogued_model_declares_its_thinking_levels` fails otherwise.
 _THINKING_LEVELS_BY_MODEL: Dict[str, tuple] = {
     "gemini-4-carbon": ("low", "medium", "high"),
+    # Neon takes Hydrogen's four levels and Hydrogen's HIGH default, NOT the
+    # LOW/MEDIUM/HIGH-with-MEDIUM-default scale of the Carbon it is derived
+    # from. So `xhigh` is valid here and a 400 on Carbon, and a request that
+    # omits the level thinks harder on Neon than on Carbon.
+    "gemini-4-neon": ("low", "medium", "high", "xhigh"),
     "gemini-4-hydrogen": ("low", "medium", "high", "xhigh"),
     "gemini-4-argon": ("low", "medium", "high"),
     "gemini-3.8-flash": ("low", "medium", "high"),
@@ -839,8 +938,8 @@ def thinking_levels(model: str) -> tuple:
 # Effort names that ask for less thinking than any Gemini scale starts at:
 # OpenAI's `none`, and `minimal` on a model whose floor is `low` (3.1 Pro,
 # 3.8 Flash, every Gemini 4 model). Dropping them would leave the model at its
-# DEFAULT, which on 3.1 Pro and Hydrogen is `high` -- the opposite of what was
-# asked -- so they go to the model's lowest level instead.
+# DEFAULT, which on 3.1 Pro, Hydrogen and Neon is `high` -- the opposite of
+# what was asked -- so they go to the model's lowest level instead.
 _BELOW_THE_SCALE = ("none", "minimal")
 
 

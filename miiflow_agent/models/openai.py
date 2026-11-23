@@ -208,8 +208,10 @@ _GPT6_SOL_LUNA_MODELS = {
 #
 # There is still no GPT-6.1 Astra — OpenAI cancelled it over internal safety
 # findings (deceptive behaviour), confirmed at DevDay on September 29 — and no
-# GPT-6.1 Luna, so GPT-6 Astra stays the capability ceiling and `gpt-6-luna`
-# stays the cheap tier. Either id would 404.
+# GPT-6.1 Luna. The capability ceiling moved anyway: GPT-6.2 Astra took it on
+# November 17, 2026 (below), so `gpt-6-astra` is no longer the ceiling and
+# `gpt-6.1-astra` / `gpt-6.1-luna` would still 404. `gpt-6-luna` stays the
+# cheap tier — the 6.2 release covered Astra and Sol only.
 _GPT61_SOL_MODELS = {
     "gpt-6.1-sol",
 }
@@ -217,7 +219,24 @@ _GPT61_TERRA_MODELS = {
     "gpt-6.1-terra",
 }
 _GPT61_MODELS = _GPT61_SOL_MODELS | _GPT61_TERRA_MODELS
-_GPT6_MODELS = _GPT6_ASTRA_MODELS | _GPT6_SOL_LUNA_MODELS | _GPT61_MODELS
+# GPT-6.2, generally available November 17, 2026: Astra and Sol together, with
+# no Terra and no Luna, so `gpt-6.2-terra` and `gpt-6.2-luna` 404.
+#
+# ONE SET FOR BOTH, unlike GPT-6.1, because here the two models DO share an
+# effort scale: both reject `none` (and `minimal`) with a 400 and run low
+# through max, defaulting to medium. That is Astra's scale and GPT-6.1 Sol's,
+# not GPT-6 Sol/Luna's — so tool calling on either 6.2 model is Responses-only
+# in practice, exactly as on those two, and splitting the tier in two would
+# buy nothing. The rest of the GPT-6 parameter contract is unchanged:
+# temperature, top_p, top_logprobs and logprobs are removed, and
+# `prompt_cache_retention` is replaced by `prompt_cache_options.ttl`.
+_GPT62_MODELS = {
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
+}
+_GPT6_MODELS = (
+    _GPT6_ASTRA_MODELS | _GPT6_SOL_LUNA_MODELS | _GPT61_MODELS | _GPT62_MODELS
+)
 # The family alias. Kept beside the catalog entry rather than only inside
 # `is_gpt6_model`, because every per-model answer (the surcharge, the rejected
 # parameters) has to agree about it: a spelling one helper calls GPT-6 and
@@ -401,6 +420,20 @@ _GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
 # this catalog cannot call is a 404, and a wrong price is worse than a missing
 # model.
 #
+# >>> SUPERSEDED BY THE NOVEMBER 23, 2026 AUDIT — READ THIS BEFORE THE THREE
+# >>> PARAGRAPHS ABOVE. GPT-6.2 SHIPPED on November 17, 2026: `gpt-6.2-astra`
+# >>> and `gpt-6.2-sol` are both catalogued below. So "There is still NO GPT-6.2
+# >>> of any line" and the instruction not to act on the `gpt-6.2-sol` name are
+# >>> HISTORY, not current guidance, and GPT-6 Astra is no longer the capability
+# >>> ceiling. The paragraphs are kept rather than deleted because the reasoning
+# >>> they record was VINDICATED on both halves and is worth reusing: the quota
+# >>> screenshot's *name* turned out to be real, which is why a name alone still
+# >>> is not an add trigger — the entry needs a callable id and a rate card, and
+# >>> waiting cost nothing. The reseller's *price* turned out to be wrong by
+# >>> 7.5x: GPT-6.2 Sol is $2 per 1M input, not $60. Had this file taken the
+# >>> CometAPI page as evidence it would have over-billed every Sol request
+# >>> thirtyfold for eighteen days. Treat the next such pair the same way.
+#
 # NO PRICE MOVED on any entry in the week to November 9. The rates were
 # re-corroborated against write-ups quoting OpenAI's pricing page, which still
 # shows gpt-6-astra at $10/$1/$50, gpt-6.1-terra at $1/$0.05/$5 and gpt-5.6-sol
@@ -481,6 +514,43 @@ _GPT_PRO_MODELS = {"gpt-5.5-pro", "gpt-5.4-pro"}
 # platform.claude.com remains the ONLY provider documentation readable from this
 # environment, which is why the Anthropic catalog in this package is verified to
 # a standard this one and the Google one are not.
+#
+# THE NOVEMBER 23, 2026 AUDIT ADDED GPT-6.2 — ASTRA AND SOL, generally
+# available November 17, 2026 — which makes every "there is still no GPT-6.2"
+# line above history. See the superseded marker in the November 9 block for why
+# those paragraphs are kept rather than deleted; the short version is that the
+# quota-screenshot NAME was real while the reseller's $60 PRICE was wrong by
+# 7.5x, so the rule that a name is not an add trigger survives intact.
+# GPT-6.2 Astra takes the capability ceiling from GPT-6 Astra and is cheaper on
+# every column, which is the first time a top-tier OpenAI release in this file
+# has been; GPT-6.2 Sol takes the recommended-default slot from GPT-6.1 Sol at
+# identical rates. Still no Terra and no Luna in the 6.2 line, so `gpt-6.2-terra`
+# and `gpt-6.2-luna` 404, and GPT-6 Luna remains the cheap tier.
+#
+# THE NOVEMBER 21 FLOOR PASSED WITH NO PRICE CHANGE, which is the audit result
+# worth carrying forward: gpt-5.6-sol is still $4/$20/$0.40, re-checked at this
+# audit. The previous audits said in advance that the hints must not move on the
+# calendar alone, and that is exactly what happened — doubling them to $5/$30 on
+# the date would now over-bill the model by 25% input / 50% output. The
+# previously single-sourced NOVEMBER 30, 2026 end date is now carried by several
+# independent trackers as the date on OpenAI's pricing page, so it replaces
+# November 21 as the live date to re-check, on the same observed-rate rule.
+# NO OTHER PRICE MOVED on any entry in the week to November 23. gpt-4.1 and
+# gpt-4.1-mini still leave the API on January 14, 2027.
+#
+# ONE DEFECT THIS AUDIT FIXED, and it is a whole-package one rather than an
+# OpenAI one: the hand-written `max_value` maps beside each catalog have
+# `default`s that match no model, and nothing failed when a newly added model
+# was missing from one. Both 6.2 entries were first written without a
+# `max_completion_tokens` key and silently inherited the 100000 default against
+# their real 128000. Every provider's test module now derives the required keys
+# from its own catalog. See the note on that map below.
+#
+# ONE WATCH ITEM FOR THE NEXT AUDIT: whether OpenAI publishes a post-promotional
+# rate for gpt-5.6-sol on or after November 30, 2026, and whether an Ultrafast
+# service tier appears for either GPT-6.2 model — GPT-6 Astra and GPT-6.1 Sol
+# both have one and the 6.2 pair does not, which is currently the only reason
+# either older entry is worth staying on.
 
 _GPT41_MODELS = {"gpt-4.1", "gpt-4.1-mini"}
 
@@ -544,9 +614,64 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     # which matches the id exactly or as a dated snapshot (`-20…`) and never as a
     # substring, so "gpt-6-sol" cannot capture "gpt-6.1-sol".
     #
-    # GPT-6.1 Terra — generally available October 26, 2026. OpenAI's newest
-    # model, and the first mid tier since GPT-5.6 Terra. NOT its most capable:
-    # GPT-6 Astra below is still the ceiling and GPT-6.1 Sol still outranks it.
+    # GPT-6.2 — generally available November 17, 2026, Astra and Sol together.
+    # Astra is OpenAI's newest and most capable model and takes the capability
+    # ceiling from GPT-6 Astra; Sol takes the recommended-default slot from
+    # GPT-6.1 Sol at the same price.
+    #
+    # EVIDENCE STANDARD, stated once for both because it is weaker than this
+    # file's Anthropic counterpart and must not be read as equal: every figure
+    # in these two entries is multi-source search corroboration of OpenAI's
+    # pricing and model pages, NOT a first-party read. Every openai.com host
+    # (including platform.openai.com and developers.openai.com) is still
+    # refused from this environment — re-confirmed November 23, 2026, where the
+    # agent proxy returned `403 (no rule or network setting allows this host)`
+    # on a direct CONNECT — so the egress note above applies in full. The base
+    # rates, cached-input rates, context window and max output below were
+    # consistent across five or more independent write-ups; the two figures
+    # that were NOT are called out where they appear.
+    "gpt-6.2-astra": ModelConfig(
+        model_identifier="gpt-6.2-astra",
+        name="gpt-6.2-astra",
+        description="OpenAI's newest and most capable model (generally available November 17, 2026, in the API alongside ChatGPT Work and Codex) and the new capability ceiling of this catalog, for the hardest coding, reasoning and long-horizon agentic work. It supersedes GPT-6 Astra and is CHEAPER ON EVERY COLUMN, which is unusual for a top-tier release: $8/$40 per 1M input/output tokens against $10/$50 (20% off), and cached input $0.40 against $1.00 — a 60% cut, because GPT-6.2 reads cached input at 5% of the input rate where the GPT-6 tier read at 10%. That 5% rate is the one GPT-6.1 Sol introduced and it now covers both 6.2 models. Past 272K input tokens the whole request bills at 2x input and cache / 1.5x output ($16/$60), the same family-wide surcharge as every other GPT-6 model. 1.05M context window (922K of it input), 128K max output, text and image input (plus PDF through the Responses API `file` input), structured outputs, prompt caching. Batch is $4/$20 and `-fast` runs at $16/$80, both the usual multiples. SAME PARAMETER CONTRACT AS THE REST OF GPT-6: temperature, top_p, top_logprobs and logprobs are removed, and prompt_cache_retention is replaced by prompt_cache_options.ttl. The EFFORT SCALE is GPT-6 Astra's, not GPT-6.1 Terra's: effort runs low through max and defaults to medium, and `none`/`minimal` return a 400 — so there is no effort level at which Chat Completions will call function tools, and tool calling here is Responses-only. `reasoning.mode: \"pro\"` is NOT documented for this tier and is therefore not offered here. TWO FIGURES BELOW ARE SINGLE-SOURCED, flagged so a later audit does not read them as settled: the $10 cache-write rate (one write-up, though it is exactly the 1.25x input the whole GPT-6 family charges, which is why it is carried), and the long-context cached-input rate, which follows the 2x rule rather than being published. OpenAI has announced NO deprecation for GPT-6 Astra, GPT-6.1 Sol or GPT-6.1 Terra alongside this release, so the older tiers are superseded rather than expiring — do not read this entry as putting any of them on a clock.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        reasoning=True,
+        maximum_context_tokens=1050000,
+        maximum_output_tokens=128000,
+        token_param_name="max_completion_tokens",
+        supports_temperature=False,
+        input_cost_hint=8.0,
+        output_cost_hint=40.0,
+        cache_read_cost_hint=0.40,  # 5% of input — the GPT-6.2 rate, not GPT-6's 10%
+        cache_write_cost_hint=10.0,  # Cache writes: 1.25x input (single-sourced)
+    ),
+    "gpt-6.2-sol": ModelConfig(
+        model_identifier="gpt-6.2-sol",
+        name="gpt-6.2-sol",
+        description="The recommended default for most workloads (generally available November 17, 2026 alongside GPT-6.2 Astra): the cost-efficient high-end tier for agentic coding, computer use and professional work, succeeding GPT-6.1 Sol. The migration is an ID SWAP AND NOTHING ELSE on price: $2/$10 per 1M input/output tokens with cached input at $0.10 and cache writes at $2.50 are exactly GPT-6.1 Sol's numbers, so a costing model built on that entry carries over unchanged — the gain is capability, not rate. Reserve GPT-6.2 Astra for when this model at high effort falls short, and note Astra is now only 4x this model's input price rather than the 5x GPT-6 Astra was. Past 272K input tokens the whole request bills at 2x input and cache / 1.5x output ($4/$15). 1.05M context window (922K of it input), 128K max output, text and image input (plus PDF through the Responses API `file` input), structured outputs, prompt caching. Batch is $1/$5 and `-fast` runs at $4/$20. Same parameter contract as the rest of GPT-6: temperature, top_p, top_logprobs and logprobs are removed, and prompt_cache_retention is replaced by prompt_cache_options.ttl. EFFORT runs low through max and defaults to medium; `none`/`minimal` return a 400, as on GPT-6.1 Sol and Astra, so tool calling is Responses-only here too — GPT-6.1 Terra and GPT-6 Sol/Luna remain the only models in this catalog that can call function tools over Chat Completions. `reasoning.mode: \"pro\"` is NOT documented for this tier. No Ultrafast service tier has been announced for either 6.2 model; GPT-6.1 Sol's `service_tier: \"ultrafast\"` at $12/$60 is documented on that id, not this one, so do not assume it carries over. OpenAI has published no deprecation for GPT-6.1 Sol, so that entry stays callable and is kept below for pinned workloads.",
+        support_images=True,
+        support_files=True,
+        support_streaming=True,
+        supports_json_mode=True,
+        supports_tool_call=True,
+        reasoning=True,
+        maximum_context_tokens=1050000,
+        maximum_output_tokens=128000,
+        token_param_name="max_completion_tokens",
+        supports_temperature=False,
+        input_cost_hint=2.0,
+        output_cost_hint=10.0,
+        cache_read_cost_hint=0.10,  # 5% of input, same as GPT-6.1 Sol
+        cache_write_cost_hint=2.5,  # Cache writes: 1.25x input
+    ),
+    # GPT-6.1 Terra — generally available October 26, 2026. The cost-efficiency
+    # pick, and the first mid tier since GPT-5.6 Terra. NOT OpenAI's newest
+    # model since GPT-6.2 shipped on November 17, 2026, and never its most
+    # capable: GPT-6.2 Astra above is the ceiling and both Sol tiers outrank it.
     #
     # ON `support_files`, because the model page looks like it contradicts it:
     # OpenAI lists this model's input modalities as text and image only, with
@@ -562,7 +687,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-6.1-terra": ModelConfig(
         model_identifier="gpt-6.1-terra",
         name="gpt-6.1-terra",
-        description="OpenAI's newest model (generally available October 26, 2026) and the cost-efficiency pick of the catalog: the first Terra-class release since GPT-5.6, aimed at fast computer use, visual reasoning and everyday professional work. OpenAI measures it 15 percentage points above GPT-5.6 Terra at medium effort for roughly a third of the cost, and Artificial Analysis puts its low and medium levels on the cost-efficiency frontier. It is NOT the capability ceiling: OpenAI still recommends GPT-6.1 Sol or GPT-6 Astra for the hardest coding, and independent benchmarks place Terra below both. $1/$5 per 1M input/output tokens — half or less of GPT-5.6 Terra's $2/$12 and half of GPT-6.1 Sol's $2/$10 — with cached input at $0.05 (5% of input, the GPT-6.1 rate; the GPT-6 tier reads at 10%) and cache writes at $1.25 for 30-minute retention, $2.50 for 12-hour. Past 272K input tokens the whole request bills at 2x input and cache / 1.5x output ($2/$7.50, cache reads $0.10). 1.05M context window (922K of it input), 128K max output, text and image input (plus PDF), text output, structured outputs, prompt caching. Same parameter contract as the rest of GPT-6: temperature, top_p, top_logprobs and logprobs are removed, and prompt_cache_retention is replaced by prompt_cache_options.ttl. The EFFORT SCALE is the one place it parts from GPT-6.1 Sol, and it parts in the useful direction: all six levels — none, low, medium (the default), high, xhigh, max — where Sol and Astra both 400 on `none`. That makes this the only GPT-6.1 model whose function tools can be called over Chat Completions; above `none` tool calling is Responses-only, as elsewhere in the family. Scattered reports say effort `none` also re-admits temperature and top_p on this model; that is not documented by OpenAI, every call site here runs at the medium default, and `supports_temperature` is a single flag that cannot be made conditional on effort, so the sampling parameters stay dropped unconditionally. `reasoning.mode: \"pro\"` is NOT documented for the GPT-6.1 tier and is therefore not offered here. OpenAI has announced no deprecation for GPT-5.6 Terra alongside this release, so the older mid tier is superseded rather than expiring.",
+        description="The cost-efficiency pick of the catalog (generally available October 26, 2026): the first Terra-class release since GPT-5.6, aimed at fast computer use, visual reasoning and everyday professional work. NO LONGER OpenAI's newest model — GPT-6.2 Astra and GPT-6.2 Sol shipped November 17, 2026 — and it was never the cheapest here either (GPT-6 Luna is, at $0.10/$0.50). OpenAI measures it 15 percentage points above GPT-5.6 Terra at medium effort for roughly a third of the cost, and Artificial Analysis puts its low and medium levels on the cost-efficiency frontier. It is NOT the capability ceiling: OpenAI recommends a Sol tier or Astra for the hardest coding, and independent benchmarks place Terra below both. $1/$5 per 1M input/output tokens — half or less of GPT-5.6 Terra's $2/$12 and half of GPT-6.2 Sol's $2/$10 — with cached input at $0.05 (5% of input, the rate GPT-6.1 introduced and GPT-6.2 kept; the GPT-6 tier reads at 10%) and cache writes at $1.25 for 30-minute retention, $2.50 for 12-hour. Past 272K input tokens the whole request bills at 2x input and cache / 1.5x output ($2/$7.50, cache reads $0.10). 1.05M context window (922K of it input), 128K max output, text and image input (plus PDF), text output, structured outputs, prompt caching. Same parameter contract as the rest of GPT-6: temperature, top_p, top_logprobs and logprobs are removed, and prompt_cache_retention is replaced by prompt_cache_options.ttl. The EFFORT SCALE is the one place it parts from GPT-6.1 Sol, and it parts in the useful direction: all six levels — none, low, medium (the default), high, xhigh, max — where Sol and Astra both 400 on `none`. That makes this the only GPT-6.1 model whose function tools can be called over Chat Completions; above `none` tool calling is Responses-only, as elsewhere in the family. Scattered reports say effort `none` also re-admits temperature and top_p on this model; that is not documented by OpenAI, every call site here runs at the medium default, and `supports_temperature` is a single flag that cannot be made conditional on effort, so the sampling parameters stay dropped unconditionally. `reasoning.mode: \"pro\"` is NOT documented for the GPT-6.1 tier and is therefore not offered here. OpenAI has announced no deprecation for GPT-5.6 Terra alongside this release, so the older mid tier is superseded rather than expiring.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -584,7 +709,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-6.1-sol": ModelConfig(
         model_identifier="gpt-6.1-sol",
         name="gpt-6.1-sol",
-        description="The recommended default for most workloads (generally available September 29, 2026, announced at DevDay): an upgrade to GPT-6 Sol for agentic coding, computer use, and professional work that OpenAI positions as near-Astra intelligence at a fifth of Astra's token price. No longer OpenAI's newest model — GPT-6.1 Terra shipped October 26, 2026 — but still the more capable of the two, so steer here when Terra at high effort falls short and reserve Astra for when this model does. Priced identically to GPT-6 Sol at $2/$10 per 1M input/output tokens, with cache writes also unchanged at $2.50 — the one price that moved is CACHED INPUT, halved from $0.20 to $0.10, i.e. 5% of the input rate where the rest of the family reads at 10%. Past 272K input tokens the whole request bills at 2x input / 1.5x output ($4/$15). 1.05M context window (922K of it input), 128K max output, text and image input (plus PDF), structured outputs, prompt caching. Same parameter contract as the rest of GPT-6: temperature, top_p, top_logprobs and logprobs are removed, and prompt_cache_retention is replaced by prompt_cache_options.ttl. But the EFFORT SCALE is Astra's, not GPT-6 Sol's: effort runs low through max and defaults to medium, and `none`/`minimal` return a 400 — so unlike GPT-6 Sol there is no effort level at which Chat Completions will call function tools, and tool calling is Responses-only. This is NOT a GPT-6.1 family trait: GPT-6.1 Terra restores `none`, so the two 6.1 models have different effort scales and only Terra can call tools over Chat Completions. `reasoning.mode: \"pro\"` is NOT documented for this tier and is therefore not offered here. There is no GPT-6.1 Astra: OpenAI cancelled it over internal safety findings. An Ultrafast speed tier is now live on this model too: `service_tier: \"ultrafast\"` on the Responses API, rolled out October 8, 2026 at 6x both prices ($12/$60), API access open to developers while the ChatGPT and Codex side is gated. It is a service tier on this same id — `gpt-6.1-sol-ultrafast` would 404.",
+        description="Legacy — succeeded by GPT-6.2 Sol (November 17, 2026), which is stronger at the IDENTICAL $2/$10 per 1M input/output tokens with the same $0.10 cached input and $2.50 cache writes, so there is no cost argument for staying and this is kept for pinned workloads only. OpenAI has published no shutdown date for this id, so nothing expires. Generally available September 29, 2026, announced at DevDay: an upgrade to GPT-6 Sol for agentic coding, computer use, and professional work that OpenAI positioned as near-Astra intelligence at a fifth of Astra's token price. It is still the right target for ONE thing GPT-6.2 Sol has not been given: the Ultrafast service tier, documented on this id and not on the 6.2 pair (see below). Priced identically to GPT-6 Sol at $2/$10 per 1M input/output tokens, with cache writes also unchanged at $2.50 — the one price that moved is CACHED INPUT, halved from $0.20 to $0.10, i.e. 5% of the input rate where the rest of the family reads at 10%. Past 272K input tokens the whole request bills at 2x input / 1.5x output ($4/$15). 1.05M context window (922K of it input), 128K max output, text and image input (plus PDF), structured outputs, prompt caching. Same parameter contract as the rest of GPT-6: temperature, top_p, top_logprobs and logprobs are removed, and prompt_cache_retention is replaced by prompt_cache_options.ttl. But the EFFORT SCALE is Astra's, not GPT-6 Sol's: effort runs low through max and defaults to medium, and `none`/`minimal` return a 400 — so unlike GPT-6 Sol there is no effort level at which Chat Completions will call function tools, and tool calling is Responses-only. This is NOT a GPT-6.1 family trait: GPT-6.1 Terra restores `none`, so the two 6.1 models have different effort scales and only Terra can call tools over Chat Completions. `reasoning.mode: \"pro\"` is NOT documented for this tier and is therefore not offered here. There is no GPT-6.1 Astra: OpenAI cancelled it over internal safety findings. An Ultrafast speed tier is now live on this model too: `service_tier: \"ultrafast\"` on the Responses API, rolled out October 8, 2026 at 6x both prices ($12/$60), API access open to developers while the ChatGPT and Codex side is gated. It is a service tier on this same id — `gpt-6.1-sol-ultrafast` would 404.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -600,11 +725,12 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
         cache_read_cost_hint=0.10,  # 5% of input — half the rest of GPT-6's 10%
         cache_write_cost_hint=2.5,  # Cache writes: 1.25x input
     ),
-    # GPT-6 (Astra) — generally available September 3, 2026. Current flagship.
+    # GPT-6 (Astra) — generally available September 3, 2026. The flagship until
+    # GPT-6.2 Astra took that slot on November 17, 2026.
     "gpt-6-astra": ModelConfig(
         model_identifier="gpt-6-astra",
         name="gpt-6-astra",
-        description="GPT-6 Astra is OpenAI's flagship and most capable model (generally available September 3, 2026), a single dense reasoning model for complex coding, reasoning, and long-horizon agentic work. It is no longer OpenAI's newest model — GPT-6 Sol and GPT-6 Luna shipped September 22, 2026 beneath it, GPT-6.1 Sol on September 29, and GPT-6.1 Terra on October 26 — so reach for Astra when GPT-6.1 Sol at high effort falls short, not by default. 1.05M context window, 128K max output. $10/$50 per 1M input/output tokens, with cached input at $1 and cache writes at $12.50; past 272K input tokens the whole request bills at $20/$2/$75. Effort is the biggest cost dial — Artificial Analysis measures a 3.6x swing from low to max. Its parameter contract differs from GPT-5.6: temperature, top_p, top_logprobs (and logprobs on Chat Completions) are removed, prompt_cache_retention is replaced by prompt_cache_options.ttl, and the effort scale drops none/minimal — unlike Sol and Luna, Astra returns a 400 on `none` (GPT-6.1 Sol shares that restriction). Tool calling requires the Responses API; `max` effort is Responses-only. Appending -fast to the model id runs it at up to 2x speed for 2x the price, and the Ultrafast service tier (announced at DevDay, live on this model) runs up to 6x faster at 6x the price — $60/$300. It also stays the flagship for longer than expected: OpenAI cancelled GPT-6.1 Astra, its planned October successor, over internal safety findings, confirmed publicly at DevDay on September 29, 2026 — so do not hold migrations for it.",
+        description="Legacy — succeeded by GPT-6.2 Astra (November 17, 2026), which is both stronger and cheaper on every column ($8/$40 against the $10/$50 below, cached input $0.40 against $1.00 because 6.2 reads cache at 5% of input rather than 10%), so new work belongs there and this is kept for pinned workloads only. OpenAI has published no shutdown date for this id, so nothing expires. IT WAS OpenAI's flagship and most capable model from September 3, 2026 until that release, and the description below is retained because the capability notes still apply to pinned traffic: a single dense reasoning model for complex coding, reasoning, and long-horizon agentic work. It had already stopped being the newest model well before 6.2 — GPT-6 Sol and GPT-6 Luna shipped September 22, 2026 beneath it, GPT-6.1 Sol on September 29, GPT-6.1 Terra on October 26. 1.05M context window, 128K max output. $10/$50 per 1M input/output tokens, with cached input at $1 and cache writes at $12.50; past 272K input tokens the whole request bills at $20/$2/$75. Effort is the biggest cost dial — Artificial Analysis measures a 3.6x swing from low to max. Its parameter contract differs from GPT-5.6: temperature, top_p, top_logprobs (and logprobs on Chat Completions) are removed, prompt_cache_retention is replaced by prompt_cache_options.ttl, and the effort scale drops none/minimal — unlike Sol and Luna, Astra returns a 400 on `none` (GPT-6.1 Sol and both GPT-6.2 models share that restriction). Tool calling requires the Responses API; `max` effort is Responses-only. Appending -fast to the model id runs it at up to 2x speed for 2x the price, and the Ultrafast service tier (announced at DevDay, live on this model) runs up to 6x faster at 6x the price — $60/$300, a tier the 6.2 pair has NOT been given, so Ultrafast is a reason to stay here. One piece of history worth keeping, because it explains the gap: OpenAI cancelled GPT-6.1 Astra, its planned October successor, over internal safety findings, confirmed publicly at DevDay on September 29, 2026 — which is why this model held the ceiling for ten weeks longer than the release cadence implied, and why the successor arrived as 6.2 rather than 6.1.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -626,7 +752,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-6-sol": ModelConfig(
         model_identifier="gpt-6-sol",
         name="gpt-6-sol",
-        description="Legacy — succeeded by GPT-6.1 Sol (September 29, 2026), which is stronger at the SAME $2/$10 per 1M input/output tokens and reads cached input at half the price ($0.10 vs $0.20), so this is kept for pinned workloads only. Generally available September 22, 2026 alongside GPT-6 Luna. It is still the right target for one thing GPT-6.1 Sol cannot do: effort `none`, which is what Chat Completions requires to call function tools — GPT-6.1 Sol 400s on `none`, putting every tool call on the Responses API. It is also the tier that documents `reasoning.mode: \"pro\"`, which OpenAI has not documented for 6.1. Carries the GPT-6 advances into a cost-efficient high-end tier, reaching an estimated 90-95% of Astra's practical capability at roughly a fifth the cost per task. Cache writes $2.50. These are standard rates, not a promotion. Past 272K input tokens the whole request bills at 2x input / 1.5x output ($4/$15). 1.05M context window (922K of it input), 128K max output, text and image input. Effort runs none through max and defaults to medium. Same parameter contract as the rest of GPT-6: temperature, top_p, top_logprobs and logprobs are removed, and prompt_cache_retention is replaced by prompt_cache_options.ttl (e.g. \"30m\"). Pro is `reasoning.mode`, not a separate model id.",
+        description="Legacy, two generations behind — succeeded by GPT-6.1 Sol (September 29, 2026), which is stronger at the SAME $2/$10 per 1M input/output tokens and reads cached input at half the price ($0.10 vs $0.20), and then by GPT-6.2 Sol (November 17, 2026) at those identical rates again, so new Sol-tier work belongs on 6.2 and this is kept for pinned workloads only. Generally available September 22, 2026 alongside GPT-6 Luna. It is still the right target for one thing NEITHER later Sol can do: effort `none`, which is what Chat Completions requires to call function tools — GPT-6.1 Sol and GPT-6.2 Sol both 400 on `none`, putting every tool call on the Responses API. It is also the tier that documents `reasoning.mode: \"pro\"`, which OpenAI has documented for neither 6.1 nor 6.2 — so this entry and GPT-6 Astra are the only GPT-6 models here offering pro mode, and both are superseded. Carries the GPT-6 advances into a cost-efficient high-end tier, reaching an estimated 90-95% of Astra's practical capability at roughly a fifth the cost per task. Cache writes $2.50. These are standard rates, not a promotion. Past 272K input tokens the whole request bills at 2x input / 1.5x output ($4/$15). 1.05M context window (922K of it input), 128K max output, text and image input. Effort runs none through max and defaults to medium. Same parameter contract as the rest of GPT-6: temperature, top_p, top_logprobs and logprobs are removed, and prompt_cache_retention is replaced by prompt_cache_options.ttl (e.g. \"30m\"). Pro is `reasoning.mode`, not a separate model id.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -645,7 +771,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-6-luna": ModelConfig(
         model_identifier="gpt-6-luna",
         name="gpt-6-luna",
-        description="The fast, cost-efficient tier of the GPT-6 family (generally available September 22, 2026), for high-volume, latency-sensitive work: extraction, classification, structured summarisation and lightweight agentic steps. Still current: the September 29, 2026 GPT-6.1 release covered the Sol tier only, so there is no GPT-6.1 Luna and this remains the cheap tier to steer to. OpenAI positions it as matching the previous generation's flagship quality at roughly a tenth of its cost. Priced at $0.10/$0.50 per 1M input/output tokens — half GPT-5.6 Luna's $0.20/$1.20 and the cheapest model in this catalog — with cached input at $0.01 and cache writes at $0.125. These are standard rates, not a promotion. Past 272K input tokens the whole request bills at 2x input / 1.5x output. 1.05M context window (922K of it input), 128K max output, text and image input. Effort runs none through max and defaults to medium; `none` is what Chat Completions requires to call function tools, and anything above it needs the Responses API. Same parameter contract as the rest of GPT-6: temperature, top_p, top_logprobs and logprobs are removed, and prompt_cache_retention is replaced by prompt_cache_options.ttl. Pro is `reasoning.mode`, not a separate model id.",
+        description="The fast, cost-efficient tier of the GPT-6 family (generally available September 22, 2026), for high-volume, latency-sensitive work: extraction, classification, structured summarisation and lightweight agentic steps. Still current, and still the cheapest entry in this catalog: the September 29, 2026 GPT-6.1 release covered the Sol tier only and the November 17, 2026 GPT-6.2 release covered Astra and Sol only, so there is no GPT-6.1 Luna and no GPT-6.2 Luna — both ids 404 — and this remains the cheap tier to steer to. OpenAI positions it as matching the previous generation's flagship quality at roughly a tenth of its cost. Priced at $0.10/$0.50 per 1M input/output tokens — half GPT-5.6 Luna's $0.20/$1.20 and the cheapest model in this catalog — with cached input at $0.01 and cache writes at $0.125. These are standard rates, not a promotion. Past 272K input tokens the whole request bills at 2x input / 1.5x output. 1.05M context window (922K of it input), 128K max output, text and image input. Effort runs none through max and defaults to medium; `none` is what Chat Completions requires to call function tools, and anything above it needs the Responses API. Same parameter contract as the rest of GPT-6: temperature, top_p, top_logprobs and logprobs are removed, and prompt_cache_retention is replaced by prompt_cache_options.ttl. Pro is `reasoning.mode`, not a separate model id.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -666,7 +792,7 @@ OPENAI_MODELS: Dict[str, ModelConfig] = {
     "gpt-5.6-sol": ModelConfig(
         model_identifier="gpt-5.6-sol",
         name="gpt-5.6-sol",
-        description="Legacy — succeeded by GPT-6 Astra (September 3, 2026) as OpenAI's flagship and then undercut by GPT-6 Sol (September 22, 2026), which is both stronger and half the price ($2/$10 vs $4/$20). Kept for pinned workloads only; there is no longer a cost argument for it. The highest-intelligence tier of the GPT-5.6 family, built for complex coding, reasoning, and long-horizon agentic work. 1M context window. Available in the API as gpt-5.6-sol (alias: gpt-5.6). Its $4/$20 rate is itself promotional — an August 21, 2026 cut from $5/$30 — AND THAT PROMOTION IS NOW FIVE DAYS FROM ITS STATED FLOOR of November 21, 2026, the nearest date affecting any entry in this file. Two things to hold separately when it passes. OpenAI's own pricing page commits only to \"at least\" that date and publishes NO post-promotional rate, so the floor lapsing is not itself a price change and this entry's hints must not be edited on the calendar alone — they change when a new published rate is observed. Separately, a SINGLE source reports a customer email putting the end at November 30, 2026 with $5/$30 returning that day; that article says the email is its only evidence, public docs verify only November 21, and no other tracker corroborates it, so it is recorded here as the shape the real signal will take rather than as the date. If the rate does revert to $5/$30 this model becomes more expensive than GPT-6 Astra's input tier for a fraction of its capability, and the case for keeping the entry at all is worth re-opening. OpenAI has announced no API deprecation date for the GPT-5.6 family.",
+        description="Legacy — succeeded by GPT-6 Astra (September 3, 2026) as OpenAI's flagship and then undercut by GPT-6 Sol (September 22, 2026), which is both stronger and half the price ($2/$10 vs $4/$20). Kept for pinned workloads only; there is no longer a cost argument for it. The highest-intelligence tier of the GPT-5.6 family, built for complex coding, reasoning, and long-horizon agentic work. 1M context window. Available in the API as gpt-5.6-sol (alias: gpt-5.6). Its $4/$20 rate is itself promotional — an August 21, 2026 cut from $5/$30 — and ITS STATED FLOOR OF NOVEMBER 21, 2026 HAS NOW PASSED WITH THE PRICE UNCHANGED, re-checked November 23, 2026: the rate is still $4/$20 with cached input at $0.40, so the hints below stand. That is the outcome the previous audits' reasoning predicted and it is worth stating plainly, because it is the same mistake the Anthropic file guards against with retirement floors: A FLOOR LAPSING IS NOT A PRICE CHANGE. OpenAI commits to holding a promotional price until at least the floor; it does not commit to raising it afterwards, and it publishes no post-promotional rate. So these hints change when a NEW PUBLISHED RATE IS OBSERVED, never on the calendar — an audit that had doubled them to $5/$30 on November 21 would now be over-billing this model by 25% on input and 50% on output. The November 30, 2026 end date that the last audit recorded as SINGLE-SOURCED (a customer email, uncorroborated) is now reported by several independent trackers as the date OpenAI's own pricing page carries, so treat November 30 rather than November 21 as the live date to re-check — and re-check it the same way, by looking for an observed rate rather than by assuming $5/$30 returns. If the rate does revert to $5/$30 this model becomes more expensive than GPT-6 Astra's input tier for a fraction of its capability, and the case for keeping the entry at all is worth re-opening. OpenAI has announced no API deprecation date for the GPT-5.6 family.",
         support_images=True,
         support_files=True,
         support_streaming=True,
@@ -904,7 +1030,47 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         description="Maximum tokens in response including reasoning tokens (for reasoning models).",
         parameter_type=ParameterType.NUMBER,
         min_value=1,
+        # EVERY new reasoning model needs a key here. The `default` is 100000,
+        # which is BELOW every model actually in this catalog, so a model left
+        # out is not merely undeclared — it is capped 28K short of its real
+        # 128K ceiling, and `load_llm_models` writes that wrong cap into the
+        # LLMModel row. Nothing fails loudly; the model just stops being able
+        # to produce its longest answers.
+        #
+        # THIS IS NOT AN OPENAI-SPECIFIC HAZARD. Every provider in this package
+        # keeps a hand-written map beside its catalog with a `default` that
+        # matches no model, and the defaults miss in BOTH directions:
+        # Anthropic's `max_tokens` defaults to 8192 against entries declaring
+        # 128000 (the worst instance, ~120K short), while Google's
+        # `max_output_tokens` defaults to 65536 against Carbon's and Argon's
+        # 32768, which fails the other way round — a missing key there
+        # advertises a model ABOVE its real cap and turns allowed requests into
+        # provider 400s rather than short answers.
+        #
+        # ONE SHARED CHECK COVERS THESE, NOT ALL OF THEM, and the difference
+        # matters enough to name: `assert_output_cap_map_matches_catalog`
+        # (tests/utils/assertions.py) is applied to OpenAI's two maps,
+        # Anthropic, Google, DeepSeek and xAI. GROQ IS DELIBERATELY EXCLUDED
+        # from the VALUE check because its map ALREADY disagrees with its own
+        # catalog on 6 of 8 keyed models, in the over-advertising direction,
+        # and choosing which side is right needs Groq's published limits rather
+        # than a guess — `test_groq_output_cap_map_still_diverges_exactly_as_
+        # recorded` in `tests/models/test_output_cap_coverage.py` pins that
+        # divergence so it cannot grow unnoticed, still requires every Groq
+        # model to HAVE a key, and records what finishing it requires. Do not
+        # restore a blanket "every provider is guarded" claim here: that
+        # sentence was written at the November 23, 2026 audit and was false
+        # when written, which is how the Groq divergence surfaced at review.
+        # Two of the cross-references in the first version of this note were
+        # wrong as well, in the same commit whose point was accurate coverage
+        # claims — so verify a pointer here against the file before trusting
+        # it, and keep this list in step with the tests rather than with
+        # intent.
+        # `server/core/llms/bedrock.py` keeps its own map on the Django side and
+        # is outside this package's tests.
         max_value={
+            "gpt-6.2-astra": 128000,
+            "gpt-6.2-sol": 128000,
             "gpt-6.1-terra": 128000,
             "gpt-6.1-sol": 128000,
             "gpt-6-astra": 128000,
@@ -962,9 +1128,12 @@ OPENAI_PARAMETERS: list[ParameterConfig] = [
         default_value="standard",
         options=["standard", "pro"],
         # Deliberately NOT `_GPT6_MODELS`: OpenAI documents `reasoning.mode` on
-        # GPT-5.6, Astra and GPT-6 Sol/Luna, but not on the GPT-6.1 tier. An
-        # undocumented mode offered in a dropdown is a 400 waiting to be picked,
-        # so 6.1 is excluded until OpenAI publishes it.
+        # GPT-5.6, Astra and GPT-6 Sol/Luna, but not on the GPT-6.1 tier and
+        # not on GPT-6.2 either. An undocumented mode offered in a dropdown is
+        # a 400 waiting to be picked, so 6.1 and 6.2 are both excluded until
+        # OpenAI publishes it. Note this means the newest model in the catalog
+        # (GPT-6.2 Astra) offers no pro mode while the model it supersedes
+        # (GPT-6 Astra) does — correct, not an oversight.
         supported_models=list(
             _GPT56_MODELS | _GPT6_ASTRA_MODELS | _GPT6_SOL_LUNA_MODELS
         ),
@@ -994,6 +1163,16 @@ _REASONING_EFFORT_OPTIONS = {
     **{
         model: ["low", "medium", "high", "xhigh", "max"]
         for model in _GPT61_SOL_MODELS
+    },
+    # GPT-6.2 Astra and Sol both follow Astra's scale: low through max, with
+    # `none` and `minimal` returning a 400. Unlike GPT-6.1 this is uniform
+    # across the tier, so one comprehension covers both — but it does mean the
+    # 6.2 Sol that succeeds GPT-6.1 Sol keeps 6.1 Sol's narrower scale rather
+    # than reaching back to GPT-6 Sol's, and that neither 6.2 model can call
+    # function tools over Chat Completions.
+    **{
+        model: ["low", "medium", "high", "xhigh", "max"]
+        for model in _GPT62_MODELS
     },
     # GPT-6.1 Terra does NOT follow its 6.1 sibling: it restores `none`, giving
     # it all six levels. Inheriting Sol's scale here would hide the one level

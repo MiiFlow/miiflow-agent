@@ -1,5 +1,7 @@
 """The public Grok catalog matches the direct API's current capabilities."""
 
+from tests.utils.assertions import assert_output_cap_map_matches_catalog
+
 from miiflow_agent.models import XAI_MODELS, XAI_PARAMETERS
 from miiflow_agent.models.xai import prompt_length_multiplier, reasoning_effort_levels
 
@@ -20,9 +22,13 @@ def test_current_models_and_pricing():
 
 
 def test_parameters_match_model_limits_and_effort():
-    limits = next(p for p in XAI_PARAMETERS if p.field_name == "max_tokens")
-    for model, config in XAI_MODELS.items():
-        assert limits.max_value[model] == config.maximum_output_tokens
+    # The output-cap half now goes through the shared helper rather than an
+    # inline copy, so the coverage claims elsewhere ("the helper is applied to
+    # ... xAI") are true rather than approximately true. The inline version
+    # relied on a KeyError to catch a missing key; the helper asserts it with a
+    # message that names the default the model would otherwise inherit.
+    assert_output_cap_map_matches_catalog(XAI_MODELS, XAI_PARAMETERS, "max_tokens")
+    for model in XAI_MODELS:
         effort = next(
             p
             for p in XAI_PARAMETERS

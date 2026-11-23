@@ -2546,19 +2546,19 @@ voice-helpers = ["numpy (>=2.0.2)", "sounddevice (>=0.5.1)"]
 
 [[package]]
 name = "openinference-instrumentation"
-version = "0.1.77"
+version = "0.1.83"
 description = "OpenInference instrumentation utilities"
 optional = true
 python-versions = "<3.16,>=3.10"
 groups = ["main"]
 markers = "extra == \"all\" or extra == \"observability\""
 files = [
-    {file = "openinference_instrumentation-0.1.77-py3-none-any.whl", hash = "sha256:08b8f5e3dee767079538cd3e7c44f70b8f14f8e953e9031b273376da8bde2763"},
-    {file = "openinference_instrumentation-0.1.77.tar.gz", hash = "sha256:d2cef8d4d1d2c82be6cd0068a8f286b1d31cdf37381b8052e68494224338e93b"},
+    {file = "openinference_instrumentation-0.1.83-py3-none-any.whl", hash = "sha256:d596516d8067bccf63f38a46647487b78c600f64aab95ad7c9259c79cd724733"},
+    {file = "openinference_instrumentation-0.1.83.tar.gz", hash = "sha256:b7d63f0ae1aafd49cf03a69231a42d267d80d01d0cabbffcf6906990115d0367"},
 ]
 
 [package.dependencies]
-openinference-semantic-conventions = ">=0.1.44"
+openinference-semantic-conventions = ">=0.1.46"
 opentelemetry-api = "*"
 opentelemetry-sdk = "*"
 wrapt = ">=1.14.0,<3"
@@ -2618,24 +2618,24 @@ test = ["google-genai (>=2.0.0)", "opentelemetry-sdk"]
 
 [[package]]
 name = "openinference-instrumentation-openai"
-version = "0.1.73"
+version = "0.1.75"
 description = "OpenInference OpenAI Instrumentation"
 optional = true
 python-versions = "<3.16,>=3.10"
 groups = ["main"]
 markers = "extra == \"all\" or extra == \"observability\""
 files = [
-    {file = "openinference_instrumentation_openai-0.1.73-py3-none-any.whl", hash = "sha256:b92c85c22fc035bd9c5591994c47e14485aec99d13530829116fb7d272736d2d"},
-    {file = "openinference_instrumentation_openai-0.1.73.tar.gz", hash = "sha256:905993b684da38a7825c84dc18b989fc01fa8d93ed22106dfa1d2e1663409131"},
+    {file = "openinference_instrumentation_openai-0.1.75-py3-none-any.whl", hash = "sha256:af2c67bd8eee950334cb6fc4c684677f1a8621d339ff720d4decdda1a417d560"},
+    {file = "openinference_instrumentation_openai-0.1.75.tar.gz", hash = "sha256:36d1f9248f12eca2a694592dabb52dce22d6274590fda5387e3730dfb3aedda8"},
 ]
 
 [package.dependencies]
 anyio = ">=3.5.0"
-openinference-instrumentation = ">=0.1.77"
-openinference-semantic-conventions = ">=0.1.44"
+openinference-instrumentation = ">=0.1.79"
+openinference-semantic-conventions = ">=0.1.46"
 opentelemetry-api = "*"
 opentelemetry-instrumentation = "*"
-opentelemetry-semantic-conventions = "*"
+opentelemetry-semantic-conventions = ">=0.46b0"
 typing-extensions = "*"
 wrapt = "*"
 
@@ -2644,15 +2644,15 @@ instruments = ["openai (>=2.8.0)"]
 
 [[package]]
 name = "openinference-semantic-conventions"
-version = "0.1.44"
+version = "0.1.47"
 description = "OpenInference Semantic Conventions"
 optional = true
 python-versions = "<3.16,>=3.10"
 groups = ["main"]
 markers = "extra == \"all\" or extra == \"observability\""
 files = [
-    {file = "openinference_semantic_conventions-0.1.44-py3-none-any.whl", hash = "sha256:58c931fb0223c6103eb38dfd6f3c709a27483f5e9e74aea2df607402156e7600"},
-    {file = "openinference_semantic_conventions-0.1.44.tar.gz", hash = "sha256:a1f08fa6aef021f67910eef017b43118199dd7e33fff10978f803a42d5fe1fde"},
+    {file = "openinference_semantic_conventions-0.1.47-py3-none-any.whl", hash = "sha256:ae3ab8af07f61dc17da1a396a56e63b5d931386778f767818ab6a57d004fbf46"},
+    {file = "openinference_semantic_conventions-0.1.47.tar.gz", hash = "sha256:9278e6cbd93ef1d0faa80298ceedd59cd88133c1b8a1a5e2747dc7927eec295a"},
 ]
 
 [[package]]
